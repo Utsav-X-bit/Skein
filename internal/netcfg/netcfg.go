@@ -127,6 +127,17 @@ func Reconcile(name string, overlay []netip.Prefix, desired []netip.Prefix) erro
 	return firstErr
 }
 
+// redundantRoute reports whether the kernel already installs route as the
+// connected route of one of the configured addresses.
+func redundantRoute(route netip.Prefix, addresses []netip.Prefix) bool {
+	for _, addr := range addresses {
+		if addr.Masked() == route {
+			return true
+		}
+	}
+	return false
+}
+
 type routeEntry struct {
 	prefix netip.Prefix
 	device string

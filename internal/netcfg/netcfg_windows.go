@@ -31,6 +31,10 @@ func configureSteps(name string, mtu int, addresses, routes []netip.Prefix) ([]s
 		})
 	}
 	for _, route := range routes {
+		if redundantRoute(route, addresses) {
+			// Adding the address already created this on-link route.
+			continue
+		}
 		base, err := netshFamily(route.Addr())
 		if err != nil {
 			return nil, err
@@ -50,6 +54,9 @@ func configureSteps(name string, mtu int, addresses, routes []netip.Prefix) ([]s
 func removalSteps(name string, addresses, routes []netip.Prefix) [][][]string {
 	var out [][][]string
 	for _, route := range routes {
+		if redundantRoute(route, addresses) {
+			continue
+		}
 		base, err := netshFamily(route.Addr())
 		if err != nil {
 			continue

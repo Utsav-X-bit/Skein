@@ -60,9 +60,10 @@ func withRunner(t *testing.T) *fakeRunner {
 
 func TestConfigureBuildsExpectedCommands(t *testing.T) {
 	f := withRunner(t)
+	// Host prefixes, so the kernel does not pre-install the overlay routes.
 	addrs := []netip.Prefix{
-		netip.MustParsePrefix("10.144.144.2/24"),
-		netip.MustParsePrefix("fd00:6d65:7368::2/64"),
+		netip.MustParsePrefix("10.144.144.2/32"),
+		netip.MustParsePrefix("fd00:6d65:7368::2/128"),
 	}
 	routes := []netip.Prefix{
 		netip.MustParsePrefix("10.144.144.0/24"),
@@ -74,8 +75,8 @@ func TestConfigureBuildsExpectedCommands(t *testing.T) {
 	want := []string{
 		"ip link set dev skein0 mtu 1280",
 		"ip link set dev skein0 up",
-		"ip addr add 10.144.144.2/24 dev skein0",
-		"ip -6 addr add fd00:6d65:7368::2/64 dev skein0",
+		"ip addr add 10.144.144.2/32 dev skein0",
+		"ip -6 addr add fd00:6d65:7368::2/128 dev skein0",
 		"ip route add 10.144.144.0/24 dev skein0",
 		"ip -6 route add fd00:6d65:7368::/64 dev skein0",
 	}
@@ -108,7 +109,7 @@ func TestConfigureRollsBackOnFailure(t *testing.T) {
 	f := withRunner(t)
 	f.fail["ip route add 10.144.144.0/24"] = errors.New("boom")
 	err := Configure("skein0", 1280,
-		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/24")},
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/32")},
 		[]netip.Prefix{netip.MustParsePrefix("10.144.144.0/24")})
 	if err == nil {
 		t.Fatal("expected Configure to fail")
@@ -116,7 +117,7 @@ func TestConfigureRollsBackOnFailure(t *testing.T) {
 	lines := f.lines()
 	joined := strings.Join(lines, "\n")
 	for _, undo := range []string{
-		"ip addr del 10.144.144.2/24 dev skein0",
+		"ip addr del 10.144.144.2/32 dev skein0",
 		"ip link set dev skein0 down",
 	} {
 		if !strings.Contains(joined, undo) {
@@ -125,10 +126,36 @@ func TestConfigureRollsBackOnFailure(t *testing.T) {
 	}
 }
 
+func TestConfigureSkipsConnectedRoutes(t *testing.T) {
+	f := withRunner(t)
+	// A /24 address already installs the 10.144.144.0/24 connected route.
+	if err := Configure("skein0", 1280,
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/24")},
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.0/24")}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	for _, line := range f.lines() {
+		if strings.Contains(line, "route add") {
+			t.Fatalf("redundant connected route was installed: %q", line)
+		}
+	}
+	// Removing the address must not try to delete the connected route either.
+	if err := Remove("skein0",
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/24")},
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.0/24")}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, line := range f.lines() {
+		if strings.Contains(line, "route del") {
+			t.Fatalf("connected route was deleted explicitly: %q", line)
+		}
+	}
+}
+
 func TestRemoveDeletesRoutesThenAddresses(t *testing.T) {
 	f := withRunner(t)
 	if err := Remove("skein0",
-		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/24")},
+		[]netip.Prefix{netip.MustParsePrefix("10.144.144.2/32")},
 		[]netip.Prefix{netip.MustParsePrefix("10.144.144.0/24")}); err != nil {
 		t.Fatal(err)
 	}

@@ -183,9 +183,30 @@ type peerSpec struct {
 func build(t *testing.T, out, pkg string) {
 	t.Helper()
 	cmd := exec.Command("go", "build", "-o", out, pkg)
+	cmd.Dir = moduleRoot(t)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("build %s: %v", pkg, err)
+	}
+}
+
+// moduleRoot walks up from the test's working directory to the module root so
+// relative package paths resolve no matter where the test binary runs.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found above the test directory")
+		}
+		dir = parent
 	}
 }
 

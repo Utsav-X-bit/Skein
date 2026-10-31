@@ -28,6 +28,10 @@ func configureSteps(name string, mtu int, addresses, routes []netip.Prefix) ([]s
 		})
 	}
 	for _, route := range routes {
+		if redundantRoute(route, addresses) {
+			// Adding the address already created this connected route.
+			continue
+		}
 		base, err := ipArgs(route.Addr())
 		if err != nil {
 			return nil, err
@@ -43,6 +47,10 @@ func configureSteps(name string, mtu int, addresses, routes []netip.Prefix) ([]s
 func removalSteps(name string, addresses, routes []netip.Prefix) [][][]string {
 	var out [][][]string
 	for _, route := range routes {
+		if redundantRoute(route, addresses) {
+			// Removing the address removes the connected route.
+			continue
+		}
 		base, err := ipArgs(route.Addr())
 		if err != nil {
 			continue
