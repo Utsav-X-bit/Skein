@@ -1,0 +1,9 @@
+[node]
+overlay_ipv4_prefix = "10.144.144.0/24"
+overlay_ipv6_prefix = "10.144.144.0/24"
+overlay_ipv4        = "10.144.144.2"
+network_secret      = "qUKSgFNEmpqJiO3DS_vmRaYdxCAY_AZ_H6Cnmdn6E_U"
+
+[api]
+listen = "127.0.0.1:11011"
+token  = "4VFScqAStn6UYJtGDdyHG6SRYA9xCEHVANw2-iYqF1E"

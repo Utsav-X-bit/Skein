@@ -1,0 +1,22 @@
+[node]
+overlay_ipv4_prefix = "10.144.144.0/24"
+overlay_ipv6_prefix = "fd00:6d65:7368::/64"
+overlay_ipv4        = "10.144.144.2"
+overlay_ipv6        = "fd00:6d65:7368::2"
+listen_port         = 11010
+network_secret      = "qUKSgFNEmpqJiO3DS_vmRaYdxCAY_AZ_H6Cnmdn6E_U"
+mtu                 = 1280
+interface           = "skein0"
+
+[api]
+listen = "127.0.0.1:11011"
+token  = "4VFScqAStn6UYJtGDdyHG6SRYA9xCEHVANw2-iYqF1E"
+
+[discovery]
+mdns = true
+
+[[peer]]
+id     = "b3f64ecc491aba35"
+pubkey = "K2Ipr1k0juOQxvsbrOFvFo2vMupEJjP78aIA1VytR2U="
+dialer = true
+addrs  = ["udp://[2406:b400:72:4f1e::1]:11010", "udp://203.0.113.5:11010"]

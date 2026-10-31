@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skeind.exe ./cmd/skeind
+      - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skein.exe ./cmd/skein
+      - run: |
+          mkdir -p /tmp/release
+          cp /tmp/skeind.exe /tmp/skein.exe /tmp/release/
+          test -f /tmp/release/skeind.exe && test -f /tmp/release/skein.exe
+
+  netns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo -E env "PATH=$PATH" ./test/netns/run.sh
