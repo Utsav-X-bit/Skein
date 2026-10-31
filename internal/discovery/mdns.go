@@ -14,7 +14,7 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
-	"github.com/utsavgupta5467/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
 )
 
 // ServiceName is the mDNS service used for LAN discovery.

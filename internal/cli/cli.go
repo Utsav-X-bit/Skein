@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/utsavgupta5467/skein/internal/conf"
-	"github.com/utsavgupta5467/skein/internal/identity"
-	"github.com/utsavgupta5467/skein/internal/path"
-	"github.com/utsavgupta5467/skein/internal/version"
+	"github.com/Utsav-X-Bit/skein/internal/conf"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/path"
+	"github.com/Utsav-X-Bit/skein/internal/version"
 )
 
 const usage = `skein — Skein mesh VPN command line

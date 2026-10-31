@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/sys/windows/svc"
 
-	"github.com/utsavgupta5467/skein/internal/service"
+	"github.com/Utsav-X-Bit/skein/internal/service"
 )
 
 func isWindowsService() (bool, error) { return svc.IsWindowsService() }

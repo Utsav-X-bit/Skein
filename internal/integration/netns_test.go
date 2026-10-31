@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/utsavgupta5467/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
 )
 
 // TestNetns runs the dual-stack bridge proof inside Linux network namespaces.

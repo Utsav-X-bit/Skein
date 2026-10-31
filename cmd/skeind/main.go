@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/utsavgupta5467/skein/internal/conf"
-	"github.com/utsavgupta5467/skein/internal/daemon"
-	"github.com/utsavgupta5467/skein/internal/identity"
-	"github.com/utsavgupta5467/skein/internal/service"
-	"github.com/utsavgupta5467/skein/internal/version"
+	"github.com/Utsav-X-Bit/skein/internal/conf"
+	"github.com/Utsav-X-Bit/skein/internal/daemon"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/service"
+	"github.com/Utsav-X-Bit/skein/internal/version"
 )
 
 const usage = `skeind — Skein mesh VPN daemon

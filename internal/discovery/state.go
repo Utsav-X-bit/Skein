@@ -9,8 +9,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/utsavgupta5467/skein/internal/peer"
-	"github.com/utsavgupta5467/skein/internal/route"
+	"github.com/Utsav-X-Bit/skein/internal/peer"
+	"github.com/Utsav-X-Bit/skein/internal/route"
 )
 
 // State limits. A STATE datagram must fit one frame.

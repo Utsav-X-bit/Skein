@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"sync"
 
-	"github.com/utsavgupta5467/skein/internal/wire"
+	"github.com/Utsav-X-Bit/skein/internal/wire"
 )
 
 // UDP is the dual-stack or paired-socket UDP Link implementation.

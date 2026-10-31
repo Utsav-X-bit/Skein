@@ -15,7 +15,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/utsavgupta5467/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
 )
 
 const (

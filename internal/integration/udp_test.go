@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/utsavgupta5467/skein/internal/control"
-	"github.com/utsavgupta5467/skein/internal/dataplane"
-	"github.com/utsavgupta5467/skein/internal/discovery"
-	"github.com/utsavgupta5467/skein/internal/identity"
-	"github.com/utsavgupta5467/skein/internal/link"
-	"github.com/utsavgupta5467/skein/internal/peer"
-	"github.com/utsavgupta5467/skein/internal/route"
-	"github.com/utsavgupta5467/skein/internal/session"
+	"github.com/Utsav-X-Bit/skein/internal/control"
+	"github.com/Utsav-X-Bit/skein/internal/dataplane"
+	"github.com/Utsav-X-Bit/skein/internal/discovery"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/link"
+	"github.com/Utsav-X-Bit/skein/internal/peer"
+	"github.com/Utsav-X-Bit/skein/internal/route"
+	"github.com/Utsav-X-Bit/skein/internal/session"
 )
 
 // pipeTUN is an in-memory TUN device.

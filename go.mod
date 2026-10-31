@@ -1,4 +1,4 @@
-module github.com/utsavgupta5467/skein
+module github.com/Utsav-X-Bit/skein
 
 go 1.27.3
 

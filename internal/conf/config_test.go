@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/utsavgupta5467/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
 )
 
 func baseConfig(t *testing.T) Config {

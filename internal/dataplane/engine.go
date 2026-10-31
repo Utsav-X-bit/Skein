@@ -12,13 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/utsavgupta5467/skein/internal/identity"
-	"github.com/utsavgupta5467/skein/internal/link"
-	"github.com/utsavgupta5467/skein/internal/peer"
-	"github.com/utsavgupta5467/skein/internal/route"
-	"github.com/utsavgupta5467/skein/internal/session"
-	"github.com/utsavgupta5467/skein/internal/tun"
-	"github.com/utsavgupta5467/skein/internal/wire"
+	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-Bit/skein/internal/link"
+	"github.com/Utsav-X-Bit/skein/internal/peer"
+	"github.com/Utsav-X-Bit/skein/internal/route"
+	"github.com/Utsav-X-Bit/skein/internal/session"
+	"github.com/Utsav-X-Bit/skein/internal/tun"
+	"github.com/Utsav-X-Bit/skein/internal/wire"
 )
 
 // Engine errors.
