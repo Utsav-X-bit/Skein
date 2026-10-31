@@ -53,14 +53,13 @@ of scope and is documented as a known limit.
 
 ### Goals
 
-- 2–5 devices form a full mesh with one overlay address each.
-- Overlay is dual-stack: IPv4 and IPv6 ULA, both independent of the underlay.
+- 2–5 devices form a routed overlay mesh; the maximum supported shortest route is four links.
+- Overlay is dual-stack by default: IPv4 and IPv6 ULA, independent of the underlay; overlay prefixes are configurable.
 - End-to-end encryption; a forwarding node sees no plaintext.
-- Zero privileged nodes; any dual-stack member can bridge.
-- Cross-platform: Linux and Windows, single static binary each.
+- Zero privileged nodes; any reachable member can bridge.
+- Cross-platform: Linux and Windows; Windows release includes the required Wintun DLL.
 - Full CLI plus a stable local API for an external UI.
-- The v4-only ↔ v6-only failure is **demonstrable** (netns test) and the fix
-  (bridge) is **demonstrable** too.
+- The v4-only ↔ v6-only failure is **demonstrable** (netns test) and the fix (bridge) is **demonstrable** too.
 
 ### Non-goals (v1)
 
@@ -141,8 +140,9 @@ never touches crypto.
 | `internal/discovery` | static config, invite string, mDNS | no | both |
 | `internal/conf` | TOML load/validate, keygen | no | both |
 
-Only `tun`, `netcfg`, and `link` are platform-specific. Everything else is pure Go
-logic and unit-testable without privileges.
+The data/control logic is pure Go and unit-testable without privileges. `tun`,
+`netcfg`, `link`, identity-file permissions, and service lifecycle have OS-specific
+adapters.
 
 ### 4.4 Platform matrix
 
@@ -191,89 +191,96 @@ transport header (26 bytes, plaintext)
   [type:1][to_next:8][to_final:8][from:8][ttl:1]
 
 type:
-  1 HANDSHAKE   payload = Noise IK message
-  2 DATA        payload = [nonce:8][AEAD(...)]
-  3 PING        payload = [seq:4]
-  4 PONG        payload = [seq:4][echo_us:8]
-  5 STATE       payload = [count:2][entry * count]
+  1 HANDSHAKE   payload = bounded Noise IKpsk2 message
+  2 DATA        payload = [key_epoch:4][counter:8][AEAD(...)]
+  3 PING        payload = [key_epoch:4][counter:8][AEAD(seq:4)]
+  4 PONG        payload = [key_epoch:4][counter:8][AEAD(seq:4, echo_us:8)]
+  5 STATE       payload = [key_epoch:4][counter:8][AEAD(bounded state records)]
 
 DATA plaintext
   [IP packet]                       version nibble decides v4 vs v6
 
 AEAD associated data
-  to_final || from                  binds header to ciphertext
+  type || to_final || from || key_epoch
 
-STATE entry
-  [id:8][pubkey:32][flags:1][addr_count:1][addr...][direct_rtt_ms:2][hops:1]
+STATE record
+  [origin_id:8][origin_seq:8][expires_at:8][id:8][pubkey:32]
+  [flags:1][addr_count:1][addr...][hops:1][path...]
 
   flags: bit0 = has_v4, bit1 = has_v6, bit2 = has_direct_path
   addr:  [fam:1][port:2][ip:4 or 16]
+  path: up to four peer IDs, including the advertising origin
 ```
 
-`to_next` is where this hop goes. `to_final` is where the session terminates. For
-a direct path they are equal; for a forwarded path they differ and the forwarding
-node rewrites only `to_next`.
+State is bounded to one 1400-byte UDP frame; oversized records are rejected, not
+fragmented. Records expire and require monotonically increasing origin sequence.
+The relay-mutable `to_next` and `ttl` are excluded from associated data; receivers
+require `to_next == self` on ingress. All post-handshake control/data messages are
+encrypted.
 
-Peer IDs are the first 8 bytes of `SHA-256(static public key)`, rendered as hex.
+`to_next` names the receiver for this hop; `to_final` names the session endpoint.
+For direct paths they are equal; relays rewrite only `to_next` and decrement TTL.
+Peer IDs are the first 8 bytes of SHA-256(static public key), rendered as hex.
 
-**Overhead:** 26 (header) + 8 (nonce) + 16 (AEAD tag) = **50 bytes** per packet.
-
+**Overhead:** 26-byte header + 4-byte key epoch + 8-byte counter + 16-byte AEAD
+tag = **54 bytes** per packet.
 ### 4.7 Session
 
-- Noise **IK** handshake. Initiator knows the responder's static public key from
-  config or gossip.
-- The `network_secret` is used as a **PSK modifier**. Correct pubkey with the wrong
-  secret fails the handshake.
-- Replay protection: 64-bit counter plus a sliding window.
-- Rekey after 2³² packets or 1 hour, whichever comes first.
-- One session per peer, independent of which transport path is active.
+- Noise `IKpsk2` with X25519, ChaChaPoly, and BLAKE2s. The initiator knows the
+  responder's static public key from configuration or discovery.
+- `network_secret` is a random 32-byte PSK. Wrong keys fail the handshake.
+- Replay protection is a 64-bit counter plus a 64-packet sliding window per epoch.
+- Rekey after 2^32 packets or 1 hour, whichever comes first. DATA carries a
+  32-bit key epoch; receivers accept current and previous epochs during a bounded
+  reordering grace, then reject the old epoch.
+- One end-to-end session per peer identity; transport changes do not change keys.
+  The dialer starts a bounded handshake attempt and both sides confirm its attempt
+  ID before installing the session.
 
 ### 4.8 Path selection
 
-For each peer, enumerate candidates from the peer table filtered by families this
-node actually holds, probe all of them in parallel, keep the lowest-RTT winner.
+Enumerate configured and eligible interface candidates filtered by address families
+the node actually holds, then probe with bounded concurrency. Exactly one dialer is
+configured for static/WAN peers; mDNS peers elect the lower peer ID. A peer behind
+NAT must be configured as the dialer toward a reachable endpoint; NAT role is not
+inferred automatically.
 
 | Candidate | Source |
 |---|---|
-| global IPv6 | config, gossip |
-| public IPv4 | config, gossip |
-| LAN address | mDNS |
+| global IPv6 | config, authenticated peer state |
+| public IPv4 | config, authenticated peer state |
+| LAN address | mDNS and active non-loopback interfaces |
 
-Both sides probe simultaneously. Whichever handshake completes first wins. This is
-the mechanism that makes "one public side is enough" work with no traversal logic.
+The dialer selects the lowest-RTT endpoint that completes the authenticated
+handshake. Candidate endpoint updates require an authenticated path challenge
+before use. Path changes retain the existing end-to-end session.
 
 Per-peer state machine: `down → probing → up → degraded → probing`.
-
 ### 4.9 Routing and forwarding
 
-Each node maintains a reachability table:
+Each node maintains `route[dest] = { next_hop, cost_ms, links, path }`.
 
-```
-route[dest] = { next_hop, cost_ms, hops }
-```
-
-- Direct neighbours: `{ self, measured_rtt, 1 }`.
-- Learned: for each advertised `B → X` with cost `c` and hops `h`, candidate is
-  `{ B, rtt(A,B) + c, h + 1 }`. Lowest cost wins.
-- Split horizon: never advertise a route back to the node that provided it.
-- Maximum 3 hops; longer paths are dropped.
-- Recomputed on any STATE update or RTT change.
+- Direct neighbours have one link and measured RTT.
+- Learned routes add local RTT to advertised cost; the lowest cost wins.
+- Split horizon and full path-vector loop rejection are required.
+- Maximum four links; longer paths are dropped. This covers a five-node line.
+- Routes are recomputed on state updates, RTT changes, expiry, or link loss.
 
 **Forwarding a packet:**
 
-1. Receive a frame where `to_final != self`.
-2. Look up `route[to_final]`. If absent, drop and count.
-3. Decrement `ttl`; if zero, drop and count.
-4. Resolve `next_hop` to its current best transport address.
-5. Rewrite `to_next` and send. **The payload is never decrypted.**
+1. Require incoming `to_next == self`; otherwise drop.
+2. If `to_final == self`, authenticate/decrypt with the end-to-end session.
+3. Otherwise look up `route[to_final]`; if absent, drop and count.
+4. If `ttl <= 1`, drop and count; otherwise decrement TTL.
+5. Resolve `next_hop` to its current best transport address.
+6. Rewrite only `to_next` and send. The payload is never decrypted.
 
-A forwarding node therefore sees `from`, `to_final`, and packet sizes — nothing
-else. Tampering with the header breaks the AEAD associated data at the destination
-and the packet is dropped.
+A forwarding node sees peer IDs, packet sizes, timing, and direction, but no
+plaintext. `from`, `to_final`, type, and key epoch are authenticated at the final
+peer; changing them causes authentication failure.
 
-With ≤5 nodes, the table is tiny and Bellman-Ford-style relaxation converges in at
-most two rounds.
-
+With at most five nodes, bounded Bellman-Ford relaxation converges after route
+updates. The four-link cap covers the worst-case connected topology.
 ### 4.10 Discovery
 
 | Mechanism | Effort | Notes |
@@ -301,22 +308,23 @@ point of the design.
 
 ### 4.12 MTU
 
-Inner MTU **1280**. Worst case outer:
+Inner MTU defaults to **1280**. With the 54-byte protocol overhead, the outer packet
+is:
 
 ```
-1280 + 50 (header+nonce+tag) + 8 (UDP) + 40 (IPv6) = 1378 < 1500
-1280 + 50               + 8        + 20 (IPv4) = 1358 < 1500
+1280 + 54 (header+epoch+counter+tag) + 8 (UDP) + 40 (IPv6) = 1382
+1280 + 54                         + 8        + 20 (IPv4) = 1362
 ```
 
-Because the TUN MTU *is* 1280, the kernel never hands up a larger packet, so v1
-needs no fragmentation at all. This breaks only if the underlay path MTU falls
-below 1378; documented, not handled.
+No fragmentation or PMTUD is implemented. IPv6-enabled interfaces keep MTU ≥1280;
+an operator may lower MTU only when IPv6 overlay is disabled. A dual-stack path
+whose PMTU is below 1382 bytes is unsupported in v1 and documented as such.
 
 ### 4.13 Keepalive and failover
 
 | Event | Action |
 |---|---|
-| every 15 s | PING on the active path (holds NAT mappings) |
+| every 15 s | authenticated PING on the active path (holds NAT mappings) |
 | 45 s silent | mark peer down, re-probe all candidates |
 | path dies, peer alive | re-probe, keep the session, resume on any answering candidate |
 | handshake failure | backoff 1 s → 2 s → 4 s → cap 30 s |
@@ -326,8 +334,14 @@ below 1378; documented, not handled.
 
 ## 5. Local API
 
-Bound to `127.0.0.1` only. `Authorization: Bearer <token>` from config. This is the
+Bound to `127.0.0.1` only. `Authorization: Bearer <token>` from config, with the
+raw 32-byte token base64url-encoded so the header stays printable. This is the
 contract the UI is built against; the UI is not designed here.
+
+Every route requires bearer authentication. Reject browser `Origin` requests, send no
+CORS headers, cap request bodies and concurrent requests, and rate-limit state-changing
+operations and probes. This loopback API is not an isolation boundary from same-user
+processes.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -359,7 +373,8 @@ skeind run -c <path>          start the daemon (root / Administrator)
 skeind install-service        register systemd unit or Windows service
 skeind uninstall-service
 
-skein genkey                  print a keypair and node ID
+skein init                    create identity, config, PSK, and API token
+skein genkey                  print the public key and node ID
 skein invite                  print skein:1:<base64> for this node
 skein status                  overlay addresses, peer count, uptime
 skein peers [list|add|rm]     manage peers
@@ -369,10 +384,10 @@ skein ping <overlay-ip>       ICMP through the overlay (wraps the system ping)
 skein version
 ```
 
-Every command except `genkey` and `invite` talks to the running daemon over the
-local API. `genkey` and `invite` work offline against the config file.
-
----
+Only `genkey`, `invite`, and `init` work offline; all other `skein` commands use the
+authenticated local API. `init` generates cryptographically random 32-byte PSK and
+API tokens, creates files with owner-only permissions, and never overwrites an
+existing identity/config.
 
 ## 7. Configuration
 
@@ -380,37 +395,39 @@ TOML, loaded by `skeind`.
 
 ```toml
 [node]
-overlay_ipv4   = "10.144.144.2"
-overlay_ipv6   = "fd00:6d65:7368::2"   # optional
-listen_port    = 11010
-network_secret = "change-me"
-mtu            = 1280
-interface      = "skein0"
+overlay_ipv4_prefix = "10.144.144.0/24"
+overlay_ipv6_prefix = "fd00:6d65:7368::/64"
+overlay_ipv4        = "10.144.144.2"
+overlay_ipv6        = "fd00:6d65:7368::2"   # optional
+listen_port         = 11010
+network_secret      = "<base64url-encoded random 32-byte PSK>"
+mtu                 = 1280
+interface           = "skein0"              # Windows default: Skein
 
 [api]
 listen = "127.0.0.1:11011"
-token  = "generated-on-first-run"
+token  = "<base64url-encoded random 32-byte token>"
 
 [discovery]
 mdns = true
 
 [[peer]]
-id     = "a3f9c2e1b7d0456a"
-pubkey = "base64..."
-addrs  = ["udp://[2406:b400:72:4f1e::1]:11010", "udp://203.0.113.5:11010"]
+id       = "a3f9c2e1b7d0456a"
+pubkey   = "base64..."
+dialer   = true
+addrs    = ["udp://[2406:b400:72:4f1e::1]:11010", "udp://203.0.113.5:11010"]
 ```
 
-Validation: overlay addresses must be inside the configured prefixes and unique;
-`listen_port` in 1–65535; at least one peer or `mdns = true`; `network_secret` at
-least 16 bytes.
+Validation: overlay host addresses must be unicast, inside configured prefixes, and
+unique; prefixes must not overlap default routes or conflicting local routes;
+`listen_port` in 1–65535; at least one peer or `mdns = true`; network PSK and API
+token are each exactly 32 cryptographically random bytes. IPv6 overlay requires
+MTU ≥1280. `skein init` creates secrets/config with owner-only permissions.
 
-The static private key is stored separately from the config, in
-`<config-dir>/identity.key`, created with mode `0600`. `skein genkey` writes it and
-prints the matching public key and node ID. The key is never written to the config
-file and never exposed by the API.
-
----
-
+The static private key is stored separately from config in
+`<config-dir>/identity.key`, created with mode `0600` on Unix and an owner-only
+Windows ACL. `skein genkey` writes it and prints the matching public key and node
+ID. The private key is never written to config or exposed by the API.
 ## 8. Failure handling
 
 | Failure | Response |
@@ -432,16 +449,18 @@ file and never exposed by the API.
 | Property | Mechanism |
 |---|---|
 | Confidentiality | ChaCha20-Poly1305 via Noise |
-| Integrity | AEAD tag; header bound as associated data |
+| Integrity | AEAD; type, final peer, origin peer, and key epoch bound as associated data |
 | Authentication | Noise IK static keys |
-| Group membership | `network_secret` as PSK modifier |
-| Forward secrecy | ephemeral X25519 per handshake |
-| Replay | 64-bit counter + sliding window |
-| Forwarding privacy | relay never holds the session key |
+| Group membership | random 32-byte `network_secret` as PSK |
+| Forward secrecy | ephemeral X25519 per handshake and rekey |
+| Replay | 64-bit counter + 64-packet window per key epoch |
+| Forwarding privacy | relay never holds the end-to-end session key |
 
-**Threats not addressed:** a peer holding the secret and a stolen private key can
-impersonate that peer. Traffic analysis by a forwarding node reveals who talks to
-whom and how much. Denial of service is not mitigated.
+**Threats not addressed:** a trusted peer holding the group PSK can lie about routes,
+drop traffic, or impersonate members; a stolen private key permits impersonation.
+Forwarders see peer IDs, sizes, timing, and direction. Rate limits reduce but do not
+eliminate denial-of-service. The loopback API does not isolate processes running as
+the same user.
 
 ---
 
@@ -482,7 +501,7 @@ ip netns add ndual   # both
 
 ### Metrics for the report
 
-Handshake time (v4 vs v6), throughput vs MTU, 50-byte per-packet overhead
+Handshake time (v4 vs v6), throughput vs MTU, 54-byte per-packet protocol overhead
 measured against `tcpdump`, RTT inflation vs raw `ping`, failover duration,
 route convergence time after a peer disappears, CPU at 100 Mbps.
 
@@ -511,8 +530,8 @@ route convergence time after a peer disappears, CPU at 100 Mbps.
 
 | Use case | Works | Why |
 |---|---|---|
-| 2–5 of your own devices | yes | full mesh, static peers |
-| Every pair shares a reachable family | yes | one reachable side suffices |
+| 2–5 of your own devices | yes | static peers or mDNS; configured dialer roles |
+| Every pair shares a reachable family | yes | one reachable side suffices, with the reachable side configured to dial |
 | v4-only ↔ v6-only, dual-stack member present | yes | forwarding through the bridge |
 | Devices on the same LAN | yes | mDNS, zero config |
 | **v4-only ↔ v6-only, no dual-stack member** | **no** | no common L3 protocol |
@@ -544,11 +563,11 @@ route convergence time after a peer disappears, CPU at 100 Mbps.
 | D2 | Full mesh, ≤5 nodes | removes the need for a routing protocol |
 | D3 | Dual overlay (IPv4 + ULA) | demonstrates overlay/underlay independence |
 | D4 | Three layers: session / transport / overlay | path changes never touch crypto |
-| D5 | Noise IK + PSK modifier | mutual auth, forward secrecy, simple |
+| D5 | Noise IKpsk2 + random PSK | mutual auth, forward secrecy, simple |
 | D6 | Forwarding on in v1 | v4-only ↔ v6-only is the project's core claim |
 | D7 | No external relay, no hole punching | out of scope; documented as limits |
 | D8 | `Link` is an interface from day one | TCP drops in later without a refactor |
 | D9 | Daemon + API; CLI and UI are clients | one source of truth, UI-agnostic |
 | D10 | MTU 1280, no fragmentation | kernel never emits larger packets |
-| D11 | Plaintext transport header, encrypted payload | forwarding without decrypting |
+| D11 | Authenticated header, end-to-end encrypted payload | relays route without decrypting DATA |
 | D12 | Shell out to `ip`/`netsh` for netcfg | no cgo, debuggable, ~60 lines per OS |
