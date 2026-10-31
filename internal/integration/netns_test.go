@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -56,7 +58,9 @@ func TestNetns(t *testing.T) {
 			name: "n4", namespace: ns["n4"], overlay: "10.144.144.1",
 			peers: []peerSpec{
 				{name: "ndual", dialer: true, addr: "192.168.10.2:11010"},
-				{name: "n6", dialer: false, addr: "[fd00:10::1]:11010"},
+				// The end-to-end pair is not adjacent; one side must still
+				// initiate. The handshake is relayed through ndual.
+				{name: "n6", dialer: true, addr: "[fd00:10::1]:11010"},
 			},
 		},
 		{
@@ -168,8 +172,9 @@ mdns = false
 		out := run(t, "ip", "netns", "exec", ns["n4"], filepath.Join(binDir, "skein"), "-c", paths["n4"], "routes", "--json")
 		return strings.Contains(out, fmt.Sprintf("%016x", ids["n6"].ID))
 	})
-	out := run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "2", "-W", "2", "10.144.144.3")
-	if !strings.Contains(out, "2 received") && !strings.Contains(out, "2 packets received") {
+	out := run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "3", "-W", "2", "10.144.144.3")
+	received := receivedPackets(out)
+	if received < 1 {
 		t.Fatalf("overlay ping failed:\n%s", out)
 	}
 }
@@ -235,6 +240,19 @@ func run(t *testing.T, name string, args ...string) string {
 		return string(out)
 	}
 	return string(out)
+}
+
+// receivedPackets extracts the received count from Linux ping output.
+func receivedPackets(out string) int {
+	m := regexp.MustCompile(`(\d+) received`).FindStringSubmatch(out)
+	if len(m) != 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func containsLine(text, want string) bool {

@@ -160,7 +160,10 @@ transitive hints are dropped deterministically (by hop count, then peer ID).
 STATE is authenticated by the session that carries it. The `origin` must equal
 the sending peer, the sequence must increase per origin, and expired payloads
 are rejected. Peer keys are never taken from gossip; third-party candidates are
-hints only.
+hints only. Overlay addresses are learned from STATE (first authenticated claim
+wins) because they are required to map an overlay IP to a peer; a malicious
+member can still lie about another member's address, which is one of the
+documented shared-PSK limitations.
 
 ## Discovery
 

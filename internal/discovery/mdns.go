@@ -29,9 +29,11 @@ func Fingerprint(psk []byte) string {
 
 // MDNS is a running advertisement and browse loop.
 type MDNS struct {
-	server *zeroconf.Server
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	server    *zeroconf.Server
+	cancel    context.CancelFunc
+	done      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // StartMDNS advertises inv on the local link and reports validated peers.
@@ -50,7 +52,7 @@ func StartMDNS(ctx context.Context, inv identity.Invite, fingerprint string, por
 	}
 
 	browseCtx, cancel := context.WithCancel(ctx)
-	m := &MDNS{server: server, cancel: cancel}
+	m := &MDNS{server: server, cancel: cancel, done: make(chan struct{})}
 
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
@@ -58,35 +60,45 @@ func StartMDNS(ctx context.Context, inv identity.Invite, fingerprint string, por
 		cancel()
 		return nil, fmt.Errorf("discovery: create mDNS resolver: %w", err)
 	}
-	entries := make(chan *zeroconf.ServiceEntry, 16)
+	// The zeroconf resolver keeps its own goroutine writing to entries after
+	// Browse returns, so this channel is never closed. The consumer stops on
+	// done instead.
+	entries := make(chan *zeroconf.ServiceEntry, 64)
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		for entry := range entries {
-			peerInv, err := DecodeEntry(entry, fingerprint)
-			if err != nil || peerInv.ID == inv.ID {
-				continue
+		for {
+			select {
+			case <-m.done:
+				return
+			case entry := <-entries:
+				peerInv, err := DecodeEntry(entry, fingerprint)
+				if err != nil || peerInv.ID == inv.ID {
+					continue
+				}
+				onPeer(peerInv)
 			}
-			onPeer(peerInv)
 		}
 	}()
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		defer close(entries)
 		_ = resolver.Browse(browseCtx, ServiceName, "local.", entries)
 	}()
 	return m, nil
 }
 
-// Close stops advertising and browsing.
+// Close stops advertising and browsing. It is safe to call more than once.
 func (m *MDNS) Close() {
 	if m == nil {
 		return
 	}
-	m.cancel()
-	m.server.Shutdown()
-	m.wg.Wait()
+	m.closeOnce.Do(func() {
+		m.cancel()
+		close(m.done)
+		m.server.Shutdown()
+		m.wg.Wait()
+	})
 }
 
 // EncodeTXT renders the invite as mDNS TXT records.

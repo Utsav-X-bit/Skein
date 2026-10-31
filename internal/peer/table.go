@@ -202,6 +202,24 @@ func rank(s Source) int {
 	}
 }
 
+// SetOverlay records a peer's overlay addresses learned from authenticated
+// state. The first claimed value wins so a member cannot move another peer
+// around after the fact.
+func (t *Table) SetOverlay(id uint64, v4, v6 netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p, ok := t.peers[id]
+	if !ok {
+		return
+	}
+	if v4.IsValid() && !p.OverlayV4.IsValid() {
+		p.OverlayV4 = v4
+	}
+	if v6.IsValid() && !p.OverlayV6.IsValid() {
+		p.OverlayV6 = v6
+	}
+}
+
 // SetActive records a validated direct path.
 func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration, seen time.Time) {
 	t.mu.Lock()

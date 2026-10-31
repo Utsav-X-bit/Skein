@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/utsavgupta5467/skein/internal/control"
 	"github.com/utsavgupta5467/skein/internal/dataplane"
+	"github.com/utsavgupta5467/skein/internal/discovery"
 	"github.com/utsavgupta5467/skein/internal/identity"
 	"github.com/utsavgupta5467/skein/internal/link"
 	"github.com/utsavgupta5467/skein/internal/peer"
@@ -199,4 +201,35 @@ func TestOverlayOverLoopbackUDP(t *testing.T) {
 	if a.eng.Counters().TxPackets == 0 || b.eng.Counters().RxPackets == 0 {
 		t.Fatalf("counters = %+v / %+v", a.eng.Counters(), b.eng.Counters())
 	}
+}
+
+// TestIdlePeersConnectThroughTheController covers the failure mode where
+// configured peers never connect because no overlay packet ever needs them.
+func TestIdlePeersConnectThroughTheController(t *testing.T) {
+	psk := make([]byte, identity.KeySize)
+	for i := range psk {
+		psk[i] = byte(i + 3)
+	}
+	a := startEndpoint(t, psk, "10.144.144.1")
+	b := startEndpoint(t, psk, "10.144.144.2")
+	a.know(t, b, true)
+	b.know(t, a, false)
+
+	cancelA := a.run(t)
+	defer cancelA()
+	cancelB := b.run(t)
+	defer cancelB()
+
+	ctl, err := control.New(control.Local{ID: a.id.ID, OverlayV4: a.overlay},
+		a.peers, a.routes, discovery.NewMerger(a.id.ID, a.peers, a.routes), a.eng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancelCtl := context.WithCancel(context.Background())
+	defer cancelCtl()
+	go func() { _ = ctl.Run(ctx) }()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return a.sessions.HasSession(b.id.ID) && b.sessions.HasSession(a.id.ID)
+	})
 }

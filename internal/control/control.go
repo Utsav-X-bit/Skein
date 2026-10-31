@@ -31,6 +31,7 @@ type Transport interface {
 	SendControl(peerID uint64, typ wire.MessageType, payload []byte) error
 	SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.MessageType, payload []byte) error
 	Rekey(peerID uint64) error
+	EnsureSession(peerID uint64) error
 }
 
 // Local describes this node's advertisement.
@@ -102,6 +103,10 @@ func (c *Controller) Run(ctx context.Context) error {
 func (c *Controller) Tick() {
 	now := c.now()
 	for _, p := range c.peers.List() {
+		// Configured dialers connect without waiting for overlay traffic.
+		if p.Dialer {
+			_ = c.eng.EnsureSession(p.ID)
+		}
 		if p.State == peer.StateUp && !p.LastSeen.IsZero() && now.Sub(p.LastSeen) > PeerTimeout {
 			c.peers.SetState(p.ID, peer.StateDown)
 			c.routes.RemoveDirect(p.ID)

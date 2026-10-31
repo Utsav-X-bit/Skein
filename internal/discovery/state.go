@@ -337,6 +337,9 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 			// invite or a future handshake, never from gossip.
 			continue
 		}
+		// Overlay addresses are needed to route packets and can only come from
+		// an authenticated peer. Keys are never taken from gossip.
+		m.Peers.SetOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
 		for _, cand := range rec.Candidates {
 			m.Peers.AddCandidate(rec.ID, cand, peer.SourceState)
 		}

@@ -119,9 +119,10 @@ type Engine struct {
 }
 
 type inflight struct {
-	attempt [session.AttemptSize]byte
-	sentAt  time.Time
-	tries   int
+	attempt  [session.AttemptSize]byte
+	sentAt   time.Time
+	tries    int
+	viaRoute bool
 }
 
 // New creates an engine. It does not start any goroutines.
@@ -683,22 +684,30 @@ func (e *Engine) ensureSession(peerID uint64) error {
 		return ErrNoSession
 	}
 
+	_, routeExists := e.routes.Lookup(peerID)
+
 	now := e.now()
 	e.mu.Lock()
 	last := e.inflight[peerID]
-	if last != nil {
-		backoff := minBackoff << min(last.tries-1, 5)
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-		if now.Sub(last.sentAt) < backoff {
-			e.mu.Unlock()
-			return ErrNoSession
-		}
-	}
 	tries := 0
 	if last != nil {
 		tries = last.tries
+		// A newly available route changes the path entirely: retry at once
+		// instead of waiting out a backoff earned against unreachable
+		// candidates.
+		if routeExists && !last.viaRoute {
+			tries = 0
+		}
+		if tries > 0 {
+			backoff := minBackoff << min(tries-1, 5)
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			if now.Sub(last.sentAt) < backoff {
+				e.mu.Unlock()
+				return ErrNoSession
+			}
+		}
 	}
 	e.mu.Unlock()
 
@@ -709,7 +718,7 @@ func (e *Engine) ensureSession(peerID uint64) error {
 	}
 
 	e.mu.Lock()
-	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: now, tries: tries + 1}
+	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: now, tries: tries + 1, viaRoute: routeExists}
 	e.mu.Unlock()
 
 	if err := e.sendHandshake(p, attempt, msg); err != nil {

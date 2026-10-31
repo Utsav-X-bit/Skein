@@ -15,10 +15,11 @@ import (
 )
 
 type fakeTransport struct {
-	mu    sync.Mutex
-	sent  []sentFrame
-	fail  bool
-	rekey []uint64
+	mu      sync.Mutex
+	sent    []sentFrame
+	fail    bool
+	rekey   []uint64
+	ensured []uint64
 }
 
 type sentFrame struct {
@@ -52,6 +53,13 @@ func (f *fakeTransport) Rekey(peerID uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rekey = append(f.rekey, peerID)
+	return nil
+}
+
+func (f *fakeTransport) EnsureSession(peerID uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensured = append(f.ensured, peerID)
 	return nil
 }
 
@@ -121,6 +129,23 @@ func mustIdentity(t *testing.T) identity.Identity {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestDialerPeersAreContactedWithoutTraffic(t *testing.T) {
+	f := newFixture(t)
+	f.ctl.Tick()
+	f.eng.mu.Lock()
+	ensured := append([]uint64(nil), f.eng.ensured...)
+	f.eng.mu.Unlock()
+	found := false
+	for _, id := range ensured {
+		if id == f.peerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dialer peer was not contacted: %v", ensured)
+	}
 }
 
 func TestPingIsSentOnTheInterval(t *testing.T) {

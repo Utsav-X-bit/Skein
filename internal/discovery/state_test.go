@@ -172,6 +172,44 @@ func TestMergerAppliesPeersAndRoutes(t *testing.T) {
 	}
 }
 
+func TestMergerLearnsOverlayAddresses(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	other := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	for _, id := range []identity.Identity{origin, other} {
+		if err := peers.Upsert(peer.Peer{ID: id.ID, PublicKey: id.PublicKey}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     1,
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{
+			{ID: other.ID, OverlayV4: netip.MustParseAddr("10.144.144.7"), OverlayV6: netip.MustParseAddr("fd00:6d65:7368::7")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+	if err := m.Merge(origin.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := peers.Get(other.ID)
+	if p.OverlayV4.String() != "10.144.144.7" || p.OverlayV6.String() != "fd00:6d65:7368::7" {
+		t.Fatalf("overlay addresses not learned: %+v", p)
+	}
+	if id, ok := peers.LookupOverlay(netip.MustParseAddr("10.144.144.7")); !ok || id != other.ID {
+		t.Fatal("overlay lookup does not resolve the learned address")
+	}
+}
+
 func TestMergerRejectsSpoofedAndStaleState(t *testing.T) {
 	local := testIdentity(t)
 	origin := testIdentity(t)
