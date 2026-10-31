@@ -172,9 +172,24 @@ mdns = false
 		out := run(t, "ip", "netns", "exec", ns["n4"], filepath.Join(binDir, "skein"), "-c", paths["n4"], "routes", "--json")
 		return strings.Contains(out, fmt.Sprintf("%016x", ids["n6"].ID))
 	})
+	// The overlay address must be learned before traffic can be mapped to a peer.
+	waitFor(t, 20*time.Second, func() bool {
+		out := run(t, "ip", "netns", "exec", ns["n4"], filepath.Join(binDir, "skein"), "-c", paths["n4"], "peers", "--json")
+		return strings.Contains(out, "10.144.144.3")
+	})
+
 	out := run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "3", "-W", "2", "10.144.144.3")
 	received := receivedPackets(out)
 	if received < 1 {
+		for _, name := range []string{"n4", "n6", "ndual"} {
+			bin := filepath.Join(binDir, "skein")
+			t.Logf("=== %s status ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], bin, "-c", paths[name], "status", "--json"))
+			t.Logf("=== %s peers ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], bin, "-c", paths[name], "peers", "--json"))
+			t.Logf("=== %s routes ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], bin, "-c", paths[name], "routes", "--json"))
+			t.Logf("=== %s underlay v4 ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], "ip", "route", "show"))
+			t.Logf("=== %s underlay v6 ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], "ip", "-6", "route", "show"))
+			t.Logf("=== %s overlay iface ===\n%s", name, run(t, "ip", "netns", "exec", ns[name], "ip", "addr", "show", "skein0"))
+		}
 		t.Fatalf("overlay ping failed:\n%s", out)
 	}
 }

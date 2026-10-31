@@ -106,7 +106,7 @@ func TestBuildStaysWithinTheFrameCap(t *testing.T) {
 	for i := range 10 {
 		peers = append(peers, PeerRecord{ID: uint64(i + 2), OverlayV4: netip.MustParseAddr("10.144.144.1")})
 	}
-	s, err := Build(PeerRecord{ID: a.ID, OverlayV4: netip.MustParseAddr("10.144.144.9")}, routes, 1, time.Minute, time.Now())
+	s, err := Build([]PeerRecord{{ID: a.ID, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, 1, time.Minute, time.Now())
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

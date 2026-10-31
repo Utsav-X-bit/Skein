@@ -115,7 +115,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		ID:         id.ID,
 		OverlayV4:  cfg.Node.OverlayIPv4,
 		OverlayV6:  cfg.Node.OverlayIPv6,
-		Candidates: localCandidates(cfg.Node.ListenPort),
+		Candidates: localCandidates(cfg),
 	}, peers, routes, merger, eng)
 	if err != nil {
 		dev.Close()
@@ -136,12 +136,15 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	return d, nil
 }
 
-func localCandidates(port uint16) []netip.AddrPort {
-	cands, err := path.LocalCandidates(port)
+func localCandidates(cfg conf.Config) []netip.AddrPort {
+	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
 		return nil
 	}
-	return cands
+	return path.ExcludePrefixes(cands, []netip.Prefix{
+		cfg.Node.OverlayIPv4Prefix,
+		cfg.Node.OverlayIPv6Prefix,
+	})
 }
 
 func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPort, dialer bool) error {
@@ -204,7 +207,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}()
 
 	if d.cfg.Discovery.MDNS {
-		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(d.cfg.Node.ListenPort)}
+		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(d.cfg)}
 		mdns, err := discovery.StartMDNS(ctx, inv, discovery.Fingerprint(d.cfg.Node.NetworkSecret), d.cfg.Node.ListenPort, d.discovered)
 		if err != nil {
 			log.Printf("skein: warning: mDNS unavailable: %v", err)

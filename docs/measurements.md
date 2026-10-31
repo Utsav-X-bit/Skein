@@ -8,9 +8,9 @@ commands and paste the output.
 
 | Item | Value |
 |---|---|
-| Host | Linux x86-64 workstation |
+| Host | Linux x86-64 workstation (CachyOS, kernel 7.3) |
 | Go | `go1.27.3` |
-| Root available | no (netns and TUN runs were skipped here) |
+| Root available | yes, via `sudo` (netns, TUN, service runs executed) |
 | Windows VM | not available in this environment |
 
 ## What was run
@@ -19,12 +19,29 @@ commands and paste the output.
 go vet ./...
 go test -race ./...
 GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
-go test ./internal/integration -run TestOverlayOverLoopbackUDP -v
+sudo -E env "PATH=$PATH" ./test/netns/run.sh
+SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" go test ./internal/tun -run TestTUNWriteRead -v
 ```
 
-Recorded result: all packages pass; the loopback integration test completes a
-real UDP handshake and delivers an IPv4 overlay packet end to end in well under
-a second (the test asserts within a 5 s deadline).
+Recorded results:
+
+| Check | Result |
+|---|---|
+| `go vet`, `go test -race ./...` | pass, every package |
+| Linux and Windows cross-builds | pass |
+| Loopback UDP integration (handshake + overlay packet) | pass |
+| Three-node netns bridge (`TestNetns`) | **pass in ~11 s**; IPv4-only node pings the IPv6-only node through the dual-stack member |
+| TUN kernel round-trip (`TestTUNWriteRead`) | pass; echo request written to the device comes back as a reply |
+| mDNS discovery across a veth | both nodes discovered and `up` after **2 s**, endpoint `192.168.77.x:11010` |
+| Live daemon | `skein0` up with `10.144.144.1/24`, mtu 1280, kernel connected route, API answers, clean stop removes the interface |
+| systemd service | install → active (running) → interface up → stop → inactive, interface removed → uninstall removes the unit |
+| CLI against a live daemon | `invite`, `peers add/list/rm`, `routes`, `status`, `ping` pass; `probe` on an unreachable peer reports `no established session` |
+| Ping to the local overlay address | 4/4 received, ~0.09 ms |
+
+Bugs found by these runs and fixed: redundant connected-route installation,
+missing startup dialing, overlay addresses never learned from STATE, relayed
+handshake replies addressed to the final peer instead of the last hop, the TUN
+virtio-net header offset, and a TUN read/write mutex deadlock.
 
 ## Protocol overhead (from the implementation)
 
@@ -38,11 +55,12 @@ A 1280-byte inner packet produces:
 `internal/wire` enforces the 1400-byte frame cap and `internal/session`
 verifies the outer length in its tests.
 
-## Not yet measured (requires root or a Windows VM)
+## Not yet measured
 
-Run these after `sudo -E env "PATH=$PATH" ./test/netns/run.sh` has built the
-topology, or replace the namespace names with the run prefix printed by
-`setup.sh`.
+Throughput, RTT inflation, CPU, handshake timing, failover duration, and
+convergence time still need a run with `iperf3` and a stopwatch. The topology
+from `test/netns/setup.sh` can be reused: create it with a chosen prefix and
+replace `<n4>`/`<n6>`/`<ndual>` below.
 
 ### Baseline before starting Skein
 

@@ -167,3 +167,19 @@ func itoa(v int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestExcludePrefixesDropsOverlayAddresses(t *testing.T) {
+	cands := []netip.AddrPort{
+		netip.MustParseAddrPort("10.144.144.1:11010"),
+		netip.MustParseAddrPort("192.168.1.5:11010"),
+		netip.MustParseAddrPort("[fd00:6d65:7368::2]:11010"),
+		netip.MustParseAddrPort("[2001:db8::5]:11010"),
+	}
+	got := ExcludePrefixes(cands, []netip.Prefix{
+		netip.MustParsePrefix("10.144.144.0/24"),
+		netip.MustParsePrefix("fd00:6d65:7368::/64"),
+	})
+	if len(got) != 2 || got[0].Addr().String() != "192.168.1.5" || got[1].Addr().String() != "2001:db8::5" {
+		t.Fatalf("ExcludePrefixes = %v", got)
+	}
+}

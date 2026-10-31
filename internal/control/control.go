@@ -161,6 +161,18 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 		OverlayV6:  c.local.OverlayV6,
 		Candidates: c.local.Candidates,
 	}}
+	// Advertise every member this node knows so others can map overlay
+	// addresses to peers. Keys still never travel in gossip.
+	for _, p := range c.peers.List() {
+		if !p.OverlayV4.IsValid() && !p.OverlayV6.IsValid() {
+			continue
+		}
+		rec := discovery.PeerRecord{ID: p.ID, OverlayV4: p.OverlayV4, OverlayV6: p.OverlayV6}
+		for _, cand := range p.Candidates {
+			rec.Candidates = append(rec.Candidates, cand.Addr)
+		}
+		records = append(records, rec)
+	}
 	routes := make([]discovery.RouteRecord, 0, 8)
 	for _, r := range c.routes.Routes() {
 		routes = append(routes, discovery.RouteRecord{
@@ -170,7 +182,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 			Path:        r.Path,
 		})
 	}
-	state, err := discovery.Build(records[0], routes, seq, discovery.TTLFor, now)
+	state, err := discovery.Build(records, routes, seq, discovery.TTLFor, now)
 	if err != nil {
 		return nil, err
 	}
@@ -250,13 +262,21 @@ func (c *Controller) Probe(ctx context.Context, peerID uint64) error {
 	}()
 
 	sentAt := c.now()
-	var sent int
+	var (
+		sent    int
+		lastErr error
+	)
 	for _, cand := range p.Candidates {
 		if err := c.eng.SendControlTo(peerID, cand.Addr, wire.Challenge, token[:]); err == nil {
 			sent++
+		} else {
+			lastErr = err
 		}
 	}
 	if sent == 0 {
+		if lastErr != nil {
+			return fmt.Errorf("control: cannot probe %016x: %w", peerID, lastErr)
+		}
 		return errors.New("control: no challenge could be sent")
 	}
 

@@ -245,15 +245,20 @@ func Decode(payload []byte) (State, error) {
 	return s, nil
 }
 
-// Build assembles a bounded advertisement from local state. Local and
-// configured records are preserved; transitive hints are ordered by hop count
-// and peer ID and included until the size cap.
-func Build(local PeerRecord, routes []RouteRecord, seq uint64, ttl time.Duration, now time.Time) (State, error) {
+// Build assembles a bounded advertisement. The first peer record must be the
+// local node; later records are hints about other members. Routes are ordered
+// by hop count and peer ID, and the payload is trimmed to fit one frame while
+// preserving the local record.
+func Build(peers []PeerRecord, routes []RouteRecord, seq uint64, ttl time.Duration, now time.Time) (State, error) {
+	if len(peers) == 0 {
+		return State{}, errors.New("discovery: at least the local peer record is required")
+	}
+	local := peers[0]
 	s := State{
 		Origin:  local.ID,
 		Seq:     seq,
 		Expires: now.Add(ttl),
-		Peers:   []PeerRecord{local},
+		Peers:   append([]PeerRecord(nil), peers...),
 		Routes:  append([]RouteRecord(nil), routes...),
 	}
 	sortRoutes(s.Routes)

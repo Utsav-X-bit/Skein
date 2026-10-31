@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -238,6 +240,9 @@ func (e *Engine) readTUN(ctx context.Context) error {
 			continue
 		}
 		if err := e.SendOverlayPacket(buf[:n]); err != nil {
+			if debugFrames() {
+				log.Printf("skein: outbound packet dropped (%d bytes): %v", n, err)
+			}
 			continue
 		}
 	}
@@ -263,7 +268,21 @@ func (e *Engine) readLink(ctx context.Context) error {
 		}
 		e.counters.RxPackets.Add(1)
 		e.counters.RxBytes.Add(uint64(n))
-		_ = e.HandleFrame(src, buf[:n])
+		if debugFrames() {
+			if h, _, perr := wire.Parse(buf[:n]); perr == nil {
+				log.Printf("skein: recv type=%d from=%016x to_next=%016x to_final=%016x len=%d via %s",
+					h.Type, h.From, h.ToNext, h.ToFinal, n, src)
+			}
+		}
+		if err := e.HandleFrame(src, buf[:n]); err != nil && debugFrames() {
+			h, _, perr := wire.Parse(buf[:n])
+			if perr != nil {
+				log.Printf("skein: drop %d bytes from %s: %v", n, src, err)
+			} else {
+				log.Printf("skein: drop type=%d from=%016x to_next=%016x to_final=%016x ttl=%d via %s: %v",
+					h.Type, h.From, h.ToNext, h.ToFinal, h.TTL, src, err)
+			}
+		}
 	}
 }
 
@@ -437,7 +456,13 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 	plaintext, err := e.sessions.Open(h.From, epoch, counter, ad, ct)
 	if err != nil {
 		e.counters.AuthFailure.Add(1)
+		if debugFrames() {
+			log.Printf("skein: auth failure type=%d from=%016x epoch=%d counter=%d: %v", h.Type, h.From, epoch, counter, err)
+		}
 		return err
+	}
+	if debugFrames() {
+		log.Printf("skein: opened type=%d from=%016x epoch=%d counter=%d len=%d", h.Type, h.From, epoch, counter, len(plaintext))
 	}
 	e.peers.MarkSeen(h.From, e.now())
 
@@ -495,7 +520,13 @@ func (e *Engine) deliver(from uint64, pkt []byte) error {
 		return ErrBadPacket
 	}
 	if _, err := e.tun.Write(pkt); err != nil {
+		if debugFrames() {
+			log.Printf("skein: tun write failed (%d bytes from %016x): %v", len(pkt), from, err)
+		}
 		return err
+	}
+	if debugFrames() {
+		log.Printf("skein: delivered %d-byte packet from %016x", len(pkt), from)
 	}
 	e.counters.RxPackets.Add(1)
 	e.counters.RxBytes.Add(uint64(len(pkt)))
@@ -525,7 +556,13 @@ func (e *Engine) forward(frame []byte, h wire.Header) error {
 		return err
 	}
 	if err := e.link.Send(ep, frame); err != nil {
+		if debugFrames() {
+			log.Printf("skein: forward to %s failed: %v", ep, err)
+		}
 		return err
+	}
+	if debugFrames() {
+		log.Printf("skein: forwarded type=%d from=%016x to_final=%016x next=%016x via %s", h.Type, h.From, h.ToFinal, r.NextHop, ep)
 	}
 	e.counters.Forwarded.Add(1)
 	e.counters.TxPackets.Add(1)
@@ -633,22 +670,48 @@ func (e *Engine) sendToPeer(finalID uint64, typ wire.MessageType, payload []byte
 }
 
 // sendHandshakeReply returns the responder message along the path it arrived on.
+// The next hop must be the node that actually sent us the frame, otherwise a
+// relay would drop it: the source address is matched to a known peer first, and
+// the route table is only a fallback.
 func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]byte, payload []byte, src netip.AddrPort) error {
+	toNext := uint64(0)
+	if id, ok := e.peerForAddr(src); ok {
+		toNext = id
+	} else if r, ok := e.routes.Lookup(peerID); ok {
+		toNext = r.NextHop
+	}
+	if toNext == 0 {
+		return ErrNoRoute
+	}
 	h := wire.Header{
 		Type:    wire.Handshake,
-		ToNext:  peerID,
+		ToNext:  toNext,
 		ToFinal: peerID,
 		From:    e.cfg.LocalID,
 		TTL:     wire.MaxTTL,
-	}
-	if r, ok := e.routes.Lookup(peerID); ok && r.NextHop != peerID {
-		h.ToNext = r.NextHop
 	}
 	frame, err := wire.Marshal(h, payload)
 	if err != nil {
 		return err
 	}
 	return e.link.Send(src, frame)
+}
+
+// peerForAddr maps a datagram source address to a known peer, matching active
+// endpoints and candidates. It is how a relayed frame identifies its last hop.
+func (e *Engine) peerForAddr(addr netip.AddrPort) (uint64, bool) {
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	for _, p := range e.peers.List() {
+		if p.ActiveEndpoint.IsValid() && p.ActiveEndpoint == addr {
+			return p.ID, true
+		}
+		for _, c := range p.Candidates {
+			if c.Addr == addr {
+				return p.ID, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // sendConfirm proves the new session to the peer and asks it to install it.
@@ -819,6 +882,9 @@ func (e *Engine) endpointFor(peerID uint64) (netip.AddrPort, bool) {
 	}
 	return p.ActiveEndpoint, true
 }
+
+// debugFrames reports whether per-frame diagnostics are enabled.
+func debugFrames() bool { return os.Getenv("SKEIN_DEBUG") != "" }
 
 // associatedData binds the authenticated frame fields. Relay-mutable to_next
 // and ttl are deliberately excluded.

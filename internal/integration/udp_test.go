@@ -233,3 +233,82 @@ func TestIdlePeersConnectThroughTheController(t *testing.T) {
 		return a.sessions.HasSession(b.id.ID) && b.sessions.HasSession(a.id.ID)
 	})
 }
+
+// TestRelayOverLoopbackUDP runs the three-node bridge over real sockets:
+// A and C have no common reachable family, so their session must be relayed
+// by B, and B must never decrypt the payload.
+func TestRelayOverLoopbackUDP(t *testing.T) {
+	psk := make([]byte, identity.KeySize)
+	for i := range psk {
+		psk[i] = byte(i + 11)
+	}
+	a := startEndpoint(t, psk, "10.144.144.1")
+	b := startEndpoint(t, psk, "10.144.144.2")
+	c := startEndpoint(t, psk, "10.144.144.3")
+
+	a.know(t, b, true)
+	b.know(t, a, false)
+	b.know(t, c, true)
+	c.know(t, b, false)
+
+	cancelA := a.run(t)
+	defer cancelA()
+	cancelB := b.run(t)
+	defer cancelB()
+	cancelC := c.run(t)
+	defer cancelC()
+
+	// Direct sessions first: these create B's direct routes.
+	for _, pair := range [][2]*endpoint{{a, b}, {b, c}} {
+		x, y := pair[0], pair[1]
+		waitFor(t, 5*time.Second, func() bool {
+			if err := x.eng.EnsureSession(y.id.ID); err != nil {
+				return false
+			}
+			return x.sessions.HasSession(y.id.ID) && y.sessions.HasSession(x.id.ID)
+		})
+	}
+
+	// A and C learn each other the way STATE gossip would teach them.
+	if err := a.peers.Upsert(peer.Peer{ID: c.id.ID, PublicKey: c.id.PublicKey, OverlayV4: c.overlay, Dialer: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sessions.SetPeer(c.id.ID, c.id.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.peers.Upsert(peer.Peer{ID: a.id.ID, PublicKey: a.id.PublicKey, OverlayV4: a.overlay, Dialer: false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sessions.SetPeer(a.id.ID, a.id.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	// Two-hop routes, as an advertisement would install.
+	if err := a.routes.MergeAdvertisement(b.id.ID, route.Advertisement{
+		Destination: c.id.ID, Cost: 2 * time.Millisecond, Hops: 1,
+		Path: []uint64{b.id.ID, c.id.ID}, Seq: 1, Expires: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.routes.MergeAdvertisement(b.id.ID, route.Advertisement{
+		Destination: a.id.ID, Cost: 2 * time.Millisecond, Hops: 1,
+		Path: []uint64{b.id.ID, a.id.ID}, Seq: 1, Expires: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pkt := ipv4Packet(a.overlay, c.overlay, []byte("relayed"))
+	waitFor(t, 5*time.Second, func() bool {
+		if err := a.eng.SendOverlayPacket(pkt); err != nil {
+			return false
+		}
+		select {
+		case got := <-c.tun.out:
+			return string(got[20:]) == "relayed"
+		case <-time.After(50 * time.Millisecond):
+			return false
+		}
+	})
+	if b.eng.Counters().Forwarded == 0 {
+		t.Fatal("relay did not forward anything")
+	}
+}

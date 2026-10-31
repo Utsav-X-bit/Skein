@@ -26,6 +26,11 @@ import (
 	"github.com/Utsav-X-Bit/skein/internal/version"
 )
 
+const (
+	defaultIPv4Prefix = "10.144.144.0/24"
+	defaultIPv6Prefix = "fd00:6d65:7368::/64"
+)
+
 const usage = `skein — Skein mesh VPN command line
 
 Usage:
@@ -191,6 +196,10 @@ mdns = true
 	}
 
 	cands, _ := path.LocalCandidates(conf.DefaultListenPort)
+	cands = path.ExcludePrefixes(cands, []netip.Prefix{
+		netip.MustParsePrefix(defaultIPv4Prefix),
+		netip.MustParsePrefix(defaultIPv6Prefix),
+	})
 	inv := identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands}
 	invite, _ := identity.EncodeInvite(inv)
 
@@ -238,6 +247,10 @@ func cmdInvite(configPath string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	cands = path.ExcludePrefixes(cands, []netip.Prefix{
+		cfg.Node.OverlayIPv4Prefix,
+		cfg.Node.OverlayIPv6Prefix,
+	})
 	invite, err := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
 	if err != nil {
 		return err

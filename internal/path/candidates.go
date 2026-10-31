@@ -62,6 +62,26 @@ func Eligible(addr netip.Addr) bool {
 	return true
 }
 
+// ExcludePrefixes drops candidates that fall inside the overlay prefixes. A
+// TUN address is never a usable underlay endpoint: dialing it would route the
+// datagram back through the overlay.
+func ExcludePrefixes(cands []netip.AddrPort, prefixes []netip.Prefix) []netip.AddrPort {
+	out := make([]netip.AddrPort, 0, len(cands))
+	for _, c := range cands {
+		skip := false
+		for _, p := range prefixes {
+			if p.IsValid() && p.Contains(c.Addr()) {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // Filter keeps only eligible candidates with a usable port, preserving order
 // and removing duplicates.
 func Filter(cands []netip.AddrPort) []netip.AddrPort {

@@ -133,7 +133,9 @@ namespaces it created.
 
 ```bash
 go test ./...                 # unit and loopback integration
-sudo ./test/netns/run.sh      # namespace bridge proof
+sudo -E env "PATH=$PATH" ./test/netns/run.sh          # namespace bridge proof
+SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" \
+  go test ./internal/tun -run TestTUNWriteRead -v      # TUN kernel round-trip
 ```
 
 The Windows runtime smoke test is `test/windows/smoke.ps1`; cross-compilation
