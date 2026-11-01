@@ -63,15 +63,17 @@ GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
 
 ## Quick start
 
-On every machine, as root/Administrator:
+On every machine (no privileges needed for these two):
 
 ```bash
 ./skein init      # identity, config, network secret, API token
 ./skein invite    # share this string with the other nodes
 ```
 
-Give every node the **same `network_secret`** and a **unique `overlay_ipv4`**,
-then either rely on mDNS on the same LAN or add peers:
+`init` writes `~/.config/skein/skein.toml` and `identity.key`
+(`%APPDATA%\skein\` on Windows). Give every node the **same
+`network_secret`** and a **unique `overlay_ipv4`**, then either rely on mDNS on
+the same LAN or add peers:
 
 ```toml
 [[peer]]
@@ -81,10 +83,10 @@ dialer = true                      # exactly one side of each pair
 addrs  = ["udp://203.0.113.5:11010"]
 ```
 
-Start and check:
+Start the daemon as root/Administrator and check it as your normal user:
 
 ```bash
-./skeind run -c /etc/skein/skein.toml
+sudo ./skeind run -c ~/.config/skein/skein.toml     # the shell expands ~ first
 ./skein status
 ./skein peers list
 ./skein routes
@@ -94,7 +96,7 @@ Start and check:
 Service mode:
 
 ```bash
-./skeind install-service -c /etc/skein/skein.toml   # systemd / Windows SCM
+sudo ./skeind install-service -c ~/.config/skein/skein.toml   # systemd / Windows SCM
 ```
 
 ## Configuration
