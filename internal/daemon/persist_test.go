@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"testing"
 
+	"context"
+
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/identity"
@@ -74,11 +76,12 @@ func TestLearnedPeersUseTheLowerIDDialerRule(t *testing.T) {
 	}
 }
 
-func TestLocalCandidatesIncludeThePublicAddr(t *testing.T) {
+func TestAllCandidatesIncludeThePublicAddr(t *testing.T) {
 	cfg := conf.Default()
 	cfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
 	cfg.Node.PublicAddr = netip.MustParseAddrPort("203.0.113.7:11010")
-	cands := localCandidates(cfg)
+	cfg.Discovery.STUN = false
+	cands := allCandidates(context.Background(), cfg)
 	for _, c := range cands {
 		if c == cfg.Node.PublicAddr {
 			return

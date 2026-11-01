@@ -89,6 +89,14 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 	}, nil
 }
 
+// SetLocalCandidates changes the advertised underlay endpoints without a
+// restart, so a discovered public address takes effect promptly.
+func (c *Controller) SetLocalCandidates(cands []netip.AddrPort) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.local.Candidates = append([]netip.AddrPort(nil), cands...)
+}
+
 // SetLocalName changes the name advertised in STATE without a restart.
 func (c *Controller) SetLocalName(name string) {
 	c.mu.Lock()
@@ -179,6 +187,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 	c.seq++
 	seq := c.seq
 	localName := c.local.Name
+	localCands := append([]netip.AddrPort(nil), c.local.Candidates...)
 	c.mu.Unlock()
 
 	records := []discovery.PeerRecord{{
@@ -187,7 +196,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 		PublicKey:  c.local.PublicKey,
 		OverlayV4:  c.local.OverlayV4,
 		OverlayV6:  c.local.OverlayV6,
-		Candidates: c.local.Candidates,
+		Candidates: localCands,
 	}}
 	// Advertise every member this node knows so others can map overlay
 	// addresses to peers. Keys still never travel in gossip.

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -68,9 +69,13 @@ type API struct {
 	Token  []byte
 }
 
-// Discovery toggles zero-configuration LAN discovery.
+// Discovery toggles zero-configuration discovery.
 type Discovery struct {
 	MDNS bool
+	// STUN asks a STUN server for this node's public address so invites and
+	// STATE can advertise it without manual configuration.
+	STUN       bool
+	STUNServer string
 }
 
 // Peer is a statically configured remote node.
@@ -101,7 +106,9 @@ type fileConfig struct {
 		Token  string `toml:"token"`
 	} `toml:"api"`
 	Discovery struct {
-		MDNS *bool `toml:"mdns"`
+		MDNS       *bool  `toml:"mdns"`
+		STUN       *bool  `toml:"stun"`
+		STUNServer string `toml:"stun_server"`
 	} `toml:"discovery"`
 	Peer []struct {
 		ID     string   `toml:"id"`
@@ -131,9 +138,12 @@ func Default() Config {
 			Interface:         DefaultInterface(),
 		},
 		API:       API{Listen: DefaultAPIBind},
-		Discovery: Discovery{MDNS: true},
+		Discovery: Discovery{MDNS: true, STUN: true, STUNServer: DefaultSTUNServer},
 	}
 }
+
+// DefaultSTUNServer is a widely reachable public STUN service.
+const DefaultSTUNServer = "stun.l.google.com:19302"
 
 // NextFreeOverlay returns the lowest usable host address in prefix that is not
 // already taken.
@@ -196,6 +206,28 @@ func NextFreeOverlayHashed(prefix netip.Prefix, used []netip.Addr, seed uint64) 
 	return free[seed%uint64(len(free))], nil
 }
 
+// DefaultNodeName returns the hostname, trimmed to the name limit, so a node
+// always advertises something peers can display.
+func DefaultNodeName() string {
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	host = strings.TrimSpace(host)
+	var b strings.Builder
+	for _, r := range host {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	name := b.String()
+	if len([]rune(name)) > 32 {
+		name = string([]rune(name)[:32])
+	}
+	return name
+}
+
 // ValidateName checks a node or peer name.
 func ValidateName(name string) error { return validateName(name) }
 
@@ -227,6 +259,12 @@ func Render(cfg Config) ([]byte, error) {
 	fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
 	b.WriteString("\n[discovery]\n")
 	fmt.Fprintf(&b, "mdns = %v\n", cfg.Discovery.MDNS)
+	if !cfg.Discovery.STUN {
+		b.WriteString("stun = false\n")
+	}
+	if cfg.Discovery.STUN && cfg.Discovery.STUNServer != "" && cfg.Discovery.STUNServer != DefaultSTUNServer {
+		fmt.Fprintf(&b, "stun_server = %q\n", cfg.Discovery.STUNServer)
+	}
 	for _, p := range cfg.Peers {
 		b.WriteString("\n[[peer]]\n")
 		fmt.Fprintf(&b, "id     = %q\n", formatID(p.ID))
@@ -384,6 +422,12 @@ func parse(text string) (Config, error) {
 	}
 	if fc.Discovery.MDNS != nil {
 		cfg.Discovery.MDNS = *fc.Discovery.MDNS
+	}
+	if fc.Discovery.STUN != nil {
+		cfg.Discovery.STUN = *fc.Discovery.STUN
+	}
+	if fc.Discovery.STUNServer != "" {
+		cfg.Discovery.STUNServer = fc.Discovery.STUNServer
 	}
 
 	for i, fp := range fc.Peer {
@@ -553,6 +597,11 @@ func Validate(cfg Config) error {
 
 	if len(cfg.Peers) == 0 && !cfg.Discovery.MDNS {
 		return errors.New("at least one peer is required when discovery.mdns is disabled")
+	}
+	if cfg.Discovery.STUN {
+		if _, _, err := net.SplitHostPort(cfg.Discovery.STUNServer); err != nil {
+			return fmt.Errorf("discovery.stun_server must be host:port: %w", err)
+		}
 	}
 	seen := make(map[uint64]struct{}, len(cfg.Peers))
 	for i, p := range cfg.Peers {

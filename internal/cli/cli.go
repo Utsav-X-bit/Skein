@@ -29,6 +29,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/path"
 	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
+	"github.com/Utsav-X-bit/skein/internal/wan"
 )
 
 const (
@@ -307,6 +308,8 @@ mdns = true
 		netip.MustParsePrefix(defaultIPv4Prefix),
 		netip.MustParsePrefix(defaultIPv6Prefix),
 	})
+	wanCfg := conf.Default()
+	cands = wan.Merge(cands, wan.Candidates(context.Background(), wanCfg))
 	inv := identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands}
 	invite, _ := identity.EncodeInvite(inv)
 
@@ -328,17 +331,7 @@ mdns = true
 }
 
 // defaultName is the hostname, trimmed to the name limit.
-func defaultName() string {
-	host, err := os.Hostname()
-	if err != nil {
-		return ""
-	}
-	host = strings.TrimSpace(host)
-	if len([]rune(host)) > 32 {
-		host = string([]rune(host)[:32])
-	}
-	return host
-}
+func defaultName() string { return conf.DefaultNodeName() }
 
 func cmdName(configPath string, args []string, stdout io.Writer) error {
 	cfg, err := loadConfig(configPath)
@@ -418,7 +411,7 @@ func cmdInvite(configPath string, network bool, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	cands, err := localCandidates(cfg)
+	cands, err := allCandidates(cfg)
 	if err != nil {
 		return err
 	}
@@ -457,30 +450,25 @@ func encodeJoin(cfg conf.Config, id identity.Identity, cands []netip.AddrPort) (
 	})
 }
 
-// localCandidates lists underlay endpoints, never overlay addresses. A
-// configured public_addr is included so invites and STATE carry it.
+// localCandidates lists this node's interface endpoints.
 func localCandidates(cfg conf.Config) ([]netip.AddrPort, error) {
 	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
 		return nil, err
 	}
-	cands = path.ExcludePrefixes(cands, []netip.Prefix{
+	return path.ExcludePrefixes(cands, []netip.Prefix{
 		cfg.Node.OverlayIPv4Prefix,
 		cfg.Node.OverlayIPv6Prefix,
-	})
-	if pub, ok := cfg.PublicCandidate(); ok {
-		dup := false
-		for _, c := range cands {
-			if c == pub {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			cands = append(cands, pub)
-		}
+	}), nil
+}
+
+// allCandidates adds public_addr and the STUN-discovered address.
+func allCandidates(cfg conf.Config) ([]netip.AddrPort, error) {
+	base, err := localCandidates(cfg)
+	if err != nil {
+		return nil, err
 	}
-	return cands, nil
+	return wan.Merge(base, wan.Candidates(context.Background(), cfg)), nil
 }
 
 // runningPeerOverlays asks the local daemon for overlay addresses already in
@@ -621,7 +609,7 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	_ = fileperm.ChownToSudoUser(configPath)
 	_ = fileperm.ChownToSudoUser(keyPath)
 
-	cands, _ := localCandidates(cfg)
+	cands, _ := allCandidates(cfg)
 	own, _ := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
 	fmt.Fprintf(stdout, "joined network\n")
 	fmt.Fprintf(stdout, "  config:  %s\n", configPath)

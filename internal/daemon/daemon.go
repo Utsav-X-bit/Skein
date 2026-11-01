@@ -32,6 +32,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/session"
 	"github.com/Utsav-X-bit/skein/internal/tun"
 	"github.com/Utsav-X-bit/skein/internal/version"
+	"github.com/Utsav-X-bit/skein/internal/wan"
 )
 
 // Daemon is one running Skein node.
@@ -68,6 +69,9 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	}
 	merger := discovery.NewMerger(id.ID, peers, routes)
 
+	if cfg.Node.Name == "" {
+		cfg.Node.Name = conf.DefaultNodeName()
+	}
 	d := &Daemon{
 		cfg:      cfg,
 		id:       id,
@@ -158,29 +162,40 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	return d, nil
 }
 
+// localCandidates lists this node's interface endpoints.
 func localCandidates(cfg conf.Config) []netip.AddrPort {
 	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
-		cands = nil
+		return nil
 	}
-	cands = path.ExcludePrefixes(cands, []netip.Prefix{
+	return path.ExcludePrefixes(cands, []netip.Prefix{
 		cfg.Node.OverlayIPv4Prefix,
 		cfg.Node.OverlayIPv6Prefix,
 	})
-	// A port-forwarded node advertises its public endpoint, not just LAN ones.
-	if pub, ok := cfg.PublicCandidate(); ok {
-		dup := false
-		for _, c := range cands {
-			if c == pub {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			cands = append(cands, pub)
+}
+
+// allCandidates adds the configured public address and the STUN-discovered
+// one, so invites and STATE advertise where peers can actually reach us.
+func allCandidates(ctx context.Context, cfg conf.Config) []netip.AddrPort {
+	return wan.Merge(localCandidates(cfg), wan.Candidates(ctx, cfg))
+}
+
+// refreshWAN keeps the advertised public endpoint current.
+func (d *Daemon) refreshWAN(ctx context.Context) {
+	update := func() {
+		d.ctl.SetLocalCandidates(allCandidates(ctx, d.cfg))
+	}
+	update()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			update()
 		}
 	}
-	return cands
 }
 
 func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPort, dialer bool, name string) error {
@@ -317,6 +332,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	apiCtx, stopAPI := context.WithCancel(ctx)
 	defer stopAPI()
 	go d.serveAPI(apiCtx)
+	go d.refreshWAN(ctx)
 
 	go func() { _ = d.ctl.Run(ctx) }()
 	return d.eng.Run(ctx)

@@ -260,7 +260,9 @@ listen = "127.0.0.1:11011"
 token  = "<base64url, exactly 32 bytes>"
 
 [discovery]
-mdns = true
+mdns        = true
+stun        = true
+stun_server = "stun.l.google.com:19302"
 
 [[peer]]
 id     = "a3f9c2e1b7d0456a"

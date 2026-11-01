@@ -123,6 +123,7 @@ token  = "%s"
 
 [discovery]
 mdns = false
+stun = false
 %s`, n.overlay,
 			base64.RawURLEncoding.EncodeToString(psk),
 			base64.RawURLEncoding.EncodeToString(token),

@@ -325,15 +325,17 @@ listen_port         = 11010
 network_secret      = "<32 random bytes, base64url>"
 mtu                 = 1280
 interface           = "skein0"              # Windows default: Skein
-name                = "utsav-laptop"        # optional, shown to peers
-public_addr         = "203.0.113.7:11010"   # optional: address peers dial (port-forwarded node)
+name                = "utsav-laptop"        # optional, shown to peers (default: hostname)
+public_addr         = "203.0.113.7:11010"   # optional: only when the external port differs
 
 [api]
 listen = "127.0.0.1:11011"                  # loopback only
 token  = "<32 random bytes, base64url>"
 
 [discovery]
-mdns = true
+mdns        = true
+stun        = true                           # learn and advertise the public IPv4/IPv6
+stun_server = "stun.l.google.com:19302"      # optional override
 ```
 
 Unknown keys are rejected. The daemon refuses a config readable by group or
@@ -438,9 +440,11 @@ router forward.
 One side of every pair must be reachable, or introduced by a relay:
 
 - **Direct** — a public IPv4 with a UDP forward, a public IPv6, or the same LAN.
-  A port-forwarded node sets `node.public_addr` so invites and STATE advertise
-  the public endpoint next to its LAN addresses; joiners then dial the right
-  place without editing configs.
+  A node probes a STUN server over both families (`discovery.stun`) and
+  advertises the public IPv4 and IPv6 next to its LAN addresses, so joiners
+  dial the right place without editing configs. Set `node.public_addr` when
+  the external port differs from `listen_port`, or `stun = false` to disable
+  the probes (the `SKEIN_NO_STUN` environment variable does the same).
 - **Relayed** — both sides connect to any reachable peer (a cheap VPS is
   enough); it forwards opaque ciphertext.
 - **Introductions** — a node that only reaches a peer through a relay asks the
