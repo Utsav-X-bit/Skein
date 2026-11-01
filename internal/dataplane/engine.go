@@ -251,7 +251,17 @@ func (e *Engine) readTUN(ctx context.Context) error {
 func (e *Engine) readLink(ctx context.Context) error {
 	buf := make([]byte, wire.MaxFrameSize+1)
 	for {
-		n, src, err := e.link.Recv(buf)
+		var transport string
+		var n int
+		var src netip.AddrPort
+		var err error
+		if tagged, ok := e.link.(interface {
+			RecvTagged([]byte) (int, netip.AddrPort, string, error)
+		}); ok {
+			n, src, transport, err = tagged.RecvTagged(buf)
+		} else {
+			n, src, err = e.link.Recv(buf)
+		}
 		if err != nil {
 			select {
 			case <-e.closed:
@@ -274,7 +284,7 @@ func (e *Engine) readLink(ctx context.Context) error {
 					h.Type, h.From, h.ToNext, h.ToFinal, n, src)
 			}
 		}
-		if err := e.HandleFrame(src, buf[:n]); err != nil && debugFrames() {
+		if err := e.handleFrame(src, buf[:n], transport); err != nil && debugFrames() {
 			h, _, perr := wire.Parse(buf[:n])
 			if perr != nil {
 				log.Printf("skein: drop %d bytes from %s: %v", n, src, err)
@@ -380,6 +390,11 @@ func (e *Engine) validateOutbound(pkt []byte) (netip.Addr, error) {
 
 // HandleFrame processes one datagram received from src.
 func (e *Engine) HandleFrame(src netip.AddrPort, frame []byte) error {
+	return e.handleFrame(src, frame, "")
+}
+
+// handleFrame processes one datagram and records the transport it arrived on.
+func (e *Engine) handleFrame(src netip.AddrPort, frame []byte, transport string) error {
 	h, payload, err := wire.Parse(frame)
 	if err != nil {
 		e.counters.InvalidPacket.Add(1)
@@ -398,7 +413,7 @@ func (e *Engine) HandleFrame(src netip.AddrPort, frame []byte) error {
 	case wire.Confirm:
 		return e.handleConfirm(src, h, payload)
 	default:
-		return e.handleEncrypted(src, h, payload)
+		return e.handleEncrypted(src, h, payload, transport)
 	}
 }
 
@@ -450,7 +465,7 @@ func (e *Engine) handleConfirm(src netip.AddrPort, h wire.Header, payload []byte
 	return nil
 }
 
-func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []byte) error {
+func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []byte, transport string) error {
 	epoch, counter, ct, err := wire.ParseNonce(payload)
 	if err != nil {
 		e.counters.InvalidPacket.Add(1)
@@ -469,6 +484,9 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 		log.Printf("skein: opened type=%d from=%016x epoch=%d counter=%d len=%d", h.Type, h.From, epoch, counter, len(plaintext))
 	}
 	e.peers.MarkSeen(h.From, e.now())
+	if transport != "" {
+		e.peers.SetRxTransport(h.From, transport)
+	}
 
 	switch h.Type {
 	case wire.Data:

@@ -74,7 +74,7 @@ func (s *Switch) readUDP() {
 		delete(s.forced, from.Addr())
 		s.mu.Unlock()
 		select {
-		case s.packets <- received{data: data, from: from}:
+		case s.packets <- received{data: data, from: from, transport: "udp"}:
 		case <-s.closed:
 			return
 		default:
@@ -98,7 +98,7 @@ func (s *Switch) readTCP() {
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		select {
-		case s.packets <- received{data: data, from: from}:
+		case s.packets <- received{data: data, from: from, transport: "tcp"}:
 		case <-s.closed:
 			return
 		default:
@@ -159,14 +159,20 @@ func (s *Switch) HasTCP() bool { return s.tcp != nil }
 
 // Recv returns one frame from either transport.
 func (s *Switch) Recv(buf []byte) (int, netip.AddrPort, error) {
+	n, from, _, err := s.RecvTagged(buf)
+	return n, from, err
+}
+
+// RecvTagged returns one frame and the transport that carried it.
+func (s *Switch) RecvTagged(buf []byte) (int, netip.AddrPort, string, error) {
 	select {
 	case pkt := <-s.packets:
 		if len(pkt.data) > len(buf) {
-			return 0, pkt.from, ErrTruncated
+			return 0, pkt.from, pkt.transport, ErrTruncated
 		}
-		return copy(buf, pkt.data), pkt.from, nil
+		return copy(buf, pkt.data), pkt.from, pkt.transport, nil
 	case <-s.closed:
-		return 0, netip.AddrPort{}, net.ErrClosed
+		return 0, netip.AddrPort{}, "", net.ErrClosed
 	}
 }
 

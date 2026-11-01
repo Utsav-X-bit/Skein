@@ -24,9 +24,10 @@ type UDP struct {
 }
 
 type received struct {
-	data []byte
-	from netip.AddrPort
-	err  error
+	data      []byte
+	from      netip.AddrPort
+	transport string
+	err       error
 }
 
 // ListenUDP binds the underlay socket. It prefers one dual-stack socket and
@@ -79,7 +80,7 @@ func (u *UDP) readLoop(conn *net.UDPConn) {
 			default:
 			}
 			select {
-			case u.packets <- received{err: err}:
+			case u.packets <- received{transport: "udp", err: err}:
 			case <-u.closed:
 			}
 			return
@@ -87,7 +88,7 @@ func (u *UDP) readLoop(conn *net.UDPConn) {
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		select {
-		case u.packets <- received{data: data, from: normalize(from)}:
+		case u.packets <- received{data: data, from: normalize(from), transport: "udp"}:
 		case <-u.closed:
 			return
 		default:

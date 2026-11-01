@@ -25,6 +25,7 @@ type Peer struct {
 	OverlayIPv6 string   `json:"overlay_ipv6,omitempty"`
 	Endpoint    string   `json:"endpoint,omitempty"`
 	Transport   string   `json:"transport,omitempty"`
+	TransportRx string   `json:"transport_rx,omitempty"`
 	Candidates  []string `json:"candidates,omitempty"`
 	Dialer      bool     `json:"dialer"`
 	Direct      bool     `json:"direct"`

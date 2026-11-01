@@ -572,6 +572,12 @@ func (d *dashboard) peerRow(v view, p peerDTO, r rate, active bool) string {
 	}
 	net := p.Transport
 	if net == "" {
+		net = p.TransportRx
+	}
+	if p.TransportRx != "" && p.TransportRx != p.Transport && p.Transport != "" {
+		net = p.Transport + "→" + p.TransportRx
+	}
+	if net == "" {
 		net = "—"
 	}
 	rtt := "—"

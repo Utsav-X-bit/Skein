@@ -56,6 +56,7 @@ type Peer struct {
 	ActiveEndpoint netip.AddrPort
 	Path           string
 	Transport      string
+	RxTransport    string
 	RTT            time.Duration
 	RxBytes        uint64
 	TxBytes        uint64
@@ -293,6 +294,16 @@ func (t *Table) SetState(id uint64, state State) {
 	defer t.mu.Unlock()
 	if p, ok := t.peers[id]; ok {
 		p.State = state
+	}
+}
+
+// SetRxTransport records the transport the peer's frames arrive on, which can
+// differ from the transport this node sends with.
+func (t *Table) SetRxTransport(id uint64, transport string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		p.RxTransport = transport
 	}
 }
 

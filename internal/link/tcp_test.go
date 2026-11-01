@@ -96,9 +96,12 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 		t.Fatalf("udp send: %v", err)
 	}
 	buf := make([]byte, 64)
-	n, from, err := b.Recv(buf)
+	n, from, transport, err := b.RecvTagged(buf)
 	if err != nil || n != len(payload) {
 		t.Fatalf("udp recv: n=%d err=%v", n, err)
+	}
+	if transport != "udp" {
+		t.Fatalf("transport = %q, want udp", transport)
 	}
 	if !from.Addr().Is4() {
 		t.Fatalf("unexpected source %s", from)
@@ -119,11 +122,14 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		n, _, err := b.Recv(buf)
+		n, _, transport, err := b.RecvTagged(buf)
 		if err != nil {
 			t.Fatalf("tcp recv: %v", err)
 		}
 		if n == len(payload) {
+			if transport != "tcp" {
+				t.Fatalf("transport = %q, want tcp", transport)
+			}
 			break
 		}
 		if time.Now().After(deadline) {

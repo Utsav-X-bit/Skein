@@ -812,6 +812,7 @@ type peerDTO struct {
 	State       string   `json:"state"`
 	Path        string   `json:"path"`
 	Transport   string   `json:"transport"`
+	TransportRx string   `json:"transport_rx"`
 	RTTMs       float64  `json:"rtt_ms"`
 	OverlayIPv4 string   `json:"overlay_ipv4"`
 	OverlayIPv6 string   `json:"overlay_ipv6"`

@@ -176,7 +176,7 @@ func (t *TCP) readLoop(addr netip.AddrPort, conn net.Conn) {
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		select {
-		case t.packets <- received{data: data, from: addr}:
+		case t.packets <- received{data: data, from: addr, transport: "tcp"}:
 		case <-t.closed:
 			return
 		default:

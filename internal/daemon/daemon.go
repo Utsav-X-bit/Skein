@@ -461,6 +461,7 @@ func (d *Daemon) Peers() []api.Peer {
 			row.Endpoint = p.ActiveEndpoint.String()
 		}
 		row.Transport = p.Transport
+		row.TransportRx = p.RxTransport
 		if !p.LastSeen.IsZero() {
 			row.LastSeenMS = now.Sub(p.LastSeen).Milliseconds()
 		}
