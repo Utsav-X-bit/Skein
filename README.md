@@ -126,6 +126,12 @@ the daemon.
    or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and
    copy `wintun/bin/amd64/wintun.dll` into `dist`.
 
+   Verify it landed next to the binaries:
+
+   ```powershell
+   dir dist\wintun.dll
+   ```
+
    On Linux, when cross-building, use `./scripts/fetch-wintun.sh amd64
    dist/windows-amd64`.
 
@@ -181,6 +187,12 @@ If the wrapper is blocked too:
 
 ```bash
 powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fetch-wintun.ps1 -Dest dist
+```
+
+Confirm the DLL sits next to the binaries:
+
+```bash
+ls -l dist/wintun.dll
 ```
 
 The config lives in `%APPDATA%\skein\skein.toml`, which Git Bash exposes as
