@@ -16,9 +16,15 @@ func terminate(cmd *exec.Cmd) {
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 }
 
+// privilegeName is what the platform calls an administrator.
+func privilegeName() string { return "root" }
+
 // elevationHint tells the user how to run with privileges on this platform.
 func elevationHint(configPath string) string {
-	return "  sudo skein dashboard -c " + configPath
+	return "  sudo skein dashboard -c " + configPath + "\n" +
+		"  or start it separately: sudo skein run -c " + configPath + "\n" +
+		"  or install the service once: sudo skein install-service -c " + configPath +
+		" && sudo systemctl enable --now skein"
 }
 
 // setParentDeath makes the daemon exit if the dashboard dies.
