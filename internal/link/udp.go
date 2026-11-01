@@ -55,7 +55,19 @@ func ListenUDP(port uint16) (*UDP, error) {
 	return newUDP([]*net.UDPConn{pc4.(*net.UDPConn)}), nil
 }
 
+// socketBuffer is the requested send/receive buffer per UDP socket. On a
+// long-RTT path the bandwidth-delay product easily exceeds the OS default
+// (a few hundred kilobytes), and every overflow is a dropped datagram that
+// TCP has to retransmit.
+const socketBuffer = 4 << 20
+
 func newUDP(conns []*net.UDPConn) *UDP {
+	for _, c := range conns {
+		// The kernel caps these at net.core.rmem_max/wmem_max; failures are
+		// harmless because the default still works.
+		_ = c.SetReadBuffer(socketBuffer)
+		_ = c.SetWriteBuffer(socketBuffer)
+	}
 	u := &UDP{conns: conns, closed: make(chan struct{})}
 	if len(conns) > 1 {
 		u.packets = make(chan received, 256)
