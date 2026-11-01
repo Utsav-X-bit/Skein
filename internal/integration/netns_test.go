@@ -178,7 +178,19 @@ mdns = false
 		return strings.Contains(out, "10.144.144.3")
 	})
 
-	out := run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "3", "-W", "2", "10.144.144.3")
+	// The first packets may race the end-to-end handshake; retry for a while.
+	var out string
+	pingDeadline := time.Now().Add(20 * time.Second)
+	for {
+		out = run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "2", "-W", "2", "10.144.144.3")
+		if receivedPackets(out) >= 1 {
+			break
+		}
+		if time.Now().After(pingDeadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	received := receivedPackets(out)
 	if received < 1 {
 		for _, name := range []string{"n4", "n6", "ndual"} {

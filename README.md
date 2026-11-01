@@ -32,8 +32,18 @@ flowchart LR
   routes (never keys).
 - **Bounded routing**: distance vector with full paths, split horizon, and at
   most four links. Relays rewrite only `to_next` and `ttl`.
-- **Daemon + CLI**: `skeind` owns the dataplane and a loopback REST/SSE API;
-  `skein` is a thin client.
+- **One binary**: `skein` runs the daemon (`skein run`), the system service,
+  the dashboard, and every client command; `skeind` remains a thin wrapper.
+- **Automatic firewall**: `skein run` opens the underlay port and trusts the
+  overlay interface (ufw, firewalld, or Windows Firewall), so any protocol
+  works without extra rules.
+- **Relay introductions**: a peer reachable only through a relay asks it for an
+  introduction, both sides dial each other's observed endpoint at once, and a
+  failed punch keeps the relayed path.
+- **TCP fallback**: every node listens on TCP on the same port; after two
+  silent UDP attempts the dialer switches to TCP.
+- **Self-maintaining config**: learned peers are written back to the TOML
+  atomically, so a restart keeps the mesh.
 - **Named nodes**: each node sets `node.name`; names travel in STATE gossip and
   appear in the dashboard, `skein peers`, and the API.
 - **Live dashboard**: `skein dashboard` renders an animated mesh view with
@@ -49,6 +59,9 @@ flowchart LR
 | mDNS discovery across a veth | pass (2 s to `up`) |
 | systemd install / start / stop / uninstall | pass |
 | TUN kernel round-trip | pass |
+| Relay introductions (punch) | unit tests (control relay + dataplane) |
+| TCP fallback over loopback | pass |
+| Firewall automation (ufw) | verified live |
 | Windows | cross-compiles; runtime smoke script provided, not yet run in a VM |
 
 Version `0.1.0-dev`.
@@ -60,7 +73,7 @@ go build ./cmd/skein          # daemon and CLI in one binary
 go build ./cmd/skeind         # optional thin daemon wrapper
 ```
 
-Windows (put `wintun.dll` next to `skeind.exe`):
+Windows (put `wintun.dll` next to the executable):
 
 ```bash
 GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
@@ -87,7 +100,7 @@ overlay addresses already in use. Treat it as a secret.
 `join` writes the config and, if needed, a fresh identity. Start both ends:
 
 ```bash
-sudo ./skeind run -c ~/.config/skein/skein.toml
+sudo ./skein run -c ~/.config/skein/skein.toml
 ```
 
 The inviter accepts the joiner automatically once the joiner proves the network
@@ -197,6 +210,8 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein invite` | Print `skein:1:<base64url>` (identity + addresses, no secret) |
 | `skein invite --network` | Print the `skein:2:` join string (contains the secret) |
 | `skein join <invite>` | Configure this node from a network invite |
+| `skein name [value]` | Show or set this node's name |
+| `skein dashboard` | Live mesh view; starts the daemon if needed |
 | `skein status [--json]` | Overlay addresses, peers, uptime, counters |
 | `skein peers [list\|add\|rm]` | Manage peers |
 | `skein routes [--json]` | Reachability table |
@@ -204,7 +219,25 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein ping <overlay-ip>` | Ping through the overlay |
 | `skein version` | Version |
 
-Global flags: `-c/--config <path>`, `--json`.
+### Global flags
+
+| Flag | Meaning |
+|---|---|
+| `-c, --config <path>` | Configuration file. Defaults to the user config dir; under `sudo` the invoking user's config is used. |
+| `--json` | Machine-readable output for `status`, `peers`, `routes`. |
+| `--no-color` | Disable ANSI colour. |
+| `--no-motion` | Static dashboard (same as `SKEIN_NO_MOTION=1`). |
+
+### Environment
+
+| Variable | Meaning |
+|---|---|
+| `SKEIN_NO_MOTION=1` | Render the dashboard as a static snapshot. |
+| `SKEIN_DEBUG=1` | Per-frame receive/forward/drop diagnostics on the daemon. |
+| `SKEIN_TUN_PROBE=1` | Root-only TUN kernel round-trip test. |
+| `SKEIN_NETNS_PREFIX` | Namespace prefix used by `test/netns/run.sh`. |
+
+Exit codes: `0` success, `1` runtime or API error, `2` usage error.
 
 ## API
 
@@ -223,7 +256,7 @@ requests are rejected and no CORS headers are sent.
 
 ## Firewall and any protocol
 
-`skeind` opens what it needs at startup, idempotently:
+`skein run` opens what it needs at startup, idempotently:
 
 - **Linux** — with `ufw` active it allows `<port>/udp` and all traffic on the
   overlay interface; with `firewalld` it adds the port and puts the interface in
@@ -253,24 +286,24 @@ router forward.
 - Handshake retries back off 1 s → 30 s and reset as soon as a route appears.
 - A changed endpoint is only adopted after a challenge/response over the
   existing session.
+- When a path dies, the session is dropped and the dialer retries UDP, then TCP
+  on the same port, then the relayed route.
 
-## Reaching peers without a public address (roadmap)
+## Reaching peers behind NAT
 
-Today one side of every pair must be reachable. Two nodes behind NAT/CGNAT
-cannot meet directly, and UDP-blocked networks are unsupported.
+One side of every pair must be reachable, or introduced by a relay:
 
-Tailscale solves this with STUN, a coordination service, UDP hole punching, and
-DERP relays on TCP 443. The equivalent work for Skein, in order:
+- **Direct** — a public IPv4 with a UDP forward, a public IPv6, or the same LAN.
+- **Relayed** — both sides connect to any reachable peer (a cheap VPS is
+  enough); it forwards opaque ciphertext.
+- **Introductions** — a node that only reaches a peer through a relay asks the
+  relay, which reports both observed endpoints; both sides dial at once. This
+  works for endpoint-independent NAT; symmetric NAT keeps the relayed path.
+- **UDP blocked** — after two silent UDP attempts the dialer opens TCP to the
+  same port. Set `listen_port = 443` to make both transports use 443.
 
-1. **Peer-observed endpoints** — a connected relay already sees each node's
-   public mapping and can hand it to the other node; no new server.
-2. **Simultaneous hole punching** bound to a nonce.
-3. **Relay fallback** through any connected peer (forwarding already exists);
-   a small VPS replaces DERP.
-4. **TCP/TLS transport on 443** for UDP-blocked networks.
-
-Until then, add a cheap public VPS as a third peer: both home nodes dial it and
-it forwards between them.
+Not implemented: TLS camouflage, STUN against an external service, and a
+global DERP-style relay network.
 
 ## How it works
 
@@ -293,8 +326,10 @@ handshake backoff 1→30 s.
 
 ## Limits
 
-- No relay service, STUN, hole punching, or TCP/WSS: CGNAT-to-CGNAT and
-  UDP-blocked networks cannot connect.
+- Two symmetric-NAT peers still need a reachable relay peer; there is no
+  global relay network.
+- The TCP fallback is plain TCP, not TLS; it defeats UDP blocking but not
+  deep-packet inspection.
 - IPv4-only ↔ IPv6-only needs a dual-stack member; no common family, no path.
 - More than five nodes or routes longer than four links are unsupported.
 - No PMTUD or fragmentation; a dual-stack underlay path below 1382 bytes of
@@ -327,7 +362,8 @@ Windows runtime check: `test/windows/smoke.ps1` (elevated, with `wintun.dll`).
 ## Layout
 
 ```
-cmd/skeind, cmd/skein     daemon and CLI entry points
+cmd/skein                 daemon, dashboard, and CLI in one binary
+cmd/skeind                thin daemon wrapper
 internal/identity         X25519 keys, peer IDs, invites
 internal/conf             TOML schema, defaults, validation
 internal/wire             bounded frame codec
@@ -340,7 +376,9 @@ internal/discovery        mDNS and authenticated state gossip
 internal/dataplane        packet plane, forwarding, counters
 internal/control          keepalive, state sync, rekey, probes
 internal/api, internal/daemon   loopback API and composition
-internal/cli              CLI and API client
+internal/app              daemon entry points shared by both binaries
+internal/cli              CLI, API client, and dashboard
+internal/firewall         automatic ufw/firewalld/Windows firewall rules
 internal/service          systemd and Windows service installation
 test/netns, test/windows  runtime harnesses
 ```
