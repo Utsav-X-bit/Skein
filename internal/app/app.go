@@ -51,8 +51,16 @@ func Run(ctx context.Context, configPath string) error {
 }
 
 // InstallService registers the current executable as a system service that
-// runs this node with configPath.
+// runs this node with configPath. It opens the underlay port for IPv4 and IPv6
+// immediately, so the node is reachable as soon as the service starts.
 func InstallService(configPath string) error {
+	cfg, err := conf.Load(configPath)
+	if err != nil {
+		return err
+	}
+	if err := firewall.EnsurePort(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
+		log.Printf("skein: warning: firewall: %v", err)
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err

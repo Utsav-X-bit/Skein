@@ -92,8 +92,38 @@ func TestEnsureDoesNothingWithoutAFirewall(t *testing.T) {
 	if err := Ensure(Config{Interface: "skein0", Port: 11010}); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if len(f.calls) != 2 { // ufw status, firewall-cmd --state
-		t.Fatalf("unexpected commands: %v", f.lines())
+	for _, line := range f.lines() {
+		if strings.Contains(line, "allow") || strings.Contains(line, "--add") {
+			t.Fatalf("unexpected firewall change: %v", f.lines())
+		}
+	}
+}
+
+func TestEnsurePortOnlyOpensThePort(t *testing.T) {
+	f := withFake(t, "ufw")
+	if err := EnsurePort(Config{Interface: "skein0", Port: 11010}); err != nil {
+		t.Fatalf("EnsurePort: %v", err)
+	}
+	got := strings.Join(f.lines(), "\n")
+	if !strings.Contains(got, "ufw allow 11010/udp") {
+		t.Fatalf("missing port rule:\n%s", got)
+	}
+	if strings.Contains(got, "allow in on") {
+		t.Fatalf("port-only call touched the interface:\n%s", got)
+	}
+}
+
+func TestEnsureInterfaceOnlyTrustsTheInterface(t *testing.T) {
+	f := withFake(t, "ufw")
+	if err := EnsureInterface(Config{Interface: "skein0", Port: 11010}); err != nil {
+		t.Fatalf("EnsureInterface: %v", err)
+	}
+	got := strings.Join(f.lines(), "\n")
+	if !strings.Contains(got, "ufw allow in on skein0") {
+		t.Fatalf("missing interface rule:\n%s", got)
+	}
+	if strings.Contains(got, "11010/udp") {
+		t.Fatalf("interface-only call opened the port:\n%s", got)
 	}
 }
 

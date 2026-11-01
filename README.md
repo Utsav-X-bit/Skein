@@ -96,8 +96,11 @@ sudo skein install-service -c /home/$USER/.config/skein/skein.toml
 sudo systemctl enable --now skein
 ```
 
-The firewall is opened automatically (ufw or firewalld), and the TUN
-interface, addresses, routes, and MTU are configured by the daemon.
+`install-service` opens the underlay UDP port for **IPv4 and IPv6** before the
+service starts; the overlay interface trust rule is added when the daemon
+starts. ufw and firewalld both get family-neutral rules, so one rule covers
+both stacks. The TUN interface, addresses, routes, and MTU are configured by
+the daemon.
 
 ### Windows
 
@@ -147,8 +150,9 @@ interface, addresses, routes, and MTU are configured by the daemon.
    ping 10.144.144.1
    ```
 
-Windows Firewall rules for the underlay port and the overlay interface are
-created automatically on start.
+`install-service` creates the underlay UDP rule (both address families)
+immediately; the overlay interface rule is created when the daemon starts.
+`wintun.dll` must match the architecture of the executable.
 
 ## Quick start
 

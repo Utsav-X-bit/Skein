@@ -13,6 +13,15 @@ const (
 )
 
 func ensure(cfg Config) error {
+	if err := ensurePort(cfg); err != nil {
+		return err
+	}
+	return ensureInterface(cfg)
+}
+
+// ensurePort allows inbound UDP on the underlay port for IPv4 and IPv6; a
+// Windows Firewall rule without localip/remoteip covers both families.
+func ensurePort(cfg Config) error {
 	if !ruleExists(underlayRule) {
 		if _, err := runner("netsh", "advfirewall", "firewall", "add", "rule",
 			"name="+underlayRule, "dir=in", "action=allow", "protocol=UDP",
@@ -20,15 +29,19 @@ func ensure(cfg Config) error {
 			return err
 		}
 	}
-	if !ruleExists(overlayRule) {
-		script := fmt.Sprintf(
-			`New-NetFirewallRule -DisplayName "%s" -Direction Inbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
-			overlayRule, cfg.Interface)
-		if _, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+// ensureInterface allows every protocol on the overlay interface.
+func ensureInterface(cfg Config) error {
+	if ruleExists(overlayRule) {
+		return nil
+	}
+	script := fmt.Sprintf(
+		`New-NetFirewallRule -DisplayName "%s" -Direction Inbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
+		overlayRule, cfg.Interface)
+	_, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	return err
 }
 
 func remove(cfg Config) error {

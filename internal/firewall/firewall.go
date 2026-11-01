@@ -31,5 +31,14 @@ func SetRunner(r Runner) { runner = r }
 // Ensure opens the underlay UDP port and trusts the overlay interface.
 func Ensure(cfg Config) error { return ensure(cfg) }
 
+// EnsurePort opens only the underlay UDP port, for both address families. It
+// is safe to call before the interface exists, so service installation can use
+// it.
+func EnsurePort(cfg Config) error { return ensurePort(cfg) }
+
+// EnsureInterface trusts all inbound traffic on the overlay interface. It
+// needs the interface to exist on Windows.
+func EnsureInterface(cfg Config) error { return ensureInterface(cfg) }
+
 // Remove deletes the rules Ensure created. Missing rules are ignored.
 func Remove(cfg Config) error { return remove(cfg) }
