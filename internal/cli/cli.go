@@ -587,7 +587,12 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "  overlay: %s\n", cfg.Node.OverlayIPv4)
 	fmt.Fprintf(stdout, "  inviter: %016x at %v\n", inv.ID, inv.Addrs)
 	fmt.Fprintf(stdout, "  invite:  %s\n", own)
-	fmt.Fprintln(stdout, "start with: skeind run -c <config>")
+	if !alreadyJoined {
+		fmt.Fprintln(stdout, "note: the join string listed the addresses in use when it was created;")
+		fmt.Fprintln(stdout, "      regenerate it on the inviter before the next node joins, so that node")
+		fmt.Fprintln(stdout, "      picks a free overlay address instead of reusing this one")
+	}
+	fmt.Fprintln(stdout, "start with: skein run -c <config>")
 	return nil
 }
 
