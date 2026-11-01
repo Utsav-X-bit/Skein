@@ -314,3 +314,34 @@ func TestNextFreeOverlay(t *testing.T) {
 		t.Fatal("expected a /30 with two hosts to be exhausted")
 	}
 }
+
+func TestPublicAddrRoundTripsAndValidates(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.Node.PublicAddr = netip.MustParseAddrPort("203.0.113.7:11010")
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid public_addr rejected: %v", err)
+	}
+	text, err := Render(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), `public_addr`) {
+		t.Fatalf("public_addr missing from render:\n%s", text)
+	}
+	parsed, err := Parse(string(text))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if parsed.Node.PublicAddr != cfg.Node.PublicAddr {
+		t.Fatalf("public_addr = %s, want %s", parsed.Node.PublicAddr, cfg.Node.PublicAddr)
+	}
+
+	cfg.Node.PublicAddr = netip.MustParseAddrPort("203.0.113.7:0")
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected a zero port to be rejected")
+	}
+	cfg.Node.PublicAddr = netip.MustParseAddrPort("10.144.144.9:11010")
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected an overlay address to be rejected")
+	}
+}

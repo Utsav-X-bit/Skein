@@ -435,16 +435,30 @@ func encodeJoin(cfg conf.Config, id identity.Identity, cands []netip.AddrPort) (
 	})
 }
 
-// localCandidates lists underlay endpoints, never overlay addresses.
+// localCandidates lists underlay endpoints, never overlay addresses. A
+// configured public_addr is included so invites and STATE carry it.
 func localCandidates(cfg conf.Config) ([]netip.AddrPort, error) {
 	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
 		return nil, err
 	}
-	return path.ExcludePrefixes(cands, []netip.Prefix{
+	cands = path.ExcludePrefixes(cands, []netip.Prefix{
 		cfg.Node.OverlayIPv4Prefix,
 		cfg.Node.OverlayIPv6Prefix,
-	}), nil
+	})
+	if pub, ok := cfg.PublicCandidate(); ok {
+		dup := false
+		for _, c := range cands {
+			if c == pub {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			cands = append(cands, pub)
+		}
+	}
+	return cands, nil
 }
 
 // runningPeerOverlays asks the local daemon for overlay addresses already in

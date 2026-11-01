@@ -156,12 +156,26 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 func localCandidates(cfg conf.Config) []netip.AddrPort {
 	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
-		return nil
+		cands = nil
 	}
-	return path.ExcludePrefixes(cands, []netip.Prefix{
+	cands = path.ExcludePrefixes(cands, []netip.Prefix{
 		cfg.Node.OverlayIPv4Prefix,
 		cfg.Node.OverlayIPv6Prefix,
 	})
+	// A port-forwarded node advertises its public endpoint, not just LAN ones.
+	if pub, ok := cfg.PublicCandidate(); ok {
+		dup := false
+		for _, c := range cands {
+			if c == pub {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			cands = append(cands, pub)
+		}
+	}
+	return cands
 }
 
 func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPort, dialer bool, name string) error {

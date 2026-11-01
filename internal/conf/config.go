@@ -57,6 +57,9 @@ type Node struct {
 	MTU               int
 	Interface         string
 	Name              string
+	// PublicAddr is the address peers should dial when this node is reachable
+	// through a router port forward rather than on an interface address.
+	PublicAddr netip.AddrPort
 }
 
 // API describes the loopback control API.
@@ -91,6 +94,7 @@ type fileConfig struct {
 		MTU               *int   `toml:"mtu"`
 		Interface         string `toml:"interface"`
 		Name              string `toml:"name"`
+		PublicAddr        string `toml:"public_addr"`
 	} `toml:"node"`
 	API struct {
 		Listen string `toml:"listen"`
@@ -179,6 +183,9 @@ func Render(cfg Config) ([]byte, error) {
 	if cfg.Node.Name != "" {
 		fmt.Fprintf(&b, "name                = %q\n", cfg.Node.Name)
 	}
+	if cfg.Node.PublicAddr.IsValid() {
+		fmt.Fprintf(&b, "public_addr         = %q\n", cfg.Node.PublicAddr.String())
+	}
 	b.WriteString("\n[api]\n")
 	fmt.Fprintf(&b, "listen = %q\n", cfg.API.Listen)
 	fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
@@ -210,6 +217,14 @@ func Render(cfg Config) ([]byte, error) {
 
 func formatID(id uint64) string {
 	return fmt.Sprintf("%016x", id)
+}
+
+// PublicCandidate returns the configured public endpoint, if any.
+func (c Config) PublicCandidate() (netip.AddrPort, bool) {
+	if !c.Node.PublicAddr.IsValid() {
+		return netip.AddrPort{}, false
+	}
+	return c.Node.PublicAddr, true
 }
 
 // DefaultPathForUser returns the configuration path of the invoking user. When
@@ -309,6 +324,13 @@ func parse(text string) (Config, error) {
 	}
 	if s := fc.Node.Name; s != "" {
 		cfg.Node.Name = s
+	}
+	if s := fc.Node.PublicAddr; s != "" {
+		addr, err := netip.ParseAddrPort(s)
+		if err != nil {
+			return Config{}, fmt.Errorf("node.public_addr: %w", err)
+		}
+		cfg.Node.PublicAddr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 	}
 	if s := fc.Node.NetworkSecret; s != "" {
 		if cfg.Node.NetworkSecret, err = decodeSecret("node.network_secret", s); err != nil {
@@ -447,6 +469,14 @@ func Validate(cfg Config) error {
 	}
 	if err := validateName(n.Name); err != nil {
 		return err
+	}
+	if n.PublicAddr.IsValid() {
+		if n.PublicAddr.Port() == 0 || n.PublicAddr.Addr().IsUnspecified() || n.PublicAddr.Addr().IsMulticast() {
+			return fmt.Errorf("node.public_addr must be a unicast ip:port, got %s", n.PublicAddr)
+		}
+		if n.OverlayIPv4Prefix.Contains(n.PublicAddr.Addr()) || n.OverlayIPv6Prefix.Contains(n.PublicAddr.Addr()) {
+			return fmt.Errorf("node.public_addr %s must not be inside the overlay prefixes", n.PublicAddr)
+		}
 	}
 
 	if err := validatePrefix("node.overlay_ipv4_prefix", n.OverlayIPv4Prefix, true); err != nil {

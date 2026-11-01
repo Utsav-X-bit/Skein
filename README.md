@@ -326,6 +326,7 @@ network_secret      = "<32 random bytes, base64url>"
 mtu                 = 1280
 interface           = "skein0"              # Windows default: Skein
 name                = "utsav-laptop"        # optional, shown to peers
+public_addr         = "203.0.113.7:11010"   # optional: address peers dial (port-forwarded node)
 
 [api]
 listen = "127.0.0.1:11011"                  # loopback only
@@ -437,6 +438,9 @@ router forward.
 One side of every pair must be reachable, or introduced by a relay:
 
 - **Direct** — a public IPv4 with a UDP forward, a public IPv6, or the same LAN.
+  A port-forwarded node sets `node.public_addr` so invites and STATE advertise
+  the public endpoint next to its LAN addresses; joiners then dial the right
+  place without editing configs.
 - **Relayed** — both sides connect to any reachable peer (a cheap VPS is
   enough); it forwards opaque ciphertext.
 - **Introductions** — a node that only reaches a peer through a relay asks the

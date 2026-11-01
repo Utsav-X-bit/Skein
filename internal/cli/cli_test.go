@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -328,6 +329,36 @@ func TestNameCommand(t *testing.T) {
 	if code, _, _ := runCLI(t, "-c", path, "name", strings.Repeat("x", 40)); code != 1 {
 		t.Fatalf("long name code = %d, want 1", code)
 	}
+}
+
+func TestInviteNetworkIncludesPublicAddr(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skein.toml")
+	if code, _, stderr := runCLI(t, "-c", path, "init"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = bytes.Replace(text, []byte("[node]\n"), []byte("[node]\npublic_addr = \"203.0.113.7:11010\"\n"), 1)
+	if err := os.WriteFile(path, text, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCLI(t, "-c", path, "invite", "--network")
+	if code != 0 {
+		t.Fatalf("invite --network: %s", stderr)
+	}
+	inv, err := identity.DecodeNetworkInvite(strings.TrimSpace(stdout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := netip.MustParseAddrPort("203.0.113.7:11010")
+	for _, addr := range inv.Addrs {
+		if addr == want {
+			return
+		}
+	}
+	t.Fatalf("public address missing from invite: %v", inv.Addrs)
 }
 
 func TestInviteNetworkCarriesTheSecret(t *testing.T) {

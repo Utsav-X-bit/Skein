@@ -73,3 +73,16 @@ func TestLearnedPeersUseTheLowerIDDialerRule(t *testing.T) {
 		t.Fatalf("dialer = %v, want %v (local %016x remote %016x)", p.Dialer, want, local.ID, remote.ID)
 	}
 }
+
+func TestLocalCandidatesIncludeThePublicAddr(t *testing.T) {
+	cfg := conf.Default()
+	cfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
+	cfg.Node.PublicAddr = netip.MustParseAddrPort("203.0.113.7:11010")
+	cands := localCandidates(cfg)
+	for _, c := range cands {
+		if c == cfg.Node.PublicAddr {
+			return
+		}
+	}
+	t.Fatalf("public_addr missing from candidates: %v", cands)
+}
