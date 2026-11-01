@@ -20,7 +20,7 @@ import (
 
 	"github.com/flynn/noise"
 
-	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 const (

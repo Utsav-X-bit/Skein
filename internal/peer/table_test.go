@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 func testPeer(t *testing.T, id identity.Identity) Peer {

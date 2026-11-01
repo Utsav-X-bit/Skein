@@ -1,20 +1,53 @@
 # Skein
 
-Skein is a small userspace overlay VPN for Linux and Windows. It connects
-2–5 of your own machines over an encrypted full mesh, and it can bridge an
-IPv4-only host to an IPv6-only host when a dual-stack member is present.
+[![ci](https://github.com/Utsav-X-bit/Skein/actions/workflows/ci.yml/badge.svg)](https://github.com/Utsav-X-bit/Skein/actions/workflows/ci.yml)
 
-- End-to-end `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` sessions between every
-  pair of nodes; relays never hold the session keys.
-- Dual overlay: IPv4 (`10.144.144.0/24`) and IPv6 ULA
-  (`fd00:6d65:7368::/64`), both configurable.
-- Underlay is UDP on a single port (default `11010`), dual-stack.
-- Static peers, invite strings, mDNS on the local link, and authenticated
-  state gossip.
-- Bounded distance-vector routing with at most four links and TTL-guarded
-  forwarding.
-- `skeind` daemon plus `skein` CLI; the loopback REST/SSE API is the only
-  contract a UI needs.
+Skein is a small userspace mesh VPN for 2–5 of your own machines on Linux and
+Windows. It builds an encrypted full mesh over plain UDP and can bridge an
+IPv4-only host to an IPv6-only host when a dual-stack member is online.
+
+```mermaid
+flowchart LR
+    A["n4<br/>IPv4 only<br/>10.144.144.1"]
+    B["ndual<br/>IPv4 + IPv6<br/>10.144.144.2"]
+    C["n6<br/>IPv6 only<br/>10.144.144.3"]
+    A -- "UDP over IPv4" --> B
+    B -- "UDP over IPv6" --> C
+    A -. "end-to-end Noise session, relayed by ndual" .-> C
+```
+
+`ndual` forwards opaque ciphertext: it never holds the `n4 ↔ n6` session keys.
+
+## Features
+
+- **End-to-end `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`** between every pair of
+  nodes, with explicit nonces, 64-packet replay windows per key epoch, and a
+  fresh rekey every hour or 2³² packets.
+- **Dual overlay**: IPv4 `10.144.144.0/24` and IPv6 ULA `fd00:6d65:7368::/64`,
+  both configurable per node.
+- **One UDP port** (default `11010`), dual-stack socket with a paired-socket
+  fallback.
+- **Discovery**: static peers, `skein:1:…` invite strings, mDNS on the local
+  link, and authenticated state gossip that carries overlay addresses and
+  routes (never keys).
+- **Bounded routing**: distance vector with full paths, split horizon, and at
+  most four links. Relays rewrite only `to_next` and `ttl`.
+- **Daemon + CLI**: `skeind` owns the dataplane and a loopback REST/SSE API;
+  `skein` is a thin client.
+
+## Status
+
+| Area | Verified |
+|---|---|
+| Unit tests, `-race`, fuzz target | pass |
+| Loopback UDP handshake + overlay packet | pass |
+| Three-node Linux netns bridge (v4-only ↔ v6-only) | pass |
+| mDNS discovery across a veth | pass (2 s to `up`) |
+| systemd install / start / stop / uninstall | pass |
+| TUN kernel round-trip | pass |
+| Windows | cross-compiles; runtime smoke script provided, not yet run in a VM |
+
+Version `0.1.0-dev`.
 
 ## Build
 
@@ -22,8 +55,7 @@ IPv4-only host to an IPv6-only host when a dual-stack member is present.
 go build ./cmd/skeind ./cmd/skein
 ```
 
-Cross-build for Windows (the release also needs `wintun.dll` next to
-`skeind.exe`):
+Windows (put `wintun.dll` next to `skeind.exe`):
 
 ```bash
 GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
@@ -31,112 +63,166 @@ GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
 
 ## Quick start
 
-On each machine:
+On every machine, as root/Administrator:
 
 ```bash
-sudo ./skein init                  # identity, config, PSK, API token
-sudo ./skein invite                # share this string with the other nodes
+./skein init      # identity, config, network secret, API token
+./skein invite    # share this string with the other nodes
 ```
 
-Edit the config so every node has a unique `overlay_ipv4`, then either add
-peers or rely on mDNS on the same LAN:
+Give every node the **same `network_secret`** and a **unique `overlay_ipv4`**,
+then either rely on mDNS on the same LAN or add peers:
 
 ```toml
 [[peer]]
 id     = "b3f64ecc491aba35"
 pubkey = "K2Ipr1k0juOQxvsbrOFvFo2vMupEJjP78aIA1VytR2U="
-dialer = true
+dialer = true                      # exactly one side of each pair
 addrs  = ["udp://203.0.113.5:11010"]
 ```
 
-Exactly one side of each pair sets `dialer = true`: the side that can reach the
-other. For mDNS peers the lower peer ID dials.
-
-Start the daemon:
+Start and check:
 
 ```bash
-sudo ./skeind run -c /etc/skein/skein.toml
-```
-
-Check it:
-
-```bash
+./skeind run -c /etc/skein/skein.toml
 ./skein status
 ./skein peers list
 ./skein routes
 ./skein ping 10.144.144.2
 ```
 
-`sudo ./skeind install-service -c /etc/skein/skein.toml` registers a systemd
-unit; on Windows use `skeind install-service` from an elevated prompt and
-`sc start skein`.
+Service mode:
+
+```bash
+./skeind install-service -c /etc/skein/skein.toml   # systemd / Windows SCM
+```
 
 ## Configuration
 
-The full schema is documented in
-[`docs/protocol.md`](docs/protocol.md#configuration). Secrets:
+```toml
+[node]
+overlay_ipv4_prefix = "10.144.144.0/24"
+overlay_ipv6_prefix = "fd00:6d65:7368::/64"
+overlay_ipv4        = "10.144.144.2"
+overlay_ipv6        = "fd00:6d65:7368::2"   # optional; requires mtu >= 1280
+listen_port         = 11010
+network_secret      = "<32 random bytes, base64url>"
+mtu                 = 1280
+interface           = "skein0"              # Windows default: Skein
 
-- `network_secret`: 32 random bytes, base64url, shared by every node.
-- `api.token`: 32 random bytes, base64url; the CLI sends it as
-  `Authorization: Bearer <base64url>`.
-- `identity.key`: the X25519 private key, owner-only, never sent anywhere.
+[api]
+listen = "127.0.0.1:11011"                  # loopback only
+token  = "<32 random bytes, base64url>"
 
-The daemon refuses a config file that group or others can read.
+[discovery]
+mdns = true
+```
+
+Unknown keys are rejected. The daemon refuses a config readable by group or
+others, and the X25519 key lives in `<config dir>/identity.key` with owner-only
+permissions.
+
+Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `skein init` | Create identity, config, network secret, API token |
+| `skein genkey` | Print the public key and node ID |
+| `skein invite` | Print `skein:1:<base64url>` for this node |
+| `skein status [--json]` | Overlay addresses, peers, uptime, counters |
+| `skein peers [list\|add\|rm]` | Manage peers |
+| `skein routes [--json]` | Reachability table |
+| `skein probe <peer-id>` | Re-probe candidate endpoints |
+| `skein ping <overlay-ip>` | Ping through the overlay |
+| `skein version` | Version |
+
+Global flags: `-c/--config <path>`, `--json`.
 
 ## API
 
-The daemon binds `127.0.0.1:11011` only:
+Loopback only, `Authorization: Bearer <token from config>`; browser `Origin`
+requests are rejected and no CORS headers are sent.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/v1/status` | node ID, overlay addresses, uptime, version |
-| `GET` | `/api/v1/peers` | peer table |
-| `POST` | `/api/v1/peers` | add a peer from an invite |
-| `DELETE` | `/api/v1/peers/{id}` | remove a peer |
-| `POST` | `/api/v1/peers/{id}/probe` | force a candidate probe |
-| `GET` | `/api/v1/routes` | reachability table |
-| `GET` | `/api/v1/config` | effective config with secrets redacted |
-| `GET` | `/api/v1/events` | SSE: peer up/down, discovery, removal |
+| Method | Path |
+|---|---|
+| `GET` | `/api/v1/status` |
+| `GET` / `POST` | `/api/v1/peers` |
+| `DELETE` | `/api/v1/peers/{id}` |
+| `POST` | `/api/v1/peers/{id}/probe` |
+| `GET` | `/api/v1/routes` |
+| `GET` | `/api/v1/config` (secrets redacted) |
+| `GET` | `/api/v1/events` (SSE) |
 
-Every route requires the bearer token. Browser `Origin` requests are rejected
-and no CORS headers are sent.
+## How it works
+
+```
+[type:1][to_next:8][to_final:8][from:8][ttl:1] payload
+```
+
+The 26-byte header is authenticated as AEAD associated data except the
+relay-mutable `to_next` and `ttl`. Encrypted frames add `[epoch:4][counter:8]`
+and a 16-byte tag, so a 1280-byte inner packet becomes **1382 bytes over IPv6**
+or **1362 bytes over IPv4** — 54 bytes of protocol overhead.
+
+Handshakes are Noise IKpsk2 with a 128-bit attempt ID and the epoch bound into
+the prologue. A session is installed only after an encrypted confirmation; at
+one epoch the smaller attempt ID wins, and higher epochs always supersede.
+Relays forward both handshake messages and opaque data.
+
+Peer down after 45 s of silence, keepalive every 15 s, state sync every 5 s,
+handshake backoff 1→30 s.
 
 ## Limits
 
-- No external relay, STUN, hole punching, or TCP/WSS transport: two hosts
-  behind CGNAT, or a network that blocks UDP, cannot connect.
-- IPv4-only ↔ IPv6-only requires a dual-stack member; with no common underlay
-  family there is no path.
-- More than five nodes, or routes longer than four links, are unsupported.
-- No PMTUD or fragmentation. A dual-stack underlay path below 1382 bytes of
-  PMTU is unsupported; IPv4-only tunnels may lower the MTU.
-- One shared network secret, no per-peer ACLs or revocation.
-- The loopback API does not isolate processes running as the same user.
-- Relays learn peer IDs, packet sizes, timing, and direction.
+- No relay service, STUN, hole punching, or TCP/WSS: CGNAT-to-CGNAT and
+  UDP-blocked networks cannot connect.
+- IPv4-only ↔ IPv6-only needs a dual-stack member; no common family, no path.
+- More than five nodes or routes longer than four links are unsupported.
+- No PMTUD or fragmentation; a dual-stack underlay path below 1382 bytes of
+  PMTU is unsupported.
+- One shared secret, no per-peer ACLs or revocation.
+- The loopback API is not an isolation boundary between processes of the same
+  user, and relays can observe peer IDs, sizes, and timing.
 
-See [`docs/protocol.md`](docs/protocol.md) for the wire contract and
-[`docs/measurements.md`](docs/measurements.md) for the measurement procedure
-and recorded results.
-
-## Reproduce the dual-stack demo
+## Testing
 
 ```bash
-sudo -E env "PATH=$PATH" ./test/netns/run.sh
-```
-
-The script creates three namespaces (IPv4-only, IPv6-only, dual-stack), starts
-one daemon in each, asserts that the IPv4-only node reaches the IPv6-only node
-through the dual-stack member, pings across the overlay, and removes only the
-namespaces it created.
-
-## Tests
-
-```bash
-go test ./...                 # unit and loopback integration
-sudo -E env "PATH=$PATH" ./test/netns/run.sh          # namespace bridge proof
+go test -race ./...
+sudo -E env "PATH=$PATH" ./test/netns/run.sh        # v4-only ↔ v6-only bridge
 SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" \
-  go test ./internal/tun -run TestTUNWriteRead -v      # TUN kernel round-trip
+  go test ./internal/tun -run TestTUNWriteRead -v    # TUN kernel round-trip
 ```
 
-The Windows runtime smoke test is `test/windows/smoke.ps1`; cross-compilation
-alone does not prove Wintun, routes, or the service control manager work.
+Windows runtime check: `test/windows/smoke.ps1` (elevated, with `wintun.dll`).
+
+## Docs
+
+- [`docs/protocol.md`](docs/protocol.md) — wire format, handshake, routing,
+  discovery, configuration.
+- [`docs/measurements.md`](docs/measurements.md) — what was measured and how to
+  reproduce it.
+- [`docs/superpowers/specs/`](docs/superpowers/specs) — design spec.
+- [`docs/superpowers/plans/`](docs/superpowers/plans) — implementation plan.
+
+## Layout
+
+```
+cmd/skeind, cmd/skein     daemon and CLI entry points
+internal/identity         X25519 keys, peer IDs, invites
+internal/conf             TOML schema, defaults, validation
+internal/wire             bounded frame codec
+internal/session          Noise handshakes, epochs, replay windows
+internal/link             UDP transport
+internal/tun, internal/netcfg   TUN creation, addresses, routes, MTU
+internal/peer, internal/path    peer table, candidate probing
+internal/route            bounded distance-vector routing
+internal/discovery        mDNS and authenticated state gossip
+internal/dataplane        packet plane, forwarding, counters
+internal/control          keepalive, state sync, rekey, probes
+internal/api, internal/daemon   loopback API and composition
+internal/cli              CLI and API client
+internal/service          systemd and Windows service installation
+test/netns, test/windows  runtime harnesses
+```

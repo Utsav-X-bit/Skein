@@ -9,9 +9,9 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
-	"github.com/Utsav-X-Bit/skein/internal/identity"
-	"github.com/Utsav-X-Bit/skein/internal/peer"
-	"github.com/Utsav-X-Bit/skein/internal/route"
+	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/peer"
+	"github.com/Utsav-X-bit/skein/internal/route"
 )
 
 func testIdentity(t *testing.T) identity.Identity {

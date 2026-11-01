@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Utsav-X-Bit/skein/internal/conf"
-	"github.com/Utsav-X-Bit/skein/internal/identity"
-	"github.com/Utsav-X-Bit/skein/internal/path"
-	"github.com/Utsav-X-Bit/skein/internal/version"
+	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/path"
+	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
 const (

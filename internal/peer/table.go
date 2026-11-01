@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Utsav-X-Bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 // State is the direct-link state of a peer.

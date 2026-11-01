@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Utsav-X-Bit/skein/internal/discovery"
-	"github.com/Utsav-X-Bit/skein/internal/peer"
-	"github.com/Utsav-X-Bit/skein/internal/route"
-	"github.com/Utsav-X-Bit/skein/internal/wire"
+	"github.com/Utsav-X-bit/skein/internal/discovery"
+	"github.com/Utsav-X-bit/skein/internal/peer"
+	"github.com/Utsav-X-bit/skein/internal/route"
+	"github.com/Utsav-X-bit/skein/internal/wire"
 )
 
 // Timing rules from the protocol.

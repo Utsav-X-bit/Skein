@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/Utsav-X-Bit/skein/internal/cli"
+	"github.com/Utsav-X-bit/skein/internal/cli"
 )
 
 func main() {

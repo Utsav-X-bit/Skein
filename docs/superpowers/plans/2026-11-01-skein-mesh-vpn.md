@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Module path: `github.com/utsavgupta5467/skein`.
+- Module path: `github.com/Utsav-X-bit/skein`.
 - Platforms: Linux and Windows; all non-OS packages MUST compile and test on both.
 - Overlay prefixes default to IPv4 `10.144.144.0/24` and IPv6 ULA `fd00:6d65:7368::/64`; allow operator-configured prefixes and optional IPv6 per node.
 - Inner TUN MTU defaults to 1280 bytes. Permit MTU below 1280 only when IPv6 overlay is disabled; no outer fragmentation in v1.
@@ -100,9 +100,9 @@ can solve a missing network path.
 - Create: `cmd/skein/main.go`
 
 **Interfaces:**
-- Produces module `github.com/utsavgupta5467/skein` and two independently buildable commands.
+- Produces module `github.com/Utsav-X-bit/skein` and two independently buildable commands.
 
-- [ ] Create `go.mod` with module path `github.com/utsavgupta5467/skein` and the Go version reported by the installed toolchain.
+- [ ] Create `go.mod` with module path `github.com/Utsav-X-bit/skein` and the Go version reported by the installed toolchain.
 - [ ] Create both command entry points with clear usage errors; replace initial behavior in Tasks 13–14.
 - [ ] Add `.gitignore` entries for `/bin/`, `*.exe`, `*.test`, `/coverage.out`, and local `skein.toml` / `identity.key` files.
 - [ ] Add CI matrix: `go test ./...` on `ubuntu-latest`, and `GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein` on Ubuntu.
