@@ -45,6 +45,7 @@ func spawnDaemon(configPath string) (*exec.Cmd, error) {
 // ensureDaemon attaches to a running daemon or starts one. The caller owns the
 // child and must call closeChild.
 func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
+	d.configPath = configPath
 	probe, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	ok := d.client.reachable(probe)
 	cancel()
@@ -54,6 +55,25 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 	if !elevated() {
 		return fmt.Errorf("the daemon is not running and starting it needs %s:\n%s",
 			privilegeName(), elevationHint(configPath))
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	stopping := d.stopping
+	d.mu.Unlock()
+	if stopping {
+		return nil
+	}
+
+	if d.child != nil {
+		select {
+		case <-d.childDone:
+			// The child we started has exited; fall through and start another.
+			d.child = nil
+		default:
+			return nil
+		}
 	}
 
 	cmd, err := spawnDaemon(configPath)
@@ -90,6 +110,9 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 // closeChild stops a daemon this dashboard started. A daemon that was already
 // running is left alone.
 func (d *dashboard) closeChild() {
+	d.mu.Lock()
+	d.stopping = true
+	d.mu.Unlock()
 	if d.child == nil || d.child.Process == nil {
 		return
 	}

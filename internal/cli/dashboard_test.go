@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -130,5 +131,31 @@ func TestMeshHandlesRelayedPaths(t *testing.T) {
 	out := strings.Join(d.build(v, 110), "\n")
 	if !strings.Contains(out, "111111") || !strings.Contains(out, "222222") {
 		t.Fatalf("relayed mesh missing nodes:\n%s", out)
+	}
+}
+
+func TestDashboardPlaceholdersWithoutData(t *testing.T) {
+	d := testDashboard()
+	out := strings.Join(d.build(view{}, 110), "\n")
+	if strings.Contains(out, ":0") {
+		t.Fatalf("rendered a zero port:\n%s", out)
+	}
+	if !strings.Contains(out, "—") {
+		t.Fatalf("expected placeholders:\n%s", out)
+	}
+}
+
+func TestDashboardShowsRecoveryHint(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		err:        errors.New("connection refused"),
+		recoverErr: errors.New("the daemon is not running and starting it needs Administrator:\n  run an elevated prompt"),
+	}
+	out := strings.Join(d.build(v, 110), "\n")
+	if !strings.Contains(out, "disconnected from daemon") {
+		t.Fatalf("missing disconnect banner:\n%s", out)
+	}
+	if !strings.Contains(out, "needs Administrator") {
+		t.Fatalf("missing recovery hint:\n%s", out)
 	}
 }

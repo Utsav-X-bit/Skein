@@ -79,6 +79,12 @@ type dashboard struct {
 	started time.Time
 	phase   float64
 
+	configPath  string
+	recovering  bool
+	lastRecover time.Time
+	recoverErr  error
+	stopping    bool
+
 	child     *exec.Cmd
 	childDone chan error
 }
@@ -170,6 +176,7 @@ func (d *dashboard) run(ctx context.Context) error {
 		case <-frames.C:
 			d.frame++
 			d.phase += frameInterval.Seconds()
+			d.maybeRecover(ctx)
 		}
 	}
 }
@@ -304,6 +311,30 @@ func (d *dashboard) ease() {
 	}
 }
 
+// maybeRecover restarts a daemon that went away while the dashboard is open.
+func (d *dashboard) maybeRecover(ctx context.Context) {
+	d.mu.Lock()
+	failed := d.fetchErr != nil
+	last := d.lastRecover
+	busy := d.recovering
+	d.mu.Unlock()
+	if !failed || busy || time.Since(last) < 5*time.Second {
+		return
+	}
+	d.mu.Lock()
+	d.recovering = true
+	d.lastRecover = time.Now()
+	path := d.configPath
+	d.mu.Unlock()
+	go func() {
+		err := d.ensureDaemon(ctx, path)
+		d.mu.Lock()
+		d.recovering = false
+		d.recoverErr = err
+		d.mu.Unlock()
+	}()
+}
+
 func (d *dashboard) draw() {
 	width, height := 100, 34
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
@@ -368,22 +399,24 @@ func (d *dashboard) viewLocked() view {
 		rates: rates, rtts: rtts, spark: append([]float64(nil), d.spark...),
 		events: append([]string(nil), d.events...), frame: d.frame, phase: d.phase,
 		motion: d.motion, err: d.fetchErr, lastFetch: d.lastFetch,
+		recoverErr: d.recoverErr,
 	}
 }
 
 type view struct {
-	st        statusDTO
-	peers     []peerDTO
-	routes    []routeDTO
-	rates     map[string]rate
-	rtts      map[string]float64
-	spark     []float64
-	events    []string
-	frame     uint64
-	phase     float64
-	motion    bool
-	err       error
-	lastFetch time.Time
+	st         statusDTO
+	peers      []peerDTO
+	routes     []routeDTO
+	rates      map[string]rate
+	rtts       map[string]float64
+	spark      []float64
+	events     []string
+	frame      uint64
+	phase      float64
+	motion     bool
+	err        error
+	recoverErr error
+	lastFetch  time.Time
 }
 
 func (d *dashboard) build(v view, width int) []string {
@@ -423,22 +456,44 @@ func (d *dashboard) build(v view, width int) []string {
 		beat = "◇"
 	}
 	lines = append(lines, section("SKEIN", true))
+	nodeID := v.st.ID
+	if nodeID == "" {
+		nodeID = "—"
+	}
 	overlay := v.st.OverlayIPv4
-	if v.st.OverlayIPv6 != "" {
+	if overlay == "" {
+		overlay = "—"
+	} else if v.st.OverlayIPv6 != "" {
 		overlay += "  " + v.st.OverlayIPv6
 	}
+	version := v.st.Version
+	if version == "" {
+		version = "—"
+	}
+	listen := "—"
+	if v.st.ListenPort != 0 {
+		listen = fmt.Sprintf(":%d", v.st.ListenPort)
+	}
 	lines = append(lines, row(fmt.Sprintf("%s %s   %s %s   %s %s",
-		d.paint(ansiCyan, beat), v.st.ID,
+		d.paint(ansiCyan, beat), nodeID,
 		d.paint(ansiDim, "overlay"), overlay,
-		d.paint(ansiDim, "version"), v.st.Version)))
-	lines = append(lines, row(fmt.Sprintf("%s :%d %s   %s %s   %s %s   %s %s",
-		d.paint(ansiDim, "listen"), v.st.ListenPort, d.paint(ansiDim, "udp+tcp"),
+		d.paint(ansiDim, "version"), version)))
+	lines = append(lines, row(fmt.Sprintf("%s %s %s   %s %s   %s %s   %s %s",
+		d.paint(ansiDim, "listen"), listen, d.paint(ansiDim, "udp+tcp"),
 		d.paint(ansiDim, "uptime"), humanDuration(time.Duration(v.st.UptimeSeconds)*time.Second),
 		d.paint(ansiDim, "peers"), fmt.Sprintf("%s %s", d.paint(ansiGreen, fmt.Sprintf("%d up", up)), d.paint(ansiDim, fmt.Sprintf("%d down", down))),
 		d.paint(ansiDim, "traffic"), humanRate(totalRate(v.rates)))))
 
 	if v.err != nil {
 		lines = append(lines, row(d.paint(ansiRed, "disconnected from daemon: "+v.err.Error())))
+	}
+	if v.recoverErr != nil {
+		for i, line := range strings.Split(v.recoverErr.Error(), "\n") {
+			if i >= 4 {
+				break
+			}
+			lines = append(lines, row(d.paint(ansiYellow, line)))
+		}
 	}
 
 	// Mesh topology.

@@ -144,6 +144,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
 		d := newDashboard(cfg, stdout, !opts.noColor, motion)
+		d.configPath = path
 		if err := d.ensureDaemon(ctx, path); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
@@ -691,12 +692,12 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("contact skeind: %w", err)
+		return fmt.Errorf("contact the daemon: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("skeind: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 	return nil
 }
@@ -709,12 +710,12 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("contact skeind: %w", err)
+		return fmt.Errorf("contact the daemon: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("skeind: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
