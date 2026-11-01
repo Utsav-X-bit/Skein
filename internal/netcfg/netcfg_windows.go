@@ -91,7 +91,7 @@ func netshFamily(addr netip.Addr) (string, error) {
 func listRoutes() ([]routeEntry, error) {
 	var entries []routeEntry
 	for _, family := range []string{"ipv4", "ipv6"} {
-		out, err := runner("netsh", "interface", family, "show", "routes")
+		out, err := runner("netsh", "interface", family, "show", "route")
 		if err != nil {
 			if family == "ipv6" {
 				continue

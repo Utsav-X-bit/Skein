@@ -206,6 +206,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
+	for _, p := range d.peers.List() {
+		addrs := make([]string, 0, len(p.Candidates))
+		for _, c := range p.Candidates {
+			addrs = append(addrs, c.Addr.String())
+		}
+		log.Printf("skein: peer %016x dialer=%v candidates=%v", p.ID, p.Dialer, addrs)
+	}
+
 	if d.cfg.Discovery.MDNS {
 		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(d.cfg)}
 		mdns, err := discovery.StartMDNS(ctx, inv, discovery.Fingerprint(d.cfg.Node.NetworkSecret), d.cfg.Node.ListenPort, d.discovered)
