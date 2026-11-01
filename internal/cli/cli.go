@@ -353,7 +353,23 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 		fmt.Fprintln(stdout, cfg.Node.Name)
 		return nil
 	}
-	cfg.Node.Name = strings.TrimSpace(args[0])
+	name := strings.TrimSpace(args[0])
+	if name == "" {
+		return errors.New("name must not be empty")
+	}
+
+	// A running daemon advertises the new name immediately; no restart.
+	c := &client{
+		base:  "http://" + cfg.API.Listen,
+		token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
+		http:  &http.Client{Timeout: 2 * time.Second},
+	}
+	if err := c.setName(context.Background(), name); err == nil {
+		fmt.Fprintf(stdout, "name set to %q; advertised immediately\n", name)
+		return nil
+	}
+
+	cfg.Node.Name = name
 	if err := conf.Validate(cfg); err != nil {
 		return err
 	}
@@ -368,7 +384,7 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 		return err
 	}
 	_ = fileperm.ChownToSudoUser(configPath)
-	fmt.Fprintf(stdout, "name set to %q; restart the daemon to advertise it\n", cfg.Node.Name)
+	fmt.Fprintf(stdout, "name set to %q; start or restart the daemon to advertise it\n", name)
 	return nil
 }
 
@@ -525,6 +541,27 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 		return statErr
 	}
 
+	// The identity is needed before the overlay address is chosen: the address
+	// is derived from it so stale invites do not hand out the same one twice.
+	keyPath := identityPath(configPath)
+	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+			return err
+		}
+		fresh, err := identity.Generate()
+		if err != nil {
+			return err
+		}
+		if err := identity.Save(keyPath, fresh); err != nil {
+			return err
+		}
+		_ = fileperm.ChownToSudoUser(keyPath)
+	}
+	id, err := identity.Load(keyPath)
+	if err != nil {
+		return err
+	}
+
 	cfg.Node.NetworkSecret = inv.Secret
 	cfg.Node.OverlayIPv4Prefix = inv.PrefixV4
 	cfg.Node.OverlayIPv6Prefix = inv.PrefixV6
@@ -541,7 +578,7 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 		cfg.Node.OverlayIPv4.IsValid() &&
 		inv.PrefixV4.Contains(cfg.Node.OverlayIPv4)
 	if !keepOverlay {
-		addr, err := conf.NextFreeOverlay(inv.PrefixV4, inv.UsedV4)
+		addr, err := conf.NextFreeOverlayHashed(inv.PrefixV4, inv.UsedV4, id.ID)
 		if err != nil {
 			return err
 		}
@@ -568,24 +605,6 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 		cfg.Peers = append(cfg.Peers, inviter)
 	}
 	if err := conf.Validate(cfg); err != nil {
-		return err
-	}
-
-	keyPath := identityPath(configPath)
-	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
-		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
-			return err
-		}
-		fresh, err := identity.Generate()
-		if err != nil {
-			return err
-		}
-		if err := identity.Save(keyPath, fresh); err != nil {
-			return err
-		}
-	}
-	id, err := identity.Load(keyPath)
-	if err != nil {
 		return err
 	}
 
@@ -693,6 +712,14 @@ type client struct {
 	base  string
 	token string
 	http  *http.Client
+}
+
+func (c *client) setName(ctx context.Context, name string) error {
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return err
+	}
+	return c.doBody(ctx, http.MethodPost, "/api/v1/name", body)
 }
 
 func (c *client) do(ctx context.Context, method, path string) error {

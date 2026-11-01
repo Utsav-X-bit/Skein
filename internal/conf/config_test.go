@@ -294,6 +294,27 @@ func TestRenderRoundTrips(t *testing.T) {
 	}
 }
 
+func TestNextFreeOverlayHashedSpreadsNodes(t *testing.T) {
+	prefix := netip.MustParsePrefix("10.144.144.0/24")
+	used := []netip.Addr{netip.MustParseAddr("10.144.144.1")}
+	a, err := NextFreeOverlayHashed(prefix, used, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NextFreeOverlayHashed(prefix, used, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatalf("different seeds produced the same address %s", a)
+	}
+	for _, addr := range []netip.Addr{a, b} {
+		if addr == netip.MustParseAddr("10.144.144.1") || !prefix.Contains(addr) {
+			t.Fatalf("bad allocation %s", addr)
+		}
+	}
+}
+
 func TestNextFreeOverlay(t *testing.T) {
 	prefix := netip.MustParsePrefix("10.144.144.0/24")
 	used := []netip.Addr{

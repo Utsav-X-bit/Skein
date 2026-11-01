@@ -61,6 +61,12 @@ func (f *fakeState) Events() <-chan Event { return f.events }
 type fakeWriter struct {
 	added   []string
 	removed []uint64
+	names   []string
+}
+
+func (f *fakeWriter) SetName(name string) error {
+	f.names = append(f.names, name)
+	return nil
 }
 
 func (f *fakeWriter) AddPeer(invite string) error {
@@ -224,5 +230,24 @@ func TestSSEStreamsEvents(t *testing.T) {
 	body := rec.String()
 	if !strings.Contains(body, "event: peer_up") || !strings.Contains(body, "0123456789abcdef") {
 		t.Fatalf("stream = %q", body)
+	}
+}
+
+func TestSetNameEndpoint(t *testing.T) {
+	srv, _, writer, _ := newTestServer(t)
+	h := srv.Handler()
+
+	rec := do(t, h, http.MethodPost, "/api/v1/name", `{"name":"asus-utsav"}`, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("code = %d body=%s", rec.Code, rec.Body)
+	}
+	if len(writer.names) != 1 || writer.names[0] != "asus-utsav" {
+		t.Fatalf("names = %v", writer.names)
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/name", `{"name":""}`, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty name code = %d", rec.Code)
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/name", `not json`, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad json code = %d", rec.Code)
 	}
 }

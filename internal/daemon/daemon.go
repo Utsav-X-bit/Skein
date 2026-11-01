@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -85,6 +87,9 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 
 	udp, err := link.Listen(cfg.Node.ListenPort)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return nil, fmt.Errorf("%w (another daemon is already running; stop the service with `systemctl stop skein` or `sc stop skein`)", err)
+		}
 		return nil, err
 	}
 	dev, err := tun.Open(cfg.Node.Interface, cfg.Node.MTU)
@@ -222,10 +227,6 @@ func (d *Daemon) persistPeers() {
 		return
 	}
 	cfg := configWithPeers(d.cfg, d.peers.List())
-	// A name edited while the daemon runs must survive the rewrite.
-	if fresh, err := conf.Load(cfg.Path); err == nil && fresh.Node.Name != "" {
-		cfg.Node.Name = fresh.Node.Name
-	}
 	text, err := conf.Render(cfg)
 	if err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
@@ -514,6 +515,19 @@ func (d *Daemon) AddPeer(invite string) error {
 	}
 	d.emit(api.Event{Type: "peer_added", PeerID: fmt.Sprintf("%016x", inv.ID)})
 	d.persistPeers()
+	return nil
+}
+
+// SetName implements api.PeerWriter.
+func (d *Daemon) SetName(name string) error {
+	name = strings.TrimSpace(name)
+	if err := conf.ValidateName(name); err != nil {
+		return err
+	}
+	d.cfg.Node.Name = name
+	d.ctl.SetLocalName(name)
+	d.persistPeers()
+	d.emit(api.Event{Type: "name_changed"})
 	return nil
 }
 

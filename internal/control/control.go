@@ -89,6 +89,13 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 	}, nil
 }
 
+// SetLocalName changes the name advertised in STATE without a restart.
+func (c *Controller) SetLocalName(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.local.Name = name
+}
+
 // SetClock overrides the clock for tests.
 func (c *Controller) SetClock(now func() time.Time) {
 	c.mu.Lock()
@@ -171,11 +178,12 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 	c.mu.Lock()
 	c.seq++
 	seq := c.seq
+	localName := c.local.Name
 	c.mu.Unlock()
 
 	records := []discovery.PeerRecord{{
 		ID:         c.local.ID,
-		Name:       c.local.Name,
+		Name:       localName,
 		PublicKey:  c.local.PublicKey,
 		OverlayV4:  c.local.OverlayV4,
 		OverlayV6:  c.local.OverlayV6,

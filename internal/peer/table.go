@@ -237,6 +237,23 @@ func (t *Table) SetOverlay(id uint64, v4, v6 netip.Addr) {
 	}
 }
 
+// UpdateOverlay records a peer's new overlay addresses. It is used when the
+// peer itself advertises the change; third-party records still only fill gaps.
+func (t *Table) UpdateOverlay(id uint64, v4, v6 netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p, ok := t.peers[id]
+	if !ok {
+		return
+	}
+	if v4.IsValid() {
+		p.OverlayV4 = v4
+	}
+	if v6.IsValid() {
+		p.OverlayV6 = v6
+	}
+}
+
 // SetActive records a validated direct path.
 func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration, transport string, seen time.Time) {
 	t.mu.Lock()

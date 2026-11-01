@@ -398,7 +398,12 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 				continue
 			}
 		}
-		m.Peers.SetOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
+		if rec.ID == from {
+			// A node may move its own overlay address; nobody else can.
+			m.Peers.UpdateOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
+		} else {
+			m.Peers.SetOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
+		}
 		m.Peers.SetName(rec.ID, rec.Name)
 		for _, cand := range rec.Candidates {
 			m.Peers.AddCandidate(rec.ID, cand, peer.SourceState)

@@ -66,6 +66,11 @@ type Event struct {
 	TimeMS int64  `json:"time_ms"`
 }
 
+// SetNameRequest changes the node's advertised name.
+type SetNameRequest struct {
+	Name string `json:"name"`
+}
+
 // AddPeerRequest accepts either an invite string or an explicit peer.
 type AddPeerRequest struct {
 	Invite string `json:"invite,omitempty"`

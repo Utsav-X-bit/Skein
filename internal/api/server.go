@@ -27,6 +27,7 @@ type StateReader interface {
 type PeerWriter interface {
 	AddPeer(invite string) error
 	RemovePeer(id uint64) error
+	SetName(name string) error
 }
 
 // Prober forces a path probe.
@@ -68,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/routes", s.wrap(s.getRoutes))
 	mux.HandleFunc("GET /api/v1/config", s.wrap(s.getConfig))
 	mux.HandleFunc("GET /api/v1/events", s.wrap(s.getEvents))
+	mux.HandleFunc("POST /api/v1/name", s.wrap(s.postName))
 	return mux
 }
 
@@ -166,6 +168,28 @@ func (s *Server) probePeer(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.prober.ProbePeer(ctx, id); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) postName(w http.ResponseWriter, r *http.Request) {
+	if !s.allowMutation() {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var req SetNameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.writer.SetName(req.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

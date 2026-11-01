@@ -251,8 +251,11 @@ func TestJoinBootstrapsASecondNode(t *testing.T) {
 	if cfgA.Node.OverlayIPv4 == cfgB.Node.OverlayIPv4 {
 		t.Fatalf("overlay address collision: %s", cfgB.Node.OverlayIPv4)
 	}
-	if cfgB.Node.OverlayIPv4.String() != "10.144.144.2" {
-		t.Fatalf("joined overlay = %s, want 10.144.144.2", cfgB.Node.OverlayIPv4)
+	if !cfgA.Node.OverlayIPv4Prefix.Contains(cfgB.Node.OverlayIPv4) {
+		t.Fatalf("joined overlay %s is outside the prefix", cfgB.Node.OverlayIPv4)
+	}
+	if cfgB.Node.OverlayIPv4 == netip.MustParseAddr("10.144.144.0") || cfgB.Node.OverlayIPv4 == netip.MustParseAddr("10.144.144.255") {
+		t.Fatalf("joined overlay %s is not a host address", cfgB.Node.OverlayIPv4)
 	}
 	if _, err := os.Stat(filepath.Join(dirB, "identity.key")); err != nil {
 		t.Fatalf("identity not created: %v", err)
@@ -302,8 +305,11 @@ func TestJoinMovesACollidingOverlayAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfgB.Node.OverlayIPv4.String() != "10.144.144.2" {
+	if cfgB.Node.OverlayIPv4 == netip.MustParseAddr("10.144.144.1") {
 		t.Fatalf("colliding overlay not moved: %s", cfgB.Node.OverlayIPv4)
+	}
+	if !cfgB.Node.OverlayIPv4Prefix.Contains(cfgB.Node.OverlayIPv4) {
+		t.Fatalf("moved overlay %s is outside the prefix", cfgB.Node.OverlayIPv4)
 	}
 }
 

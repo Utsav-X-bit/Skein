@@ -163,6 +163,42 @@ func NextFreeOverlay(prefix netip.Prefix, used []netip.Addr) (netip.Addr, error)
 	return netip.Addr{}, fmt.Errorf("conf: %s has no free host address", prefix)
 }
 
+// NextFreeOverlayHashed picks a free address deterministically from seed. Two
+// nodes joining from the same stale invite therefore rarely choose the same
+// address, unlike the sequential allocator.
+func NextFreeOverlayHashed(prefix netip.Prefix, used []netip.Addr, seed uint64) (netip.Addr, error) {
+	if !prefix.IsValid() || prefix.Bits() == 0 {
+		return netip.Addr{}, errors.New("conf: invalid overlay prefix")
+	}
+	taken := make(map[netip.Addr]struct{}, len(used))
+	for _, addr := range used {
+		taken[addr] = struct{}{}
+	}
+	last := broadcast(prefix)
+	free := make([]netip.Addr, 0, 256)
+	addr := prefix.Masked().Addr()
+	for range 4096 {
+		addr = addr.Next()
+		if !addr.IsValid() || !prefix.Contains(addr) {
+			break
+		}
+		if addr == last {
+			continue
+		}
+		if _, exists := taken[addr]; exists {
+			continue
+		}
+		free = append(free, addr)
+	}
+	if len(free) == 0 {
+		return netip.Addr{}, fmt.Errorf("conf: %s has no free host address", prefix)
+	}
+	return free[seed%uint64(len(free))], nil
+}
+
+// ValidateName checks a node or peer name.
+func ValidateName(name string) error { return validateName(name) }
+
 // Render serializes cfg as TOML in the same schema Load parses.
 func Render(cfg Config) ([]byte, error) {
 	if err := Validate(cfg); err != nil {
