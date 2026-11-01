@@ -49,6 +49,10 @@ func restrict(path string) error {
 	)
 }
 
+func chownToSudoUser(string) error { return nil }
+
+func preserveOwner(string, string) error { return nil }
+
 func allow(sid *windows.SID) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: windows.GENERIC_ALL,

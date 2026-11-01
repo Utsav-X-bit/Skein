@@ -218,6 +218,9 @@ func parseGlobal(args []string) (globalOptions, error) {
 func loadConfig(path string) (conf.Config, error) {
 	cfg, err := conf.Load(path)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown $USER %s", path, path)
+		}
 		return conf.Config{}, fmt.Errorf("load %s (run `skein init` first): %w", path, err)
 	}
 	return cfg, nil
@@ -296,6 +299,8 @@ mdns = true
 		os.Remove(configPath)
 		return err
 	}
+	_ = fileperm.ChownToSudoUser(configPath)
+	_ = fileperm.ChownToSudoUser(keyPath)
 
 	cands, _ := path.LocalCandidates(conf.DefaultListenPort)
 	cands = path.ExcludePrefixes(cands, []netip.Prefix{
@@ -362,6 +367,7 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 	if err := fileperm.Restrict(configPath); err != nil {
 		return err
 	}
+	_ = fileperm.ChownToSudoUser(configPath)
 	fmt.Fprintf(stdout, "name set to %q; restart the daemon to advertise it\n", cfg.Node.Name)
 	return nil
 }
@@ -593,6 +599,8 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	if err := fileperm.Restrict(configPath); err != nil {
 		return err
 	}
+	_ = fileperm.ChownToSudoUser(configPath)
+	_ = fileperm.ChownToSudoUser(keyPath)
 
 	cands, _ := localCandidates(cfg)
 	own, _ := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})

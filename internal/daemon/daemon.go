@@ -239,6 +239,10 @@ func (d *Daemon) persistPeers() {
 	if err := fileperm.Restrict(tmp); err != nil {
 		log.Printf("skein: warning: cannot restrict %s: %v", tmp, err)
 	}
+	// The daemon runs as root; keep the config owned by the user who owns it.
+	if err := fileperm.PreserveOwner(tmp, cfg.Path); err != nil {
+		log.Printf("skein: warning: cannot preserve config ownership: %v", err)
+	}
 	if err := os.Rename(tmp, cfg.Path); err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
