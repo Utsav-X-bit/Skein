@@ -149,12 +149,16 @@ the reply travels back along the path it arrived on.
 [peer_count:1]
   per peer: [id:8][flags:1][v4:4?][v6:16?][candidate_count:1]
             per candidate: [family:1][address:4|16][port:2]
+            [name_len:1][name:name_len]        (version 2)
 [route_count:1]
   per route: [destination:8][cost_ms:4][hops:1][path_len:1][path ids...]
 ```
 
-Limits: 5 peers, 8 candidates per peer, 8 routes, path length 4, and the whole
-payload must fit one frame. Local and configured records are preserved; excess
+Version 2 adds the optional node name; version 1 payloads still decode (name
+empty).
+
+Limits: 5 peers, 8 candidates per peer, 8 routes, 32-byte names, path length 4,
+and the whole payload must fit one frame. Local and configured records are preserved; excess
 transitive hints are dropped deterministically (by hop count, then peer ID).
 
 STATE is authenticated by the session that carries it. The `origin` must equal
@@ -192,6 +196,30 @@ responder learns the peer's static key from message one, but the peer is
 registered and trusted only when it decrypts message two and sends the
 encrypted confirmation. A peer that presents a key whose hash does not match
 its claimed ID is rejected immediately.
+
+## Punch (relayed introductions)
+
+A node that can only reach a peer through a relay asks the relay to introduce
+them:
+
+```
+[target:8][nonce:16][0]                                  request
+[target:8][nonce:16][1][family:1][address][port:2]       delivery
+```
+
+The relay answers the requester with the target's observed endpoint and sends
+the target the requester's observed endpoint, so both dial at once. A delivery
+is honoured at most once per peer per 30 s. If the punch fails, the relayed
+route stays in place.
+
+## TCP fallback
+
+Every node listens on TCP on the same port as UDP. After two silent UDP
+handshake attempts the dialer opens a TCP connection to the candidate address;
+frames are length-prefixed (`[len:4]`, big-endian) and carry the same 26-byte
+header and encryption. Replies reuse the accepted connection, keyed by its
+source address, so the existing datagram-oriented `Link` contract still holds.
+Set `listen_port = 443` to make both transports bind 443.
 
 ## Discovery
 

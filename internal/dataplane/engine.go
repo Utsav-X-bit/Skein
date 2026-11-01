@@ -590,6 +590,39 @@ func (e *Engine) SendControl(peerID uint64, typ wire.MessageType, payload []byte
 	return e.sendToPeer(peerID, typ, body)
 }
 
+// Punch starts a handshake to a specific address for peerID. A relay uses it
+// to introduce two peers that cannot reach each other directly.
+func (e *Engine) Punch(peerID uint64, addr netip.AddrPort) error {
+	if _, ok := e.peers.Get(peerID); !ok {
+		return ErrUnknownPeer
+	}
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	if !addr.IsValid() || addr.Port() == 0 {
+		return ErrNoRoute
+	}
+	attempt, msg, err := e.sessions.Begin(peerID)
+	if err != nil {
+		e.counters.ProbeFail.Add(1)
+		return err
+	}
+	e.mu.Lock()
+	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: e.now(), tries: 1}
+	e.mu.Unlock()
+
+	h := wire.Header{
+		Type:    wire.Handshake,
+		ToNext:  peerID,
+		ToFinal: peerID,
+		From:    e.cfg.LocalID,
+		TTL:     wire.MaxTTL,
+	}
+	frame, err := wire.Marshal(h, msg)
+	if err != nil {
+		return err
+	}
+	return e.link.Send(addr, frame)
+}
+
 // DropSession forgets the session and any handshake state for a peer so the
 // next attempt starts from scratch.
 func (e *Engine) DropSession(peerID uint64) {
@@ -805,6 +838,16 @@ func (e *Engine) ensureSession(peerID uint64) error {
 	}
 	e.mu.Unlock()
 
+	// After a couple of silent UDP attempts, open TCP fallbacks so the next
+	// handshake can use a transport the network does not block.
+	if tries >= 2 {
+		if dialer, ok := e.link.(interface{ DialTCP(netip.AddrPort) error }); ok {
+			for _, cand := range p.Candidates {
+				go func(addr netip.AddrPort) { _ = dialer.DialTCP(addr) }(cand.Addr)
+			}
+		}
+	}
+
 	attempt, msg, err := e.sessions.Begin(peerID)
 	if err != nil {
 		e.counters.HandshakeFail.Add(1)
@@ -878,9 +921,13 @@ func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 	if r, ok := e.routes.Lookup(peerID); ok && r.NextHop != peerID {
 		return
 	}
+	transport := "udp"
+	if reporter, ok := e.link.(interface{ TransportFor(netip.AddrPort) string }); ok {
+		transport = reporter.TransportFor(src)
+	}
 	p, ok := e.peers.Get(peerID)
 	if ok && e.acceptEndpoint(p, src) {
-		e.peers.SetActive(peerID, src, rtt, now)
+		e.peers.SetActive(peerID, src, rtt, transport, now)
 		e.peers.AddCandidate(peerID, src, peer.SourceProbe)
 	}
 	_ = e.routes.UpdateDirect(route.DirectLink{PeerID: peerID, RTT: rtt})

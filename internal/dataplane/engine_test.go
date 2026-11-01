@@ -380,3 +380,17 @@ func TestUnknownOverlayDestinationIsRejected(t *testing.T) {
 		t.Fatalf("short packet err = %v", err)
 	}
 }
+
+func TestPunchStartsAHandshakeAtTheGivenAddress(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, b, true)
+
+	if err := a.eng.Punch(b.id, b.addr); err != nil {
+		t.Fatalf("Punch: %v", err)
+	}
+	if !a.eng.sessions.HasSession(b.id) || !b.eng.sessions.HasSession(a.id) {
+		t.Fatal("punch did not establish a session")
+	}
+}

@@ -127,7 +127,7 @@ func TestLookupOverlayAndState(t *testing.T) {
 		t.Fatal("unknown overlay address resolved")
 	}
 	now := time.Now()
-	tbl.SetActive(a.ID, netip.MustParseAddrPort("[2001:db8::1]:11010"), 12*time.Millisecond, now)
+	tbl.SetActive(a.ID, netip.MustParseAddrPort("[2001:db8::1]:11010"), 12*time.Millisecond, "udp", now)
 	p, _ := tbl.Get(a.ID)
 	if p.State != StateUp || p.Path != "v6" || p.RTT != 12*time.Millisecond || !p.Direct {
 		t.Fatalf("active state = %+v", p)

@@ -21,6 +21,12 @@ type fakeTransport struct {
 	rekey   []uint64
 	ensured []uint64
 	dropped []uint64
+	punched []punchCall
+}
+
+type punchCall struct {
+	peer uint64
+	addr netip.AddrPort
 }
 
 type sentFrame struct {
@@ -54,6 +60,13 @@ func (f *fakeTransport) Rekey(peerID uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rekey = append(f.rekey, peerID)
+	return nil
+}
+
+func (f *fakeTransport) Punch(peerID uint64, addr netip.AddrPort) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.punched = append(f.punched, punchCall{peer: peerID, addr: addr})
 	return nil
 }
 
@@ -264,5 +277,21 @@ func TestProbeMovesTheActiveEndpoint(t *testing.T) {
 	p, _ := f.peers.Get(f.peerID)
 	if p.ActiveEndpoint != candidate {
 		t.Fatalf("active endpoint = %s, want %s", p.ActiveEndpoint, candidate)
+	}
+}
+
+func TestStateAdvertisesTheLocalName(t *testing.T) {
+	f := newFixture(t)
+	f.ctl.local.Name = "utsav-laptop"
+	payload, err := f.ctl.statePayload(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := discovery.Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Peers) == 0 || state.Peers[0].Name != "utsav-laptop" {
+		t.Fatalf("state peers = %+v", state.Peers)
 	}
 }

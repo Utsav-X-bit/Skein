@@ -250,6 +250,26 @@ func TestParseRejectsPortAndMTUBounds(t *testing.T) {
 	}
 }
 
+func TestNodeNameValidation(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.Node.Name = "utsav-laptop"
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("valid name rejected: %v", err)
+	}
+	cfg.Node.Name = " leading"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected leading whitespace to be rejected")
+	}
+	cfg.Node.Name = strings.Repeat("x", 33)
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected an over-long name to be rejected")
+	}
+	cfg.Node.Name = "bad\x01name"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected a control character to be rejected")
+	}
+}
+
 func TestRenderRoundTrips(t *testing.T) {
 	cfg := baseConfig(t)
 	text, err := Render(cfg)

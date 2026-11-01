@@ -34,6 +34,10 @@ flowchart LR
   most four links. Relays rewrite only `to_next` and `ttl`.
 - **Daemon + CLI**: `skeind` owns the dataplane and a loopback REST/SSE API;
   `skein` is a thin client.
+- **Named nodes**: each node sets `node.name`; names travel in STATE gossip and
+  appear in the dashboard, `skein peers`, and the API.
+- **Live dashboard**: `skein dashboard` renders an animated mesh view with
+  per-peer throughput, transport (udp/tcp), RTT, and an event feed.
 
 ## Status
 
@@ -113,6 +117,36 @@ Service mode:
 sudo ./skeind install-service -c ~/.config/skein/skein.toml   # systemd / Windows SCM
 ```
 
+## Dashboard
+
+```bash
+./skein dashboard
+```
+
+An animated full-screen view: the local node in the centre, peers on a ring,
+link pulses that speed up with real traffic, per-peer rates eased toward their
+targets, transport and RTT, a throughput sparkline, and the live event feed.
+`q` quits. `--no-motion` (or `SKEIN_NO_MOTION=1`) renders a static snapshot;
+non-TTY output is always static.
+
+## Naming nodes
+
+```bash
+./skein name "utsav-laptop"     # show or set this node's name
+```
+
+The name is advertised in STATE gossip, so every peer displays it instead of a
+peer ID. A peer can also be given a local hint before first contact:
+
+```toml
+[[peer]]
+id     = "b3f64ecc491aba35"
+name   = "yoga"
+pubkey = "…"
+```
+
+The name a peer advertises about itself always wins over the local hint.
+
 ## Configuration
 
 ```toml
@@ -125,6 +159,7 @@ listen_port         = 11010
 network_secret      = "<32 random bytes, base64url>"
 mtu                 = 1280
 interface           = "skein0"              # Windows default: Skein
+name                = "utsav-laptop"        # optional, shown to peers
 
 [api]
 listen = "127.0.0.1:11011"                  # loopback only

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/control"
 	"github.com/Utsav-X-bit/skein/internal/dataplane"
 	"github.com/Utsav-X-bit/skein/internal/discovery"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
@@ -42,7 +44,7 @@ type Daemon struct {
 	eng      *dataplane.Engine
 	ctl      *control.Controller
 
-	link  *link.UDP
+	link  *link.Switch
 	tun   tun.Device
 	mdns  *discovery.MDNS
 	api   *api.Server
@@ -76,12 +78,12 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	}
 
 	for _, p := range cfg.Peers {
-		if err := d.registerPeer(p.ID, p.PublicKey, p.Addrs, p.Dialer); err != nil {
+		if err := d.registerPeer(p.ID, p.PublicKey, p.Addrs, p.Dialer, p.Name); err != nil {
 			return nil, err
 		}
 	}
 
-	udp, err := link.ListenUDP(cfg.Node.ListenPort)
+	udp, err := link.Listen(cfg.Node.ListenPort)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +116,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 
 	ctl, err := control.New(control.Local{
 		ID:         id.ID,
+		Name:       cfg.Node.Name,
 		OverlayV4:  cfg.Node.OverlayIPv4,
 		OverlayV6:  cfg.Node.OverlayIPv6,
 		Candidates: localCandidates(cfg),
@@ -133,6 +136,9 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	eng.SetControlHandler(ctl.HandleControl)
 	eng.SetPingHandler(ctl.HandlePing)
 	eng.SetSessionHandler(d.sessionEstablished)
+	if !udp.HasTCP() {
+		log.Printf("skein: warning: TCP fallback unavailable on port %d; UDP only", cfg.Node.ListenPort)
+	}
 	// A peer that proves the network secret may join without a configured
 	// entry; the invite carries the secret, so holding it is membership.
 	sessions.SetAcceptUnknown(true)
@@ -152,7 +158,7 @@ func localCandidates(cfg conf.Config) []netip.AddrPort {
 	})
 }
 
-func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPort, dialer bool) error {
+func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPort, dialer bool, name string) error {
 	if id == d.id.ID {
 		return errors.New("daemon: refusing to register the local node as a peer")
 	}
@@ -170,6 +176,7 @@ func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPor
 	for _, addr := range addrs {
 		d.peers.AddCandidate(id, addr, peer.SourceConfig)
 	}
+	d.peers.SetName(id, name)
 	return nil
 }
 
@@ -185,6 +192,38 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 		return
 	}
 	d.emit(api.Event{Type: "peer_joined", PeerID: fmt.Sprintf("%016x", id)})
+	d.persistPeers()
+}
+
+// persistPeers rewrites the configuration so learned peers survive a restart.
+// The daemon owns the peer list; stop it before editing peers by hand.
+func (d *Daemon) persistPeers() {
+	if d.cfg.Path == "" {
+		return
+	}
+	cfg := configWithPeers(d.cfg, d.peers.List())
+	// A name edited while the daemon runs must survive the rewrite.
+	if fresh, err := conf.Load(cfg.Path); err == nil && fresh.Node.Name != "" {
+		cfg.Node.Name = fresh.Node.Name
+	}
+	text, err := conf.Render(cfg)
+	if err != nil {
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	tmp := cfg.Path + ".tmp"
+	if err := os.WriteFile(tmp, text, 0o600); err != nil {
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	if err := fileperm.Restrict(tmp); err != nil {
+		log.Printf("skein: warning: cannot restrict %s: %v", tmp, err)
+	}
+	if err := os.Rename(tmp, cfg.Path); err != nil {
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	d.cfg = cfg
 }
 
 func (d *Daemon) sessionEstablished(peerID uint64) {
@@ -237,6 +276,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 		log.Printf("skein: peer %016x dialer=%v candidates=%v", p.ID, p.Dialer, addrs)
 	}
+	log.Printf("skein: mesh status: run \"skein dashboard\" in another terminal")
 
 	if d.cfg.Discovery.MDNS {
 		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(d.cfg)}
@@ -284,7 +324,7 @@ func (d *Daemon) discovered(inv identity.Invite) {
 		return
 	}
 	dialer := d.id.ID < inv.ID
-	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer); err != nil {
+	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer, ""); err != nil {
 		return
 	}
 	for _, addr := range inv.Addrs {
@@ -321,6 +361,19 @@ func (d *Daemon) Close() error {
 	return d.closeErr
 }
 
+// configWithPeers returns a copy of cfg whose peer list mirrors the live table.
+func configWithPeers(cfg conf.Config, peers []peer.Peer) conf.Config {
+	cfg.Peers = nil
+	for _, p := range peers {
+		peerCfg := conf.Peer{ID: p.ID, Name: p.Name, PublicKey: p.PublicKey, Dialer: p.Dialer}
+		for _, cand := range p.Candidates {
+			peerCfg.Addrs = append(peerCfg.Addrs, cand.Addr)
+		}
+		cfg.Peers = append(cfg.Peers, peerCfg)
+	}
+	return cfg
+}
+
 // Status implements api.StateReader.
 func (d *Daemon) Status() api.Status {
 	snap := d.eng.Counters()
@@ -348,6 +401,7 @@ func (d *Daemon) Peers() []api.Peer {
 	for _, p := range list {
 		row := api.Peer{
 			ID:      fmt.Sprintf("%016x", p.ID),
+			Name:    p.Name,
 			State:   string(p.State),
 			Path:    p.Path,
 			RTTMs:   float64(p.RTT) / float64(time.Millisecond),
@@ -365,6 +419,7 @@ func (d *Daemon) Peers() []api.Peer {
 		if p.ActiveEndpoint.IsValid() {
 			row.Endpoint = p.ActiveEndpoint.String()
 		}
+		row.Transport = p.Transport
 		if !p.LastSeen.IsZero() {
 			row.LastSeenMS = now.Sub(p.LastSeen).Milliseconds()
 		}
@@ -427,13 +482,14 @@ func (d *Daemon) AddPeer(invite string) error {
 		return errors.New("daemon: invite is for this node")
 	}
 	dialer := d.id.ID < inv.ID
-	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer); err != nil {
+	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer, ""); err != nil {
 		return err
 	}
 	for _, addr := range inv.Addrs {
 		d.peers.AddCandidate(inv.ID, addr, peer.SourceConfig)
 	}
 	d.emit(api.Event{Type: "peer_added", PeerID: fmt.Sprintf("%016x", inv.ID)})
+	d.persistPeers()
 	return nil
 }
 
@@ -446,6 +502,7 @@ func (d *Daemon) RemovePeer(id uint64) error {
 	d.sessions.RemovePeer(id)
 	d.routes.RemoveDirect(id)
 	d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", id)})
+	d.persistPeers()
 	return nil
 }
 

@@ -24,6 +24,7 @@ const (
 	PeerTimeout   = 45 * time.Second
 	StateInterval = 5 * time.Second
 	ProbeTimeout  = 2 * time.Second
+	PunchInterval = 30 * time.Second
 )
 
 // Transport is the control layer's view of the dataplane.
@@ -33,11 +34,13 @@ type Transport interface {
 	Rekey(peerID uint64) error
 	EnsureSession(peerID uint64) error
 	DropSession(peerID uint64)
+	Punch(peerID uint64, addr netip.AddrPort) error
 }
 
 // Local describes this node's advertisement.
 type Local struct {
 	ID         uint64
+	Name       string
 	OverlayV4  netip.Addr
 	OverlayV6  netip.Addr
 	Candidates []netip.AddrPort
@@ -52,11 +55,14 @@ type Controller struct {
 	eng    Transport
 	now    func() time.Time
 
-	mu         sync.Mutex
-	lastPing   map[uint64]time.Time
-	lastState  time.Time
-	seq        uint64
-	challenges map[[16]byte][]chan challengeReply
+	mu          sync.Mutex
+	lastPing    map[uint64]time.Time
+	lastPunch   map[uint64]time.Time
+	lastPunchIn map[uint64]time.Time
+	observed    map[uint64]netip.AddrPort
+	lastState   time.Time
+	seq         uint64
+	challenges  map[[16]byte][]chan challengeReply
 }
 
 // New creates a controller.
@@ -68,14 +74,17 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 		return nil, errors.New("control: all dependencies are required")
 	}
 	return &Controller{
-		local:      local,
-		peers:      peers,
-		routes:     routes,
-		merger:     merger,
-		eng:        eng,
-		now:        time.Now,
-		lastPing:   make(map[uint64]time.Time),
-		challenges: make(map[[16]byte][]chan challengeReply),
+		local:       local,
+		peers:       peers,
+		routes:      routes,
+		merger:      merger,
+		eng:         eng,
+		now:         time.Now,
+		lastPing:    make(map[uint64]time.Time),
+		lastPunch:   make(map[uint64]time.Time),
+		lastPunchIn: make(map[uint64]time.Time),
+		observed:    make(map[uint64]netip.AddrPort),
+		challenges:  make(map[[16]byte][]chan challengeReply),
 	}, nil
 }
 
@@ -116,6 +125,9 @@ func (c *Controller) Tick() {
 			c.routes.RemoveDirect(p.ID)
 			c.eng.DropSession(p.ID)
 			continue
+		}
+		if r, ok := c.routes.Lookup(p.ID); ok && r.NextHop != p.ID {
+			c.maybePunch(p.ID, r.NextHop, now)
 		}
 		c.mu.Lock()
 		last := c.lastPing[p.ID]
@@ -162,6 +174,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 
 	records := []discovery.PeerRecord{{
 		ID:         c.local.ID,
+		Name:       c.local.Name,
 		OverlayV4:  c.local.OverlayV4,
 		OverlayV6:  c.local.OverlayV6,
 		Candidates: c.local.Candidates,
@@ -172,7 +185,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 		if !p.OverlayV4.IsValid() && !p.OverlayV6.IsValid() {
 			continue
 		}
-		rec := discovery.PeerRecord{ID: p.ID, OverlayV4: p.OverlayV4, OverlayV6: p.OverlayV6}
+		rec := discovery.PeerRecord{ID: p.ID, Name: p.Name, OverlayV4: p.OverlayV4, OverlayV6: p.OverlayV6}
 		for _, cand := range p.Candidates {
 			rec.Candidates = append(rec.Candidates, cand.Addr)
 		}
@@ -211,11 +224,18 @@ type challengeReply struct {
 // frame arrived from.
 func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.MessageType, payload []byte) {
 	c.peers.MarkSeen(from, c.now())
+	if src.IsValid() {
+		c.mu.Lock()
+		c.observed[from] = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
+		c.mu.Unlock()
+	}
 	switch typ {
 	case wire.Pong:
 		return
 	case wire.State:
 		_ = c.merger.Merge(from, payload)
+	case wire.Punch:
+		c.handlePunch(from, src, payload)
 	case wire.Challenge:
 		if len(payload) != 16 {
 			return
@@ -299,10 +319,78 @@ func (c *Controller) Probe(ctx context.Context, peerID uint64) error {
 		}
 		// The challenge proves the peer is reachable over the path it arrived
 		// on, so that source becomes the active endpoint.
-		c.peers.SetActive(peerID, reply.addr, rtt, reply.at)
+		c.peers.SetActive(peerID, reply.addr, rtt, "udp", reply.at)
 		c.peers.AddCandidate(peerID, reply.addr, peer.SourceProbe)
 		return nil
 	}
+}
+
+// maybePunch asks the next hop to introduce us to a peer we only reach through
+// it, so both sides can try a direct path.
+func (c *Controller) maybePunch(peerID, relay uint64, now time.Time) {
+	c.mu.Lock()
+	last := c.lastPunch[peerID]
+	c.mu.Unlock()
+	if !last.IsZero() && now.Sub(last) < PunchInterval {
+		return
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return
+	}
+	if err := c.eng.SendControl(relay, wire.Punch, encodePunch(punchRequest{Target: peerID, Nonce: nonce})); err != nil {
+		return
+	}
+	c.mu.Lock()
+	c.lastPunch[peerID] = now
+	c.mu.Unlock()
+}
+
+// handlePunch relays an introduction or dials the endpoint it carries.
+func (c *Controller) handlePunch(from uint64, src netip.AddrPort, payload []byte) {
+	req, err := decodePunch(payload)
+	if err != nil {
+		return
+	}
+	if req.HasAddr {
+		// Delivery: only honour it occasionally per peer.
+		now := c.now()
+		c.mu.Lock()
+		last := c.lastPunchIn[req.Target]
+		tooSoon := !last.IsZero() && now.Sub(last) < PunchInterval
+		if !tooSoon {
+			c.lastPunchIn[req.Target] = now
+		}
+		c.mu.Unlock()
+		if tooSoon {
+			return
+		}
+		_ = c.eng.Punch(req.Target, req.Addr)
+		return
+	}
+
+	// Request: this node is the relay. Report both observed endpoints and ask
+	// both sides to dial at once.
+	target := req.Target
+	if target == 0 || target == from {
+		return
+	}
+	c.mu.Lock()
+	fromObs, okFrom := c.observed[from]
+	targetObs, okTarget := c.observed[target]
+	c.mu.Unlock()
+	if !okFrom {
+		fromObs = src
+	}
+	if !okTarget {
+		return
+	}
+	_ = c.eng.SendControl(from, wire.Punch, encodePunch(punchRequest{
+		Target: target, Nonce: req.Nonce, Addr: targetObs, HasAddr: true,
+	}))
+	_ = c.eng.SendControl(target, wire.Punch, encodePunch(punchRequest{
+		Target: from, Nonce: req.Nonce, Addr: fromObs, HasAddr: true,
+	}))
 }
 
 func pingPayload(now time.Time) []byte {

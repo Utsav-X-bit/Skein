@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,7 @@ type Candidate struct {
 // Peer is an immutable snapshot of a peer's state.
 type Peer struct {
 	ID        uint64
+	Name      string
 	PublicKey []byte
 	OverlayV4 netip.Addr
 	OverlayV6 netip.Addr
@@ -53,6 +55,7 @@ type Peer struct {
 	State          State
 	ActiveEndpoint netip.AddrPort
 	Path           string
+	Transport      string
 	RTT            time.Duration
 	RxBytes        uint64
 	TxBytes        uint64
@@ -202,6 +205,20 @@ func rank(s Source) int {
 	}
 }
 
+// SetName records the name a peer advertises about itself. An empty update
+// never clears a known name.
+func (t *Table) SetName(id uint64, name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		p.Name = name
+	}
+}
+
 // SetOverlay records a peer's overlay addresses learned from authenticated
 // state. The first claimed value wins so a member cannot move another peer
 // around after the fact.
@@ -221,7 +238,7 @@ func (t *Table) SetOverlay(id uint64, v4, v6 netip.Addr) {
 }
 
 // SetActive records a validated direct path.
-func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration, seen time.Time) {
+func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration, transport string, seen time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p, ok := t.peers[id]
@@ -236,6 +253,7 @@ func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration,
 	p.RTT = rtt
 	p.State = StateUp
 	p.Direct = true
+	p.Transport = transport
 	p.LastSeen = seen
 }
 
@@ -246,6 +264,7 @@ func (t *Table) ClearActive(id uint64) {
 	if p, ok := t.peers[id]; ok {
 		p.ActiveEndpoint = netip.AddrPort{}
 		p.Path = ""
+		p.Transport = ""
 		p.RTT = 0
 		p.Direct = false
 	}

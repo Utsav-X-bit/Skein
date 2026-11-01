@@ -15,7 +15,9 @@ import (
 
 // State limits. A STATE datagram must fit one frame.
 const (
-	Version       = 1
+	// Version 2 adds an optional human-readable name per peer record.
+	Version       = 2
+	minVersion    = 1
 	MaxPeers      = 5
 	MaxCandidates = 8
 	MaxRoutes     = 8
@@ -27,6 +29,7 @@ const (
 // PeerRecord describes one node in a STATE payload.
 type PeerRecord struct {
 	ID         uint64
+	Name       string
 	OverlayV4  netip.Addr
 	OverlayV6  netip.Addr
 	Candidates []netip.AddrPort
@@ -110,6 +113,12 @@ func Encode(s State) ([]byte, error) {
 			}
 			buf = append(buf, encoded...)
 		}
+		name := p.Name
+		if len([]rune(name)) > 32 {
+			name = string([]rune(name)[:32])
+		}
+		buf = append(buf, byte(len(name)))
+		buf = append(buf, name...)
 	}
 
 	buf = append(buf, byte(len(s.Routes)))
@@ -138,8 +147,9 @@ func Decode(payload []byte) (State, error) {
 	if len(payload) < headerSize {
 		return State{}, errors.New("discovery: state is truncated")
 	}
-	if payload[0] != Version {
-		return State{}, fmt.Errorf("discovery: unsupported state version %d", payload[0])
+	version := payload[0]
+	if version < minVersion || version > Version {
+		return State{}, fmt.Errorf("discovery: unsupported state version %d", version)
 	}
 	off := 1
 	s := State{
@@ -201,6 +211,21 @@ func Decode(payload []byte) (State, error) {
 			}
 			off += n
 			rec.Candidates = append(rec.Candidates, addr)
+		}
+		if version >= 2 {
+			if off >= len(payload) {
+				return State{}, errors.New("discovery: missing peer name")
+			}
+			nameLen := int(payload[off])
+			off++
+			if nameLen > 32 || off+nameLen > len(payload) {
+				return State{}, errors.New("discovery: invalid peer name length")
+			}
+			rec.Name = string(payload[off : off+nameLen])
+			off += nameLen
+			if err := validateName(rec.Name); err != nil {
+				return State{}, err
+			}
 		}
 		s.Peers = append(s.Peers, rec)
 	}
@@ -342,9 +367,11 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 			// invite or a future handshake, never from gossip.
 			continue
 		}
-		// Overlay addresses are needed to route packets and can only come from
-		// an authenticated peer. Keys are never taken from gossip.
+		// Overlay addresses and names are needed to route and display peers and
+		// can only come from an authenticated peer. Keys are never taken from
+		// gossip.
 		m.Peers.SetOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
+		m.Peers.SetName(rec.ID, rec.Name)
 		for _, cand := range rec.Candidates {
 			m.Peers.AddCandidate(rec.ID, cand, peer.SourceState)
 		}
@@ -367,6 +394,22 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		}
 		if err := m.Routes.MergeAdvertisement(from, adv); err != nil {
 			continue
+		}
+	}
+	return nil
+}
+
+// validateName mirrors the configuration rule for node names.
+func validateName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len([]rune(name)) > 32 {
+		return fmt.Errorf("discovery: peer name is %d characters, maximum is 32", len([]rune(name)))
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("discovery: peer name contains a control character")
 		}
 	}
 	return nil

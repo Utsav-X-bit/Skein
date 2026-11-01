@@ -48,11 +48,12 @@ Usage:
 
 // Run executes one CLI invocation and returns the process exit code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	path, rest, jsonOut, err := parseGlobal(args)
+	opts, err := parseGlobal(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "skein: %v\n\n%s", err, usage)
 		return 2
 	}
+	path, rest, jsonOut := opts.path, opts.rest, opts.jsonOut
 	if len(rest) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -83,12 +84,34 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "name":
+		if len(rest) > 2 {
+			fmt.Fprintln(stderr, "usage: skein name [value]")
+			return 2
+		}
+		if err := cmdName(path, rest[1:], stdout); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
 	case "join":
 		if len(rest) != 2 {
 			fmt.Fprintln(stderr, "usage: skein join <invite>")
 			return 2
 		}
 		if err := cmdJoin(path, rest[1], stdout); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
+	case "dashboard", "top":
+		cfg, err := loadConfig(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
+		if err := newDashboard(cfg, stdout, !opts.noColor, motion).run(ctx); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -116,25 +139,41 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func parseGlobal(args []string) (path string, rest []string, jsonOut bool, err error) {
+type globalOptions struct {
+	path     string
+	rest     []string
+	jsonOut  bool
+	noColor  bool
+	noMotion bool
+}
+
+func parseGlobal(args []string) (globalOptions, error) {
+	var opts globalOptions
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-c", "--config":
 			if i+1 >= len(args) {
-				return "", nil, false, fmt.Errorf("%s requires a path", args[i])
+				return opts, fmt.Errorf("%s requires a path", args[i])
 			}
-			path = args[i+1]
+			opts.path = args[i+1]
 			i++
 		case "--json":
-			jsonOut = true
+			opts.jsonOut = true
+		case "--no-color":
+			opts.noColor = true
+		case "--no-motion":
+			opts.noMotion = true
 		default:
-			rest = append(rest, args[i])
+			opts.rest = append(opts.rest, args[i])
 		}
 	}
-	if path == "" {
-		path, err = conf.DefaultPath()
+	if opts.path == "" {
+		var err error
+		if opts.path, err = conf.DefaultPath(); err != nil {
+			return opts, err
+		}
 	}
-	return path, rest, jsonOut, err
+	return opts, nil
 }
 
 func loadConfig(path string) (conf.Config, error) {
@@ -177,8 +216,10 @@ func cmdInit(configPath string, stdout io.Writer) error {
 	if err := identity.Save(keyPath, id); err != nil {
 		return err
 	}
+	hostname := defaultName()
 	cfgText := fmt.Sprintf(`# Skein configuration. Edit overlay addresses before starting.
 [node]
+name                = %q
 overlay_ipv4_prefix = "10.144.144.0/24"
 overlay_ipv6_prefix = "fd00:6d65:7368::/64"
 overlay_ipv4        = "10.144.144.1"
@@ -193,7 +234,7 @@ token  = %q
 
 [discovery]
 mdns = true
-`, base64.RawURLEncoding.EncodeToString(psk), conf.DefaultInterface(), base64.RawURLEncoding.EncodeToString(token))
+`, hostname, base64.RawURLEncoding.EncodeToString(psk), conf.DefaultInterface(), base64.RawURLEncoding.EncodeToString(token))
 
 	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -239,6 +280,50 @@ mdns = true
 	fmt.Fprintf(stdout, "join:       %s\n", join)
 	fmt.Fprintln(stdout, "give the join string to the other nodes (it contains the network secret);")
 	fmt.Fprintln(stdout, "each of them runs: skein join <join string>")
+	return nil
+}
+
+// defaultName is the hostname, trimmed to the name limit.
+func defaultName() string {
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	host = strings.TrimSpace(host)
+	if len([]rune(host)) > 32 {
+		host = string([]rune(host)[:32])
+	}
+	return host
+}
+
+func cmdName(configPath string, args []string, stdout io.Writer) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		if cfg.Node.Name == "" {
+			fmt.Fprintln(stdout, "(no name set)")
+			return nil
+		}
+		fmt.Fprintln(stdout, cfg.Node.Name)
+		return nil
+	}
+	cfg.Node.Name = strings.TrimSpace(args[0])
+	if err := conf.Validate(cfg); err != nil {
+		return err
+	}
+	text, err := conf.Render(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, text, 0o600); err != nil {
+		return err
+	}
+	if err := fileperm.Restrict(configPath); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "name set to %q; restart the daemon to advertise it\n", cfg.Node.Name)
 	return nil
 }
 
@@ -371,6 +456,7 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	}
 
 	cfg := conf.Default()
+	cfg.Node.Name = defaultName()
 	if _, statErr := os.Stat(configPath); statErr == nil {
 		cfg, err = conf.Load(configPath)
 		if err != nil {
@@ -614,6 +700,8 @@ type statusDTO struct {
 	Version       string `json:"version"`
 	ListenPort    uint16 `json:"listen_port"`
 	PeerCount     int    `json:"peers"`
+	RxBytes       uint64 `json:"rx_bytes"`
+	TxBytes       uint64 `json:"tx_bytes"`
 }
 
 func printStatus(raw any, w io.Writer) error {
@@ -636,13 +724,21 @@ func printStatus(raw any, w io.Writer) error {
 }
 
 type peerDTO struct {
-	ID          string  `json:"id"`
-	State       string  `json:"state"`
-	Path        string  `json:"path"`
-	RTTMs       float64 `json:"rtt_ms"`
-	OverlayIPv4 string  `json:"overlay_ipv4"`
-	Endpoint    string  `json:"endpoint"`
-	Direct      bool    `json:"direct"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	State       string   `json:"state"`
+	Path        string   `json:"path"`
+	Transport   string   `json:"transport"`
+	RTTMs       float64  `json:"rtt_ms"`
+	OverlayIPv4 string   `json:"overlay_ipv4"`
+	OverlayIPv6 string   `json:"overlay_ipv6"`
+	Endpoint    string   `json:"endpoint"`
+	Candidates  []string `json:"candidates"`
+	Dialer      bool     `json:"dialer"`
+	Direct      bool     `json:"direct"`
+	RxBytes     uint64   `json:"rx_bytes"`
+	TxBytes     uint64   `json:"tx_bytes"`
+	LastSeenMS  int64    `json:"last_seen_ms"`
 }
 
 func printPeers(raw any, w io.Writer) error {
@@ -658,10 +754,14 @@ func printPeers(raw any, w io.Writer) error {
 		fmt.Fprintln(w, "no peers")
 		return nil
 	}
-	fmt.Fprintf(w, "%-16s  %-6s  %-4s  %-10s  %-6s  %s\n", "ID", "STATE", "PATH", "RTT", "DIRECT", "ENDPOINT")
+	fmt.Fprintf(w, "%-14s  %-16s  %-6s  %-4s  %-4s  %-10s  %s\n", "NAME", "ID", "STATE", "PATH", "NET", "RTT", "ENDPOINT")
 	for _, p := range peers {
-		fmt.Fprintf(w, "%-16s  %-6s  %-4s  %-10s  %-6v  %s\n",
-			p.ID, p.State, p.Path, fmt.Sprintf("%.1fms", p.RTTMs), p.Direct, p.Endpoint)
+		name := p.Name
+		if name == "" {
+			name = "—"
+		}
+		fmt.Fprintf(w, "%-14s  %-16s  %-6s  %-4s  %-4s  %-10s  %s\n",
+			name, p.ID, p.State, p.Path, p.Transport, fmt.Sprintf("%.1fms", p.RTTMs), p.Endpoint)
 	}
 	return nil
 }

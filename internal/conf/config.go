@@ -55,6 +55,7 @@ type Node struct {
 	NetworkSecret     []byte
 	MTU               int
 	Interface         string
+	Name              string
 }
 
 // API describes the loopback control API.
@@ -71,6 +72,7 @@ type Discovery struct {
 // Peer is a statically configured remote node.
 type Peer struct {
 	ID        uint64
+	Name      string
 	PublicKey []byte
 	Addrs     []netip.AddrPort
 	// Dialer reports whether this node initiates the session to the peer.
@@ -87,6 +89,7 @@ type fileConfig struct {
 		NetworkSecret     string `toml:"network_secret"`
 		MTU               *int   `toml:"mtu"`
 		Interface         string `toml:"interface"`
+		Name              string `toml:"name"`
 	} `toml:"node"`
 	API struct {
 		Listen string `toml:"listen"`
@@ -97,6 +100,7 @@ type fileConfig struct {
 	} `toml:"discovery"`
 	Peer []struct {
 		ID     string   `toml:"id"`
+		Name   string   `toml:"name"`
 		PubKey string   `toml:"pubkey"`
 		Dialer bool     `toml:"dialer"`
 		Addrs  []string `toml:"addrs"`
@@ -171,6 +175,9 @@ func Render(cfg Config) ([]byte, error) {
 	fmt.Fprintf(&b, "network_secret      = %q\n", base64.RawURLEncoding.EncodeToString(cfg.Node.NetworkSecret))
 	fmt.Fprintf(&b, "mtu                 = %d\n", cfg.Node.MTU)
 	fmt.Fprintf(&b, "interface           = %q\n", cfg.Node.Interface)
+	if cfg.Node.Name != "" {
+		fmt.Fprintf(&b, "name                = %q\n", cfg.Node.Name)
+	}
 	b.WriteString("\n[api]\n")
 	fmt.Fprintf(&b, "listen = %q\n", cfg.API.Listen)
 	fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
@@ -179,6 +186,9 @@ func Render(cfg Config) ([]byte, error) {
 	for _, p := range cfg.Peers {
 		b.WriteString("\n[[peer]]\n")
 		fmt.Fprintf(&b, "id     = %q\n", formatID(p.ID))
+		if p.Name != "" {
+			fmt.Fprintf(&b, "name   = %q\n", p.Name)
+		}
 		fmt.Fprintf(&b, "pubkey = %q\n", base64.StdEncoding.EncodeToString(p.PublicKey))
 		fmt.Fprintf(&b, "dialer = %v\n", p.Dialer)
 		if len(p.Addrs) == 0 {
@@ -283,6 +293,9 @@ func parse(text string) (Config, error) {
 	if s := fc.Node.Interface; s != "" {
 		cfg.Node.Interface = s
 	}
+	if s := fc.Node.Name; s != "" {
+		cfg.Node.Name = s
+	}
 	if s := fc.Node.NetworkSecret; s != "" {
 		if cfg.Node.NetworkSecret, err = decodeSecret("node.network_secret", s); err != nil {
 			return Config{}, err
@@ -302,7 +315,7 @@ func parse(text string) (Config, error) {
 	}
 
 	for i, fp := range fc.Peer {
-		peer, err := parsePeer(fp.ID, fp.PubKey, fp.Dialer, fp.Addrs)
+		peer, err := parsePeer(fp.ID, fp.Name, fp.PubKey, fp.Dialer, fp.Addrs)
 		if err != nil {
 			return Config{}, fmt.Errorf("peer %d: %w", i, err)
 		}
@@ -315,7 +328,7 @@ func parse(text string) (Config, error) {
 	return cfg, nil
 }
 
-func parsePeer(idText, pubText string, dialer bool, addrText []string) (Peer, error) {
+func parsePeer(idText, name, pubText string, dialer bool, addrText []string) (Peer, error) {
 	if idText == "" {
 		return Peer{}, errors.New("id is required")
 	}
@@ -337,7 +350,10 @@ func parsePeer(idText, pubText string, dialer bool, addrText []string) (Peer, er
 	if derived != id {
 		return Peer{}, fmt.Errorf("id %016x does not match pubkey (%016x)", id, derived)
 	}
-	peer := Peer{ID: id, PublicKey: pub, Dialer: dialer}
+	if err := validateName(name); err != nil {
+		return Peer{}, err
+	}
+	peer := Peer{ID: id, Name: name, PublicKey: pub, Dialer: dialer}
 	for _, text := range addrText {
 		addr, err := parseEndpoint(text)
 		if err != nil {
@@ -413,6 +429,9 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("node.network_secret must be exactly %d bytes, got %d", secretSize, len(n.NetworkSecret))
 	}
 	if err := validateInterface(n.Interface); err != nil {
+		return err
+	}
+	if err := validateName(n.Name); err != nil {
 		return err
 	}
 
@@ -535,6 +554,25 @@ func broadcast(p netip.Prefix) netip.Addr {
 		}
 	}
 	return netip.AddrFrom4(a)
+}
+
+// validateName bounds the optional human-readable node name.
+func validateName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("node.name must not start or end with whitespace")
+	}
+	if len([]rune(name)) > 32 {
+		return fmt.Errorf("node.name must be at most 32 characters, got %d", len([]rune(name)))
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("node.name contains a control character")
+		}
+	}
+	return nil
 }
 
 func validateInterface(name string) error {

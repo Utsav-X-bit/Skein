@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"testing"
@@ -288,5 +289,78 @@ func TestMDNSEntryFallsBackToServiceAddress(t *testing.T) {
 	}
 	if len(got.Addrs) != 1 || got.Addrs[0].Addr().String() != "192.0.2.44" {
 		t.Fatalf("addrs = %v", got.Addrs)
+	}
+}
+
+func TestStateCarriesPeerNames(t *testing.T) {
+	a := testIdentity(t)
+	b := testIdentity(t)
+	payload, err := Encode(State{
+		Origin: a.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{
+			{ID: a.ID, Name: "utsav-laptop", OverlayV4: netip.MustParseAddr("10.144.144.1")},
+			{ID: b.ID, Name: "yoga", OverlayV4: netip.MustParseAddr("10.144.144.2")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Peers[0].Name != "utsav-laptop" || got.Peers[1].Name != "yoga" {
+		t.Fatalf("names = %q %q", got.Peers[0].Name, got.Peers[1].Name)
+	}
+}
+
+func TestStateV1WithoutNamesStillDecodes(t *testing.T) {
+	origin := testIdentity(t)
+	payload := []byte{1}
+	payload = binary.BigEndian.AppendUint64(payload, origin.ID)
+	payload = binary.BigEndian.AppendUint64(payload, 1)  // seq
+	payload = binary.BigEndian.AppendUint32(payload, 60) // ttl
+	payload = append(payload, 1)                         // one peer
+	payload = binary.BigEndian.AppendUint64(payload, origin.ID)
+	payload = append(payload, 0) // no addresses
+	payload = append(payload, 0) // no candidates
+	payload = append(payload, 0) // no routes
+	got, err := Decode(payload)
+	if err != nil {
+		t.Fatalf("v1 decode: %v", err)
+	}
+	if len(got.Peers) != 1 || got.Peers[0].Name != "" {
+		t.Fatalf("v1 peers = %+v", got.Peers)
+	}
+}
+
+func TestMergerLearnsNames(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	other := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	for _, id := range []identity.Identity{origin, other} {
+		if err := peers.Upsert(peer.Peer{ID: id.ID, PublicKey: id.PublicKey}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Encode(State{
+		Origin: origin.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{ID: other.ID, Name: "yoga", OverlayV4: netip.MustParseAddr("10.144.144.2")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+	if err := m.Merge(origin.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := peers.Get(other.ID)
+	if p.Name != "yoga" {
+		t.Fatalf("name = %q", p.Name)
 	}
 }

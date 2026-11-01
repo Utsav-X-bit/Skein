@@ -306,6 +306,30 @@ func TestJoinMovesACollidingOverlayAddress(t *testing.T) {
 	}
 }
 
+func TestNameCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skein.toml")
+	if code, _, stderr := runCLI(t, "-c", path, "init"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	if code, _, stderr := runCLI(t, "-c", path, "name", "utsav-laptop"); code != 0 {
+		t.Fatalf("name set: %s", stderr)
+	}
+	cfg, err := conf.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Node.Name != "utsav-laptop" {
+		t.Fatalf("name = %q", cfg.Node.Name)
+	}
+	code, stdout, _ := runCLI(t, "-c", path, "name")
+	if code != 0 || !strings.Contains(stdout, "utsav-laptop") {
+		t.Fatalf("name output = %q", stdout)
+	}
+	if code, _, _ := runCLI(t, "-c", path, "name", strings.Repeat("x", 40)); code != 1 {
+		t.Fatalf("long name code = %d, want 1", code)
+	}
+}
+
 func TestInviteNetworkCarriesTheSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skein.toml")
 	if code, _, stderr := runCLI(t, "-c", path, "init"); code != 0 {

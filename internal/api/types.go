@@ -17,12 +17,14 @@ type Status struct {
 // Peer is one row of the peer table.
 type Peer struct {
 	ID          string   `json:"id"`
+	Name        string   `json:"name,omitempty"`
 	State       string   `json:"state"`
 	Path        string   `json:"path,omitempty"`
 	RTTMs       float64  `json:"rtt_ms"`
 	OverlayIPv4 string   `json:"overlay_ipv4,omitempty"`
 	OverlayIPv6 string   `json:"overlay_ipv6,omitempty"`
 	Endpoint    string   `json:"endpoint,omitempty"`
+	Transport   string   `json:"transport,omitempty"`
 	Candidates  []string `json:"candidates,omitempty"`
 	Dialer      bool     `json:"dialer"`
 	Direct      bool     `json:"direct"`
