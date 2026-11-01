@@ -13,6 +13,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Older Windows PowerShell defaults to TLS 1.0, which wintun.net rejects.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {
+    # Older .NET without Tls12; the download will report the real error.
+}
+
 $version = "0.14.1"
 $sha256 = "07C256185D6EE3652E09FA55C0B673E2624B565E02C4B9091C79CA7D2F24EF51"
 $url = "https://www.wintun.net/builds/wintun-$version.zip"

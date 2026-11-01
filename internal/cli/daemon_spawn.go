@@ -52,9 +52,8 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 		return nil
 	}
 	if !elevated() {
-		return fmt.Errorf("the daemon is not running and starting it needs root:\n"+
-			"  sudo skein dashboard -c %s\n"+
-			"or start it separately with: skein run -c %s", configPath, configPath)
+		return fmt.Errorf("the daemon is not running and starting it needs root:\n%s\n"+
+			"or start it separately with: skein run -c %s", elevationHint(configPath), configPath)
 	}
 
 	cmd, err := spawnDaemon(configPath)

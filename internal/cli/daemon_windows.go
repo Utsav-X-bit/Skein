@@ -23,5 +23,10 @@ func terminate(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
+// elevationHint tells the user how to run with privileges on this platform.
+func elevationHint(configPath string) string {
+	return `  open an elevated prompt and run: skein dashboard -c ` + configPath
+}
+
 // setParentDeath is a no-op on Windows; the dashboard kills the child itself.
 func setParentDeath(*exec.Cmd) {}

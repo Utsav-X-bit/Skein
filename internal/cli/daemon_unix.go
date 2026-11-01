@@ -16,6 +16,11 @@ func terminate(cmd *exec.Cmd) {
 	_ = cmd.Process.Signal(syscall.SIGTERM)
 }
 
+// elevationHint tells the user how to run with privileges on this platform.
+func elevationHint(configPath string) string {
+	return "  sudo skein dashboard -c " + configPath
+}
+
 // setParentDeath makes the daemon exit if the dashboard dies.
 func setParentDeath(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}

@@ -112,12 +112,22 @@ the daemon.
    cd Skein
    go build -trimpath -o dist\skein.exe  .\cmd\skein
    go build -trimpath -o dist\skeind.exe .\cmd\skeind
-   .\scripts\fetch-wintun.ps1 -Dest dist
+   .\scripts\fetch-wintun.cmd -Dest dist
    ```
 
-   `fetch-wintun.ps1` downloads the pinned Wintun release, verifies its
-   SHA-256, and installs `wintun.dll` plus its license. On Linux, when
-   cross-building, use `./scripts/fetch-wintun.sh amd64 dist/windows-amd64`.
+   `fetch-wintun.cmd` runs the PowerShell fetcher with `-ExecutionPolicy
+   Bypass`, downloads the pinned Wintun release, verifies its SHA-256, and
+   installs `wintun.dll` plus its license. If scripts are blocked entirely:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\fetch-wintun.ps1 -Dest dist
+   ```
+
+   or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and
+   copy `wintun/bin/amd64/wintun.dll` into `dist`.
+
+   On Linux, when cross-building, use `./scripts/fetch-wintun.sh amd64
+   dist/windows-amd64`.
 
 2. Copy the folder anywhere (`C:\Skein` works). `wintun.dll` must sit next to
    the executable and match its architecture.
@@ -153,6 +163,52 @@ the daemon.
 `install-service` creates the underlay UDP rule (both address families)
 immediately; the overlay interface rule is created when the daemon starts.
 `wintun.dll` must match the architecture of the executable.
+
+### Windows with Git Bash
+
+Everything works from Git Bash; the differences are elevation and the terminal.
+
+```bash
+git clone https://github.com/Utsav-X-bit/Skein && cd Skein
+go build -trimpath -o dist/skein.exe  ./cmd/skein
+go build -trimpath -o dist/skeind.exe ./cmd/skeind
+
+# fetch wintun (bypasses the PowerShell execution policy)
+./scripts/fetch-wintun.cmd -Dest dist
+```
+
+If the wrapper is blocked too:
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fetch-wintun.ps1 -Dest dist
+```
+
+The config lives in `%APPDATA%\skein\skein.toml`, which Git Bash exposes as
+`$APPDATA/skein/skein.toml`:
+
+```bash
+./dist/skein.exe init
+./dist/skein.exe status
+./dist/skein.exe peers list
+./dist/skein.exe -c "$APPDATA/skein/skein.toml" dashboard
+```
+
+- `sudo` does not exist in Git Bash. Start it with **Run as administrator**
+  for `run`, `install-service`, and `dashboard` when they need to start the
+  daemon.
+- MinTTY is not a Windows console, so the dashboard falls back to the static
+  snapshot there. For the animated TUI use `winpty` or a Windows Terminal /
+  PowerShell tab:
+
+  ```bash
+  winpty ./dist/skein.exe dashboard
+  ```
+
+- If the dashboard is not elevated it prints the exact command to run from an
+  elevated prompt instead of starting a daemon it cannot create.
+- `scripts/fetch-wintun.sh` also works in Git Bash when `unzip` is installed;
+  the `.cmd` wrapper needs no extra tools.
+
 
 ## Quick start
 

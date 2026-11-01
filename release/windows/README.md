@@ -1,6 +1,15 @@
 # Skein on Windows
 
-The Windows build ships `skeind.exe`, `skein.exe`, and `wintun.dll`. The DLL
+The Windows build ships `skein.exe`, `skeind.exe`, and `wintun.dll`.
+
+If you build from source instead of using the archive, fetch the pinned DLL:
+
+```powershell
+.\scripts\fetch-wintun.cmd -Dest dist
+```
+
+That wrapper bypasses the PowerShell execution policy. The plain script works
+too when run with `-ExecutionPolicy Bypass`. The DLL
 must sit next to `skeind.exe`; the daemon loads it when it creates the TUN
 interface.
 
