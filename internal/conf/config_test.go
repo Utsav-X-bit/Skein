@@ -156,6 +156,26 @@ func TestLoadFixtures(t *testing.T) {
 	}
 }
 
+func TestValidateConfigDirRejectsDoubledAppData(t *testing.T) {
+	for _, dir := range []string{
+		`C:\Users\a\AppData\Roaming`,
+		`/home/a/.config`,
+		`C:\Users\a\AppData\Roaming\skein`,
+	} {
+		if err := validateConfigDir(dir); err != nil {
+			t.Fatalf("validateConfigDir(%q): %v", dir, err)
+		}
+	}
+	for _, dir := range []string{
+		`C:\Users\a\AppData\Roaming:C:\Users\a\AppData\Roaming`,
+		`C:\Users\a\AppData\Roaming:C:\Users\a\AppData\Roaming\skein`,
+	} {
+		if err := validateConfigDir(dir); err == nil {
+			t.Fatalf("expected %q to be rejected", dir)
+		}
+	}
+}
+
 func TestCheckPermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skein.toml")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -227,5 +247,50 @@ func TestParseRejectsPortAndMTUBounds(t *testing.T) {
 	doc := "[node]\nmtu = 100\n"
 	if _, err := Parse(doc); err == nil {
 		t.Fatal("expected MTU below minimum to be rejected")
+	}
+}
+
+func TestRenderRoundTrips(t *testing.T) {
+	cfg := baseConfig(t)
+	text, err := Render(cfg)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	got, err := Parse(string(text))
+	if err != nil {
+		t.Fatalf("Parse(Render()): %v\n%s", err, text)
+	}
+	if got.Node.OverlayIPv4 != cfg.Node.OverlayIPv4 || got.Node.ListenPort != cfg.Node.ListenPort {
+		t.Fatalf("node mismatch: %+v", got.Node)
+	}
+	if !bytes.Equal(got.Node.NetworkSecret, cfg.Node.NetworkSecret) || !bytes.Equal(got.API.Token, cfg.API.Token) {
+		t.Fatal("secrets did not round-trip")
+	}
+	if len(got.Peers) != len(cfg.Peers) || got.Peers[0].ID != cfg.Peers[0].ID || !got.Peers[0].Dialer {
+		t.Fatalf("peers = %+v", got.Peers)
+	}
+	if len(got.Peers[0].Addrs) != 1 || got.Peers[0].Addrs[0] != cfg.Peers[0].Addrs[0] {
+		t.Fatalf("peer addrs = %v", got.Peers[0].Addrs)
+	}
+}
+
+func TestNextFreeOverlay(t *testing.T) {
+	prefix := netip.MustParsePrefix("10.144.144.0/24")
+	used := []netip.Addr{
+		netip.MustParseAddr("10.144.144.1"),
+		netip.MustParseAddr("10.144.144.2"),
+	}
+	addr, err := NextFreeOverlay(prefix, used)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr.String() != "10.144.144.3" {
+		t.Fatalf("NextFreeOverlay = %s, want 10.144.144.3", addr)
+	}
+	if _, err := NextFreeOverlay(netip.MustParsePrefix("10.144.144.0/30"), []netip.Addr{
+		netip.MustParseAddr("10.144.144.1"),
+		netip.MustParseAddr("10.144.144.2"),
+	}); err == nil {
+		t.Fatal("expected a /30 with two hosts to be exhausted")
 	}
 }

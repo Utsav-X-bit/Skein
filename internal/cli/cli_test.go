@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 func runCLI(t *testing.T, args ...string) (int, string, string) {
@@ -161,5 +165,168 @@ func TestAPIErrorsAreReported(t *testing.T) {
 	code, _, stderr := runCLI(t, "-c", path, "status")
 	if code != 1 || !strings.Contains(stderr, "401") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func joinLine(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "join:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "join:"))
+		}
+	}
+	t.Fatalf("no join line in output:\n%s", output)
+	return ""
+}
+
+func nodeID(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "node id:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "node id:"))
+		}
+	}
+	t.Fatalf("no node id in output:\n%s", output)
+	return ""
+}
+
+func TestInitPrintsAJoinString(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skein.toml")
+	code, stdout, stderr := runCLI(t, "-c", path, "init")
+	if code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	join := joinLine(t, stdout)
+	if !strings.HasPrefix(join, "skein:2:") {
+		t.Fatalf("join string = %q", join)
+	}
+	inv, err := identity.DecodeNetworkInvite(join)
+	if err != nil {
+		t.Fatalf("decode join: %v", err)
+	}
+	cfg, err := conf.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(inv.Secret, cfg.Node.NetworkSecret) {
+		t.Fatal("join string does not carry the network secret")
+	}
+	if inv.ID == 0 {
+		t.Fatal("join string has no identity")
+	}
+}
+
+func TestJoinBootstrapsASecondNode(t *testing.T) {
+	dirA := t.TempDir()
+	pathA := filepath.Join(dirA, "skein.toml")
+	code, outA, stderr := runCLI(t, "-c", pathA, "init")
+	if code != 0 {
+		t.Fatalf("init A: %s", stderr)
+	}
+	idA := nodeID(t, outA)
+	join := joinLine(t, outA)
+
+	dirB := t.TempDir()
+	pathB := filepath.Join(dirB, "skein.toml")
+	code, outB, stderr := runCLI(t, "-c", pathB, "join", join)
+	if code != 0 {
+		t.Fatalf("join B: %s", stderr)
+	}
+	if !strings.Contains(outB, "joined network") {
+		t.Fatalf("join output = %q", outB)
+	}
+
+	cfgA, err := conf.Load(pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgB, err := conf.Load(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfgA.Node.NetworkSecret, cfgB.Node.NetworkSecret) {
+		t.Fatal("secrets differ after join")
+	}
+	if cfgA.Node.OverlayIPv4 == cfgB.Node.OverlayIPv4 {
+		t.Fatalf("overlay address collision: %s", cfgB.Node.OverlayIPv4)
+	}
+	if cfgB.Node.OverlayIPv4.String() != "10.144.144.2" {
+		t.Fatalf("joined overlay = %s, want 10.144.144.2", cfgB.Node.OverlayIPv4)
+	}
+	if _, err := os.Stat(filepath.Join(dirB, "identity.key")); err != nil {
+		t.Fatalf("identity not created: %v", err)
+	}
+	found := false
+	for _, p := range cfgB.Peers {
+		if fmt.Sprintf("%016x", p.ID) == idA && p.Dialer {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("inviter is not a dialer peer: %+v", cfgB.Peers)
+	}
+
+	// Joining again must keep the assigned overlay address.
+	if code, _, stderr := runCLI(t, "-c", pathB, "join", join); code != 0 {
+		t.Fatalf("second join: %s", stderr)
+	}
+	again, err := conf.Load(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Node.OverlayIPv4 != cfgB.Node.OverlayIPv4 {
+		t.Fatalf("overlay changed on re-join: %s -> %s", cfgB.Node.OverlayIPv4, again.Node.OverlayIPv4)
+	}
+}
+
+func TestJoinMovesACollidingOverlayAddress(t *testing.T) {
+	dirA := t.TempDir()
+	pathA := filepath.Join(dirA, "skein.toml")
+	code, outA, stderr := runCLI(t, "-c", pathA, "init")
+	if code != 0 {
+		t.Fatalf("init A: %s", stderr)
+	}
+	join := joinLine(t, outA)
+
+	// B was initialised separately and also defaults to 10.144.144.1.
+	dirB := t.TempDir()
+	pathB := filepath.Join(dirB, "skein.toml")
+	if code, _, stderr := runCLI(t, "-c", pathB, "init"); code != 0 {
+		t.Fatalf("init B: %s", stderr)
+	}
+	if code, _, stderr := runCLI(t, "-c", pathB, "join", join); code != 0 {
+		t.Fatalf("join B: %s", stderr)
+	}
+	cfgB, err := conf.Load(pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgB.Node.OverlayIPv4.String() != "10.144.144.2" {
+		t.Fatalf("colliding overlay not moved: %s", cfgB.Node.OverlayIPv4)
+	}
+}
+
+func TestInviteNetworkCarriesTheSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skein.toml")
+	if code, _, stderr := runCLI(t, "-c", path, "init"); code != 0 {
+		t.Fatalf("init: %s", stderr)
+	}
+	code, stdout, stderr := runCLI(t, "-c", path, "invite", "--network")
+	if code != 0 {
+		t.Fatalf("invite --network: %s", stderr)
+	}
+	inv, err := identity.DecodeNetworkInvite(strings.TrimSpace(stdout))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	cfg, err := conf.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(inv.Secret, cfg.Node.NetworkSecret) {
+		t.Fatal("network invite does not carry the secret")
+	}
+	if len(inv.UsedV4) == 0 || inv.UsedV4[0] != cfg.Node.OverlayIPv4 {
+		t.Fatalf("used addresses = %v", inv.UsedV4)
 	}
 }

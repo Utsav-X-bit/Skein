@@ -420,10 +420,14 @@ func (e *Engine) handleHandshake(src netip.AddrPort, h wire.Header, payload []by
 			return err
 		}
 	}
+	if p, ok := e.peers.Get(h.From); ok && !p.ActiveEndpoint.IsValid() {
+		// The source that completed a handshake is a usable direct endpoint.
+		e.peers.AddCandidate(h.From, src, peer.SourceProbe)
+	}
 	if _, err := e.sessions.Confirmation(h.From, attempt); err == nil {
 		// Record the path first so the confirmation can be routed.
 		e.established(h.From, src)
-		if err := e.sendConfirm(h.From, attempt); err != nil {
+		if err := e.sendConfirm(h.From, attempt, src); err != nil {
 			e.counters.HandshakeFail.Add(1)
 			return err
 		}
@@ -679,9 +683,10 @@ func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]
 		toNext = id
 	} else if r, ok := e.routes.Lookup(peerID); ok {
 		toNext = r.NextHop
-	}
-	if toNext == 0 {
-		return ErrNoRoute
+	} else {
+		// First contact from a peer we do not know yet: answer the source
+		// directly. A relayed handshake always matches peerForAddr above.
+		toNext = peerID
 	}
 	h := wire.Header{
 		Type:    wire.Handshake,
@@ -715,7 +720,9 @@ func (e *Engine) peerForAddr(addr netip.AddrPort) (uint64, bool) {
 }
 
 // sendConfirm proves the new session to the peer and asks it to install it.
-func (e *Engine) sendConfirm(peerID uint64, attempt [session.AttemptSize]byte) error {
+// A peer that is not in the table yet (first contact through an invite) is
+// answered directly at the address its handshake came from.
+func (e *Engine) sendConfirm(peerID uint64, attempt [session.AttemptSize]byte, src netip.AddrPort) error {
 	payload, err := e.sessions.Confirmation(peerID, attempt)
 	if err != nil {
 		return err
@@ -731,7 +738,21 @@ func (e *Engine) sendConfirm(peerID uint64, attempt [session.AttemptSize]byte) e
 	}
 	body := wire.AppendNonce(nil, sealedEpoch, counter)
 	body = append(body, ct...)
-	return e.sendToPeer(peerID, wire.Confirm, body)
+	if err := e.sendToPeer(peerID, wire.Confirm, body); err == nil {
+		return nil
+	}
+	h := wire.Header{
+		Type:    wire.Confirm,
+		ToNext:  peerID,
+		ToFinal: peerID,
+		From:    e.cfg.LocalID,
+		TTL:     wire.MaxTTL,
+	}
+	frame, err := wire.Marshal(h, body)
+	if err != nil {
+		return err
+	}
+	return e.link.Send(src, frame)
 }
 
 // ensureSession starts a handshake when this node is the configured dialer.

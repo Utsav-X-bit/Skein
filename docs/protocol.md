@@ -165,6 +165,34 @@ wins) because they are required to map an overlay IP to a peer; a malicious
 member can still lie about another member's address, which is one of the
 documented shared-PSK limitations.
 
+## Joining a network
+
+`skein init` prints a bootstrap string:
+
+```
+skein:2:<base64url payload>
+```
+
+The payload carries the 32-byte network secret, the inviter's peer ID and
+public key, both overlay prefixes, the overlay IPv4 addresses already in use,
+and the inviter's underlay endpoints. It is a secret: holding it is equivalent
+to holding the network PSK.
+
+`skein join` on another node:
+
+1. imports the secret and prefixes;
+2. picks the lowest overlay IPv4 host address not listed as used (a re-join
+   keeps the address already assigned);
+3. writes the inviter as a peer with `dialer = true`;
+4. creates an identity if none exists.
+
+The inviter needs no configuration entry for the joiner. Its session manager
+accepts an unknown peer only after that peer proves the network secret: the
+responder learns the peer's static key from message one, but the peer is
+registered and trusted only when it decrypts message two and sends the
+encrypted confirmation. A peer that presents a key whose hash does not match
+its claimed ID is rejected immediately.
+
 ## Discovery
 
 mDNS service `_skein._udp.local` with TXT records:

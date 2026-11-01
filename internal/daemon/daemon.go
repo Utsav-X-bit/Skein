@@ -132,6 +132,10 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	eng.SetControlHandler(ctl.HandleControl)
 	eng.SetPingHandler(ctl.HandlePing)
 	eng.SetSessionHandler(d.sessionEstablished)
+	// A peer that proves the network secret may join without a configured
+	// entry; the invite carries the secret, so holding it is membership.
+	sessions.SetAcceptUnknown(true)
+	sessions.SetPeerLearnedHandler(d.peerLearned)
 
 	return d, nil
 }
@@ -166,6 +170,20 @@ func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPor
 		d.peers.AddCandidate(id, addr, peer.SourceConfig)
 	}
 	return nil
+}
+
+func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
+	if id == d.id.ID {
+		return
+	}
+	if _, ok := d.peers.Get(id); ok {
+		return
+	}
+	if err := d.peers.Upsert(peer.Peer{ID: id, PublicKey: publicKey, Dialer: false, State: peer.StateDown}); err != nil {
+		log.Printf("skein: warning: learned peer %016x rejected: %v", id, err)
+		return
+	}
+	d.emit(api.Event{Type: "peer_joined", PeerID: fmt.Sprintf("%016x", id)})
 }
 
 func (d *Daemon) sessionEstablished(peerID uint64) {

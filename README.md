@@ -63,17 +63,31 @@ GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
 
 ## Quick start
 
-On every machine (no privileges needed for these two):
+**First node** (no privileges needed):
 
 ```bash
-./skein init      # identity, config, network secret, API token
-./skein invite    # share this string with the other nodes
+./skein init          # identity, config, secret, API token, and a join string
 ```
 
-`init` writes `~/.config/skein/skein.toml` and `identity.key`
-(`%APPDATA%\skein\` on Windows). Give every node the **same
-`network_secret`** and a **unique `overlay_ipv4`**, then either rely on mDNS on
-the same LAN or add peers:
+It prints a `join:` line like `skein:2:…`. That one string carries the network
+secret, the inviter's identity and addresses, the overlay prefixes, and the
+overlay addresses already in use. Treat it as a secret.
+
+**Every other node**:
+
+```bash
+./skein join "skein:2:…"   # sets the secret, a free overlay address, and the inviter as a peer
+```
+
+`join` writes the config and, if needed, a fresh identity. Start both ends:
+
+```bash
+sudo ./skeind run -c ~/.config/skein/skein.toml
+```
+
+The inviter accepts the joiner automatically once the joiner proves the network
+secret during the handshake; no peer block is needed on the inviter. Static
+peers remain supported when you want fixed addresses:
 
 ```toml
 [[peer]]
@@ -132,7 +146,9 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 |---|---|
 | `skein init` | Create identity, config, network secret, API token |
 | `skein genkey` | Print the public key and node ID |
-| `skein invite` | Print `skein:1:<base64url>` for this node |
+| `skein invite` | Print `skein:1:<base64url>` (identity + addresses, no secret) |
+| `skein invite --network` | Print the `skein:2:` join string (contains the secret) |
+| `skein join <invite>` | Configure this node from a network invite |
 | `skein status [--json]` | Overlay addresses, peers, uptime, counters |
 | `skein peers [list\|add\|rm]` | Manage peers |
 | `skein routes [--json]` | Reachability table |
@@ -184,7 +200,8 @@ handshake backoff 1→30 s.
 - More than five nodes or routes longer than four links are unsupported.
 - No PMTUD or fragmentation; a dual-stack underlay path below 1382 bytes of
   PMTU is unsupported.
-- One shared secret, no per-peer ACLs or revocation.
+- One shared secret, no per-peer ACLs or revocation. The join string contains
+  that secret, so anyone holding it can join the network.
 - The loopback API is not an isolation boundary between processes of the same
   user, and relays can observe peer IDs, sizes, and timing.
 

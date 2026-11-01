@@ -177,11 +177,37 @@ type Handshake struct {
 	session   *Session
 }
 
-// NewHandshake starts an initiator or responder handshake bound to attempt and epoch.
+// NewHandshake starts an initiator or responder handshake bound to attempt and
+// epoch. A responder may pass a nil remote key; the key is then learned from
+// the initiator's message and must match the ID bound into the prologue.
 func NewHandshake(local identity.Identity, remotePublic, psk []byte, initiator bool, attempt [AttemptSize]byte, epoch uint32) (*Handshake, error) {
-	if len(remotePublic) != identity.KeySize {
+	if initiator && len(remotePublic) != identity.KeySize {
 		return nil, fmt.Errorf("remote public key must be %d bytes", identity.KeySize)
 	}
+	if !initiator && len(remotePublic) != 0 && len(remotePublic) != identity.KeySize {
+		return nil, fmt.Errorf("remote public key must be %d bytes", identity.KeySize)
+	}
+	var remoteID uint64
+	if len(remotePublic) == identity.KeySize {
+		var err error
+		if remoteID, err = identity.PeerID(remotePublic); err != nil {
+			return nil, err
+		}
+	}
+	return newHandshake(local, remotePublic, remoteID, psk, initiator, attempt, epoch)
+}
+
+// NewResponderHandshake builds a responder handshake for a peer whose key is
+// not yet known. The claimed ID is bound into the prologue and verified against
+// the peer's static key once message one is read.
+func NewResponderHandshake(local identity.Identity, claimedID uint64, psk []byte, attempt [AttemptSize]byte, epoch uint32) (*Handshake, error) {
+	if claimedID == 0 {
+		return nil, errors.New("claimed peer ID must not be zero")
+	}
+	return newHandshake(local, nil, claimedID, psk, false, attempt, epoch)
+}
+
+func newHandshake(local identity.Identity, remotePublic []byte, remoteID uint64, psk []byte, initiator bool, attempt [AttemptSize]byte, epoch uint32) (*Handshake, error) {
 	if len(psk) != identity.KeySize {
 		return nil, fmt.Errorf("network secret must be %d bytes", identity.KeySize)
 	}
@@ -189,9 +215,8 @@ func NewHandshake(local identity.Identity, remotePublic, psk []byte, initiator b
 	if err != nil {
 		return nil, err
 	}
-	remoteID, err := identity.PeerID(remotePublic)
-	if err != nil {
-		return nil, err
+	if remoteID == 0 {
+		return nil, errors.New("remote peer ID must not be zero")
 	}
 	initiatorID, responderID := localID, remoteID
 	if !initiator {
@@ -275,7 +300,13 @@ func (h *Handshake) Read(payload []byte) (bool, error) {
 }
 
 func (h *Handshake) complete(cs1, cs2 *noise.CipherState) error {
-	if peer := h.hs.PeerStatic(); !bytes.Equal(peer, h.remote) {
+	peer := h.hs.PeerStatic()
+	if len(peer) == 0 {
+		return ErrPeerKey
+	}
+	if len(h.remote) == 0 {
+		h.remote = append([]byte(nil), peer...)
+	} else if !bytes.Equal(peer, h.remote) {
 		return ErrPeerKey
 	}
 	send, recv := cs2, cs1
@@ -290,6 +321,18 @@ func (h *Handshake) complete(cs1, cs2 *noise.CipherState) error {
 
 // Session returns the completed session, or nil before completion.
 func (h *Handshake) Session() *Session { return h.session }
+
+// Remote returns the peer's static key, learned during the handshake.
+func (h *Handshake) Remote() []byte { return h.remote }
+
+// PeerKey returns the peer's static key as soon as it is known, which for a
+// responder is right after message one is read.
+func (h *Handshake) PeerKey() []byte {
+	if len(h.remote) > 0 {
+		return h.remote
+	}
+	return h.hs.PeerStatic()
+}
 
 // Confirmation builds the encrypted confirmation payload for this attempt.
 func (h *Handshake) Confirmation() ([]byte, error) {
@@ -312,15 +355,19 @@ func ParseConfirmation(payload []byte) ([AttemptSize]byte, error) {
 // maxPending bounds in-flight handshakes per peer.
 const maxPending = 4
 
+// maxPeers bounds the peer table, including peers learned but not confirmed.
+const maxPeers = 32
+
 // handshakeTimeout bounds how long an incomplete handshake may linger.
 const handshakeTimeout = 30 * time.Second
 
 type peerState struct {
 	mu sync.Mutex
 
-	public  []byte
-	pending map[[AttemptSize]byte]*Handshake
-	ready   map[[AttemptSize]byte]*Session
+	public   []byte
+	verified bool
+	pending  map[[AttemptSize]byte]*Handshake
+	ready    map[[AttemptSize]byte]*Session
 
 	send          *Session
 	sendAttempt   [AttemptSize]byte
@@ -333,8 +380,10 @@ type Manager struct {
 	local identity.Identity
 	psk   []byte
 
-	mu    sync.Mutex
-	peers map[uint64]*peerState
+	mu            sync.Mutex
+	peers         map[uint64]*peerState
+	acceptUnknown bool
+	onLearned     func(id uint64, publicKey []byte)
 }
 
 // NewManager creates a session manager for the local identity and network secret.
@@ -345,9 +394,35 @@ func NewManager(local identity.Identity, psk []byte) (*Manager, error) {
 	return &Manager{local: local, psk: append([]byte(nil), psk...), peers: make(map[uint64]*peerState)}, nil
 }
 
+// SetAcceptUnknown allows a responder to accept a handshake from a peer that is
+// not configured yet. The peer must still prove the network secret, and its ID
+// must match the static key it presents.
+func (m *Manager) SetAcceptUnknown(accept bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.acceptUnknown = accept
+}
+
+// SetPeerLearnedHandler is called when a previously unknown peer is accepted.
+func (m *Manager) SetPeerLearnedHandler(fn func(id uint64, publicKey []byte)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onLearned = fn
+}
+
+func (m *Manager) learnedHandler() func(uint64, []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onLearned
+}
+
 // SetPeer registers or updates a peer's static public key. A peer ID that
 // resolves to a different key is rejected.
 func (m *Manager) SetPeer(id uint64, publicKey []byte) error {
+	return m.setPeer(id, publicKey, true)
+}
+
+func (m *Manager) setPeer(id uint64, publicKey []byte, verified bool) error {
 	derived, err := identity.PeerID(publicKey)
 	if err != nil {
 		return err
@@ -361,13 +436,22 @@ func (m *Manager) SetPeer(id uint64, publicKey []byte) error {
 		if !bytes.Equal(ps.public, publicKey) {
 			return fmt.Errorf("peer %016x is already bound to a different key", id)
 		}
+		if verified {
+			ps.mu.Lock()
+			ps.verified = true
+			ps.mu.Unlock()
+		}
 		return nil
 	}
+	if len(m.peers) >= maxPeers {
+		return fmt.Errorf("peer table is full (%d entries)", maxPeers)
+	}
 	m.peers[id] = &peerState{
-		public:  append([]byte(nil), publicKey...),
-		pending: make(map[[AttemptSize]byte]*Handshake),
-		ready:   make(map[[AttemptSize]byte]*Session),
-		recv:    make(map[uint32]*Session),
+		public:   append([]byte(nil), publicKey...),
+		verified: verified,
+		pending:  make(map[[AttemptSize]byte]*Handshake),
+		ready:    make(map[[AttemptSize]byte]*Session),
+		recv:     make(map[uint32]*Session),
 	}
 	return nil
 }
@@ -457,9 +541,45 @@ func (m *Manager) HandleHandshake(peerID uint64, payload []byte) (reply []byte, 
 
 	m.mu.Lock()
 	ps, ok := m.peers[peerID]
+	acceptUnknown := m.acceptUnknown
 	m.mu.Unlock()
 	if !ok {
-		return nil, attempt, fmt.Errorf("peer %016x is not registered", peerID)
+		if !acceptUnknown {
+			return nil, attempt, fmt.Errorf("peer %016x is not registered", peerID)
+		}
+		hs, err := NewResponderHandshake(m.local, peerID, m.psk, attempt, epoch)
+		if err != nil {
+			return nil, attempt, err
+		}
+		if _, err := hs.Read(payload); err != nil {
+			return nil, attempt, err
+		}
+		pub := hs.PeerKey()
+		derived, err := identity.PeerID(pub)
+		if err != nil || derived != peerID {
+			return nil, attempt, fmt.Errorf("%w: claimed ID %016x does not match the handshake key", ErrPeerKey, peerID)
+		}
+		// Register the key but do not trust the peer yet: the PSK is only
+		// proven when the initiator decrypts message two and confirms.
+		if err := m.setPeer(peerID, pub, false); err != nil {
+			return nil, attempt, err
+		}
+		m.mu.Lock()
+		ps = m.peers[peerID]
+		m.mu.Unlock()
+		ps.mu.Lock()
+		ps.pending[attempt] = hs
+		ps.mu.Unlock()
+		reply, err := hs.Write()
+		if err != nil {
+			return nil, attempt, err
+		}
+		if sess := hs.Session(); sess != nil {
+			ps.mu.Lock()
+			ps.ready[attempt] = sess
+			ps.mu.Unlock()
+		}
+		return reply, attempt, nil
 	}
 
 	ps.mu.Lock()
@@ -576,7 +696,16 @@ func (m *Manager) HandleConfirm(peerID uint64, epoch uint32, counter uint64, ad,
 		if ps.consider(c.sess, c.attempt) {
 			ps.install(c.sess, c.attempt)
 		}
+		firstContact := !ps.verified
+		ps.verified = true
+		pub := append([]byte(nil), ps.public...)
 		ps.mu.Unlock()
+		if firstContact {
+			// The peer proved the network secret by confirming the session.
+			if fn := m.learnedHandler(); fn != nil {
+				fn(peerID, pub)
+			}
+		}
 		return nil
 	}
 	return ErrNotConfirmed

@@ -312,3 +312,44 @@ func TestRelayOverLoopbackUDP(t *testing.T) {
 		t.Fatal("relay did not forward anything")
 	}
 }
+
+// TestUnknownPeerJoinsOverUDP covers the invite flow: only the inviter knows
+// the joiner, and the joiner is accepted once it proves the network secret.
+func TestUnknownPeerJoinsOverUDP(t *testing.T) {
+	psk := make([]byte, identity.KeySize)
+	for i := range psk {
+		psk[i] = byte(i + 21)
+	}
+	a := startEndpoint(t, psk, "10.144.144.1")
+	b := startEndpoint(t, psk, "10.144.144.2")
+
+	// Only the inviter has a configured entry for the joiner.
+	a.know(t, b, true)
+	b.sessions.SetAcceptUnknown(true)
+	b.sessions.SetPeerLearnedHandler(func(id uint64, publicKey []byte) {
+		_ = b.peers.Upsert(peer.Peer{ID: id, PublicKey: publicKey, OverlayV4: a.overlay, Dialer: false})
+	})
+
+	cancelA := a.run(t)
+	defer cancelA()
+	cancelB := b.run(t)
+	defer cancelB()
+
+	waitFor(t, 5*time.Second, func() bool {
+		_ = a.eng.EnsureSession(b.id.ID)
+		return a.sessions.HasSession(b.id.ID) && b.sessions.HasSession(a.id.ID)
+	})
+
+	pkt := ipv4Packet(a.overlay, b.overlay, []byte("joined"))
+	waitFor(t, 5*time.Second, func() bool {
+		if err := a.eng.SendOverlayPacket(pkt); err != nil {
+			return false
+		}
+		select {
+		case got := <-b.tun.out:
+			return string(got[20:]) == "joined"
+		case <-time.After(50 * time.Millisecond):
+			return false
+		}
+	})
+}

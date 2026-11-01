@@ -72,7 +72,23 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "invite":
-		if err := cmdInvite(path, stdout); err != nil {
+		network := false
+		for _, arg := range rest[1:] {
+			if arg == "--network" {
+				network = true
+			}
+		}
+		if err := cmdInvite(path, network, stdout); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
+	case "join":
+		if len(rest) != 2 {
+			fmt.Fprintln(stderr, "usage: skein join <invite>")
+			return 2
+		}
+		if err := cmdJoin(path, rest[1], stdout); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -209,13 +225,20 @@ mdns = true
 	inv := identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands}
 	invite, _ := identity.EncodeInvite(inv)
 
+	joinCfg := conf.Default()
+	joinCfg.Node.NetworkSecret = psk
+	joinCfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
+	joinCfg.API.Token = token
+	join, _ := encodeJoin(joinCfg, id, cands)
+
 	fmt.Fprintf(stdout, "config:     %s\n", configPath)
 	fmt.Fprintf(stdout, "identity:   %s\n", keyPath)
 	fmt.Fprintf(stdout, "node id:    %016x\n", id.ID)
 	fmt.Fprintf(stdout, "public key: %s\n", base64.StdEncoding.EncodeToString(id.PublicKey))
 	fmt.Fprintf(stdout, "invite:     %s\n", invite)
-	fmt.Fprintf(stdout, "network secret (share out of band with every node): %s\n", base64.RawURLEncoding.EncodeToString(psk))
-	fmt.Fprintln(stdout, "edit overlay_ipv4 in the config so every node has a unique address")
+	fmt.Fprintf(stdout, "join:       %s\n", join)
+	fmt.Fprintln(stdout, "give the join string to the other nodes (it contains the network secret);")
+	fmt.Fprintln(stdout, "each of them runs: skein join <join string>")
 	return nil
 }
 
@@ -240,7 +263,7 @@ func cmdGenkey(configPath string, stdout io.Writer) error {
 	return nil
 }
 
-func cmdInvite(configPath string, stdout io.Writer) error {
+func cmdInvite(configPath string, network bool, stdout io.Writer) error {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
@@ -249,19 +272,198 @@ func cmdInvite(configPath string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	cands, err := localCandidates(cfg)
+	if err != nil {
+		return err
+	}
+	if !network {
+		invite, err := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, invite)
+		return nil
+	}
+	join, err := encodeJoin(cfg, id, cands)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, join)
+	return nil
+}
+
+// encodeJoin builds the secret-bearing bootstrap string.
+func encodeJoin(cfg conf.Config, id identity.Identity, cands []netip.AddrPort) (string, error) {
+	used := []netip.Addr{cfg.Node.OverlayIPv4}
+	used = append(used, runningPeerOverlays(cfg)...)
+	used = dedupeOverlays(used, cfg.Node.OverlayIPv4Prefix)
+	if len(used) > 16 {
+		used = used[:16]
+	}
+	return identity.EncodeNetworkInvite(identity.NetworkInvite{
+		Secret:    cfg.Node.NetworkSecret,
+		ID:        id.ID,
+		PublicKey: id.PublicKey,
+		PrefixV4:  cfg.Node.OverlayIPv4Prefix,
+		PrefixV6:  cfg.Node.OverlayIPv6Prefix,
+		UsedV4:    used,
+		Addrs:     cands,
+	})
+}
+
+// localCandidates lists underlay endpoints, never overlay addresses.
+func localCandidates(cfg conf.Config) ([]netip.AddrPort, error) {
 	cands, err := path.LocalCandidates(cfg.Node.ListenPort)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cands = path.ExcludePrefixes(cands, []netip.Prefix{
+	return path.ExcludePrefixes(cands, []netip.Prefix{
 		cfg.Node.OverlayIPv4Prefix,
 		cfg.Node.OverlayIPv6Prefix,
-	})
-	invite, err := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
+	}), nil
+}
+
+// runningPeerOverlays asks the local daemon for overlay addresses already in
+// use. It returns nil when the daemon is not running.
+func runningPeerOverlays(cfg conf.Config) []netip.Addr {
+	c := &client{
+		base:  "http://" + cfg.API.Listen,
+		token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
+		http:  &http.Client{Timeout: 2 * time.Second},
+	}
+	var peers []struct {
+		OverlayIPv4 string `json:"overlay_ipv4"`
+	}
+	if err := c.get(context.Background(), "/api/v1/peers", &peers); err != nil {
+		return nil
+	}
+	out := make([]netip.Addr, 0, len(peers))
+	for _, p := range peers {
+		if addr, err := netip.ParseAddr(p.OverlayIPv4); err == nil {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+func dedupeOverlays(addrs []netip.Addr, prefix netip.Prefix) []netip.Addr {
+	seen := make(map[netip.Addr]struct{}, len(addrs))
+	out := addrs[:0]
+	for _, addr := range addrs {
+		if !addr.IsValid() || !prefix.Contains(addr) {
+			continue
+		}
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
+}
+
+// cmdJoin configures this node from a network invite: secret, overlay address,
+// and the inviter as a dialer peer.
+func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
+	inv, err := identity.DecodeNetworkInvite(inviteText)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, invite)
+
+	cfg := conf.Default()
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		cfg, err = conf.Load(configPath)
+		if err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+
+	cfg.Node.NetworkSecret = inv.Secret
+	cfg.Node.OverlayIPv4Prefix = inv.PrefixV4
+	cfg.Node.OverlayIPv6Prefix = inv.PrefixV6
+
+	alreadyJoined := false
+	for _, p := range cfg.Peers {
+		if p.ID == inv.ID {
+			alreadyJoined = true
+		}
+	}
+	// On a first join, avoid every address the inviter already knows. On a
+	// re-join, keep the address this node was assigned.
+	keepOverlay := alreadyJoined &&
+		cfg.Node.OverlayIPv4.IsValid() &&
+		inv.PrefixV4.Contains(cfg.Node.OverlayIPv4)
+	if !keepOverlay {
+		addr, err := conf.NextFreeOverlay(inv.PrefixV4, inv.UsedV4)
+		if err != nil {
+			return err
+		}
+		cfg.Node.OverlayIPv4 = addr
+	}
+	if len(cfg.API.Token) != 32 {
+		token := make([]byte, 32)
+		if _, err := rand.Read(token); err != nil {
+			return err
+		}
+		cfg.API.Token = token
+	}
+
+	inviter := conf.Peer{ID: inv.ID, PublicKey: inv.PublicKey, Addrs: inv.Addrs, Dialer: true}
+	merged := false
+	for i := range cfg.Peers {
+		if cfg.Peers[i].ID == inv.ID {
+			cfg.Peers[i] = inviter
+			merged = true
+			break
+		}
+	}
+	if !merged {
+		cfg.Peers = append(cfg.Peers, inviter)
+	}
+	if err := conf.Validate(cfg); err != nil {
+		return err
+	}
+
+	keyPath := identityPath(configPath)
+	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+			return err
+		}
+		fresh, err := identity.Generate()
+		if err != nil {
+			return err
+		}
+		if err := identity.Save(keyPath, fresh); err != nil {
+			return err
+		}
+	}
+	id, err := identity.Load(keyPath)
+	if err != nil {
+		return err
+	}
+
+	text, err := conf.Render(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, text, 0o600); err != nil {
+		return err
+	}
+	if err := fileperm.Restrict(configPath); err != nil {
+		return err
+	}
+
+	cands, _ := localCandidates(cfg)
+	own, _ := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
+	fmt.Fprintf(stdout, "joined network\n")
+	fmt.Fprintf(stdout, "  config:  %s\n", configPath)
+	fmt.Fprintf(stdout, "  node id: %016x\n", id.ID)
+	fmt.Fprintf(stdout, "  overlay: %s\n", cfg.Node.OverlayIPv4)
+	fmt.Fprintf(stdout, "  inviter: %016x at %v\n", inv.ID, inv.Addrs)
+	fmt.Fprintf(stdout, "  invite:  %s\n", own)
+	fmt.Fprintln(stdout, "start with: skeind run -c <config>")
 	return nil
 }
 

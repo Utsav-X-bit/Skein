@@ -111,13 +111,115 @@ func DefaultInterface() string {
 	return "skein0"
 }
 
+// Default returns the built-in defaults, before validation.
+func Default() Config {
+	return Config{
+		Node: Node{
+			OverlayIPv4Prefix: netip.MustParsePrefix(defaultIPv4Prefix),
+			OverlayIPv6Prefix: netip.MustParsePrefix(defaultIPv6Prefix),
+			ListenPort:        DefaultListenPort,
+			MTU:               DefaultMTU,
+			Interface:         DefaultInterface(),
+		},
+		API:       API{Listen: DefaultAPIBind},
+		Discovery: Discovery{MDNS: true},
+	}
+}
+
+// NextFreeOverlay returns the lowest usable host address in prefix that is not
+// already taken.
+func NextFreeOverlay(prefix netip.Prefix, used []netip.Addr) (netip.Addr, error) {
+	if !prefix.IsValid() || prefix.Bits() == 0 {
+		return netip.Addr{}, errors.New("conf: invalid overlay prefix")
+	}
+	taken := make(map[netip.Addr]struct{}, len(used))
+	for _, addr := range used {
+		taken[addr] = struct{}{}
+	}
+	last := broadcast(prefix)
+	addr := prefix.Masked().Addr()
+	for range 4096 {
+		addr = addr.Next()
+		if !addr.IsValid() || !prefix.Contains(addr) {
+			break
+		}
+		if addr == last {
+			continue
+		}
+		if _, exists := taken[addr]; exists {
+			continue
+		}
+		return addr, nil
+	}
+	return netip.Addr{}, fmt.Errorf("conf: %s has no free host address", prefix)
+}
+
+// Render serializes cfg as TOML in the same schema Load parses.
+func Render(cfg Config) ([]byte, error) {
+	if err := Validate(cfg); err != nil {
+		return nil, err
+	}
+	var b strings.Builder
+	b.WriteString("[node]\n")
+	fmt.Fprintf(&b, "overlay_ipv4_prefix = %q\n", cfg.Node.OverlayIPv4Prefix.String())
+	fmt.Fprintf(&b, "overlay_ipv6_prefix = %q\n", cfg.Node.OverlayIPv6Prefix.String())
+	fmt.Fprintf(&b, "overlay_ipv4        = %q\n", cfg.Node.OverlayIPv4.String())
+	if cfg.Node.OverlayIPv6.IsValid() {
+		fmt.Fprintf(&b, "overlay_ipv6        = %q\n", cfg.Node.OverlayIPv6.String())
+	}
+	fmt.Fprintf(&b, "listen_port         = %d\n", cfg.Node.ListenPort)
+	fmt.Fprintf(&b, "network_secret      = %q\n", base64.RawURLEncoding.EncodeToString(cfg.Node.NetworkSecret))
+	fmt.Fprintf(&b, "mtu                 = %d\n", cfg.Node.MTU)
+	fmt.Fprintf(&b, "interface           = %q\n", cfg.Node.Interface)
+	b.WriteString("\n[api]\n")
+	fmt.Fprintf(&b, "listen = %q\n", cfg.API.Listen)
+	fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
+	b.WriteString("\n[discovery]\n")
+	fmt.Fprintf(&b, "mdns = %v\n", cfg.Discovery.MDNS)
+	for _, p := range cfg.Peers {
+		b.WriteString("\n[[peer]]\n")
+		fmt.Fprintf(&b, "id     = %q\n", formatID(p.ID))
+		fmt.Fprintf(&b, "pubkey = %q\n", base64.StdEncoding.EncodeToString(p.PublicKey))
+		fmt.Fprintf(&b, "dialer = %v\n", p.Dialer)
+		if len(p.Addrs) == 0 {
+			b.WriteString("addrs  = []\n")
+			continue
+		}
+		b.WriteString("addrs  = [")
+		for i, addr := range p.Addrs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", "udp://"+addr.String())
+		}
+		b.WriteString("]\n")
+	}
+	return []byte(b.String()), nil
+}
+
+func formatID(id uint64) string {
+	return fmt.Sprintf("%016x", id)
+}
+
 // DefaultPath returns the per-user configuration file path.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
+	if err := validateConfigDir(dir); err != nil {
+		return "", err
+	}
 	return filepath.Join(dir, "skein", "skein.toml"), nil
+}
+
+// validateConfigDir rejects a malformed config directory. The common cause is
+// APPDATA being concatenated with itself, which yields "C:\a:C:\a".
+func validateConfigDir(dir string) error {
+	if len(dir) > 2 && dir[1] == ':' && strings.Contains(dir[2:], ":") {
+		return fmt.Errorf("config directory %q is malformed; check the APPDATA environment variable", dir)
+	}
+	return nil
 }
 
 // Load parses path, applies defaults, and validates the result.
@@ -147,17 +249,7 @@ func parse(text string) (Config, error) {
 		return Config{}, fmt.Errorf("unknown configuration key %q", undecoded[0].String())
 	}
 
-	cfg := Config{
-		Node: Node{
-			OverlayIPv4Prefix: netip.MustParsePrefix(defaultIPv4Prefix),
-			OverlayIPv6Prefix: netip.MustParsePrefix(defaultIPv6Prefix),
-			ListenPort:        DefaultListenPort,
-			MTU:               DefaultMTU,
-			Interface:         DefaultInterface(),
-		},
-		API:       API{Listen: DefaultAPIBind},
-		Discovery: Discovery{MDNS: true},
-	}
+	cfg := Default()
 
 	if s := fc.Node.OverlayIPv4Prefix; s != "" {
 		if cfg.Node.OverlayIPv4Prefix, err = netip.ParsePrefix(s); err != nil {

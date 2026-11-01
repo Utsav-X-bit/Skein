@@ -16,6 +16,7 @@ type pair struct {
 	bID    uint64
 	aIdent identity.Identity
 	bIdent identity.Identity
+	psk    []byte
 }
 
 func newPair(t *testing.T) pair {
@@ -46,7 +47,7 @@ func newPair(t *testing.T) pair {
 	if err := bm.SetPeer(a.ID, a.PublicKey); err != nil {
 		t.Fatal(err)
 	}
-	return pair{a: am, b: bm, aID: a.ID, bID: b.ID, aIdent: a, bIdent: b}
+	return pair{a: am, b: bm, aID: a.ID, bID: b.ID, aIdent: a, bIdent: b, psk: psk}
 }
 
 // establish runs one full handshake initiated by p.a and installs both sides.
@@ -74,29 +75,34 @@ func establish(t *testing.T, p pair) [AttemptSize]byte {
 
 func confirmBoth(t *testing.T, p pair, attempt [AttemptSize]byte) error {
 	t.Helper()
+	return confirmPair(t, p.a, p.bID, p.b, p.aID, attempt)
+}
+
+func confirmPair(t *testing.T, a *Manager, aPeer uint64, b *Manager, bPeer uint64, attempt [AttemptSize]byte) error {
+	t.Helper()
 	ad := []byte("confirm-ad")
 	// Prepare both confirmations before either side installs and forgets the
 	// completed handshake state.
-	aPayload, err := p.a.Confirmation(p.bID, attempt)
+	aPayload, err := a.Confirmation(aPeer, attempt)
 	if err != nil {
 		return err
 	}
-	aEpoch, aCounter, aCT, err := p.a.SealReady(p.bID, attempt, ad, aPayload)
+	aEpoch, aCounter, aCT, err := a.SealReady(aPeer, attempt, ad, aPayload)
 	if err != nil {
 		return err
 	}
-	bPayload, err := p.b.Confirmation(p.aID, attempt)
+	bPayload, err := b.Confirmation(bPeer, attempt)
 	if err != nil {
 		return err
 	}
-	bEpoch, bCounter, bCT, err := p.b.SealReady(p.aID, attempt, ad, bPayload)
+	bEpoch, bCounter, bCT, err := b.SealReady(bPeer, attempt, ad, bPayload)
 	if err != nil {
 		return err
 	}
-	if err := p.b.HandleConfirm(p.aID, aEpoch, aCounter, ad, aCT); err != nil {
+	if err := b.HandleConfirm(bPeer, aEpoch, aCounter, ad, aCT); err != nil {
 		return err
 	}
-	return p.a.HandleConfirm(p.bID, bEpoch, bCounter, ad, bCT)
+	return a.HandleConfirm(aPeer, bEpoch, bCounter, ad, bCT)
 }
 
 func sealConfirm(t *testing.T, m *Manager, peerID uint64, attempt [AttemptSize]byte) (uint32, uint64, []byte) {
@@ -489,4 +495,95 @@ func mustSecret(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return psk
+}
+
+func TestUnknownPeerIsAcceptedWhenItProvesTheSecret(t *testing.T) {
+	p := newPair(t)
+	// Only the initiator knows the responder; the responder accepts newcomers.
+	var (
+		learnedID  uint64
+		learnedKey []byte
+	)
+	// A fresh responder that has never seen the initiator.
+	bm, err := NewManager(p.bIdent, p.psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm.SetAcceptUnknown(true)
+	bm.SetPeerLearnedHandler(func(id uint64, pub []byte) {
+		learnedID = id
+		learnedKey = append([]byte(nil), pub...)
+	})
+
+	attempt, msg1, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, _, err := bm.HandleHandshake(p.aID, msg1)
+	if err != nil {
+		t.Fatalf("HandleHandshake: %v", err)
+	}
+	if learnedID != 0 {
+		t.Fatal("peer was trusted before the secret was proven")
+	}
+	if err := p.a.HandleReply(p.bID, attempt, reply); err != nil {
+		t.Fatalf("HandleReply: %v", err)
+	}
+	if err := confirmPair(t, p.a, p.bID, bm, p.aID, attempt); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if learnedID != p.aID || !bytes.Equal(learnedKey, p.aIdent.PublicKey) {
+		t.Fatalf("learned %016x key=%x", learnedID, learnedKey)
+	}
+	if !bm.HasSession(p.aID) {
+		t.Fatal("responder did not install the session")
+	}
+}
+
+func TestUnknownPeerWithMismatchedIDIsRejected(t *testing.T) {
+	p := newPair(t)
+	bm, err := NewManager(p.bIdent, p.psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm.SetAcceptUnknown(true)
+	_, msg1, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Claim a different peer ID than the key in the handshake.
+	if _, _, err := bm.HandleHandshake(p.bID, msg1); err == nil {
+		t.Fatal("expected the claimed ID to be rejected")
+	}
+}
+
+func TestUnknownPeerWithWrongSecretNeverConfirms(t *testing.T) {
+	p := newPair(t)
+	bm, err := NewManager(p.bIdent, mustSecret(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm.SetAcceptUnknown(true)
+	var learned uint64
+	bm.SetPeerLearnedHandler(func(id uint64, _ []byte) { learned = id })
+
+	attempt, msg1, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, _, err := bm.HandleHandshake(p.aID, msg1)
+	if err != nil {
+		// A responder may also reject message one outright; either is fine.
+		return
+	}
+	// The initiator holds a different secret, so it cannot accept message two.
+	if err := p.a.HandleReply(p.bID, attempt, reply); err == nil {
+		t.Fatal("expected the initiator to reject a responder with a different secret")
+	}
+	if learned != 0 {
+		t.Fatal("peer was trusted without proving the secret")
+	}
+	if bm.HasSession(p.aID) {
+		t.Fatal("session installed without a confirmed secret")
+	}
 }
