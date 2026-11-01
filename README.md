@@ -451,7 +451,10 @@ One side of every pair must be reachable, or introduced by a relay:
   relay, which reports both observed endpoints; both sides dial at once. This
   works for endpoint-independent NAT; symmetric NAT keeps the relayed path.
 - **UDP blocked** — after two silent UDP attempts the dialer opens TCP to the
-  same port. Set `listen_port = 443` to make both transports use 443.
+  same port, and TCP frames are written in one syscall with Nagle disabled so
+  the fallback does not collapse under delayed ACKs. A datagram from the peer
+  clears the preference again, so a working UDP path always wins. Set
+  `listen_port = 443` to make both transports use 443.
 
 ### Examples
 

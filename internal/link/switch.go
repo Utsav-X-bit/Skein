@@ -17,6 +17,11 @@ type Switch struct {
 	closed  chan struct{}
 	once    sync.Once
 	wg      sync.WaitGroup
+
+	// forced marks addresses the fallback was explicitly dialed for. UDP
+	// frames from an address clear it: a working UDP path always wins.
+	mu     sync.Mutex
+	forced map[netip.Addr]bool
 }
 
 // Listen binds UDP and, when possible, TCP on the same port.
@@ -37,6 +42,7 @@ func Listen(port uint16) (*Switch, error) {
 		tcp:     tcp,
 		packets: make(chan received, 256),
 		closed:  make(chan struct{}),
+		forced:  make(map[netip.Addr]bool),
 	}
 	s.wg.Add(1)
 	go s.readUDP()
@@ -62,6 +68,11 @@ func (s *Switch) readUDP() {
 		}
 		data := make([]byte, n)
 		copy(data, buf[:n])
+		// A datagram from this peer proves its UDP path works, so drop any
+		// fallback preference instead of staying on TCP forever.
+		s.mu.Lock()
+		delete(s.forced, from.Addr())
+		s.mu.Unlock()
 		select {
 		case s.packets <- received{data: data, from: from}:
 		case <-s.closed:
@@ -95,10 +106,14 @@ func (s *Switch) readTCP() {
 	}
 }
 
-// Send prefers an existing TCP connection, then UDP, then a fresh TCP dial.
+// Send prefers UDP, uses TCP only for an address whose fallback was dialed
+// and which has not been heard from over UDP, and dials TCP when UDP fails.
 func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
-	if s.tcp != nil && s.tcp.HasConn(addr) {
+	s.mu.Lock()
+	forced := s.forced[addr.Addr()]
+	s.mu.Unlock()
+	if forced && s.tcp != nil && s.tcp.HasConn(addr) {
 		return s.tcp.Send(addr, payload)
 	}
 	udpErr := s.udp.Send(addr, payload)
@@ -111,6 +126,9 @@ func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	if err := s.tcp.Dial(addr); err != nil {
 		return udpErr
 	}
+	s.mu.Lock()
+	s.forced[addr.Addr()] = true
+	s.mu.Unlock()
 	return s.tcp.Send(addr, payload)
 }
 
@@ -119,7 +137,13 @@ func (s *Switch) DialTCP(addr netip.AddrPort) error {
 	if s.tcp == nil {
 		return errTCPDisabled
 	}
-	return s.tcp.Dial(addr)
+	if err := s.tcp.Dial(addr); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.forced[addr.Addr()] = true
+	s.mu.Unlock()
+	return nil
 }
 
 // TransportFor reports which transport a connection to addr uses.

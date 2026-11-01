@@ -29,6 +29,9 @@ type TCP struct {
 type tcpConn struct {
 	conn net.Conn
 	addr netip.AddrPort
+	// mu serialises frames: the stream has no datagram boundaries, so two
+	// concurrent Send calls would interleave their headers and payloads.
+	mu sync.Mutex
 }
 
 // ListenTCP accepts framed connections on port.
@@ -86,6 +89,11 @@ func (t *TCP) track(addr netip.AddrPort, conn net.Conn) {
 	if old, ok := t.conns[addr]; ok {
 		old.conn.Close()
 	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		// Nagle would hold the payload until the header is acknowledged,
+		// turning every frame into one RTT.
+		_ = tc.SetNoDelay(true)
+	}
 	t.conns[addr] = &tcpConn{conn: conn, addr: addr}
 	t.mu.Unlock()
 
@@ -133,11 +141,14 @@ func (t *TCP) Send(addr netip.AddrPort, payload []byte) error {
 	}
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(payload)))
-	if _, err := c.conn.Write(hdr[:]); err != nil {
-		t.drop(addr, c)
-		return err
-	}
-	if _, err := c.conn.Write(payload); err != nil {
+
+	// One writev for header and payload: two writes let Nagle hold the
+	// payload until the header is acknowledged.
+	c.mu.Lock()
+	bufs := net.Buffers{hdr[:], payload}
+	_, err := bufs.WriteTo(c.conn)
+	c.mu.Unlock()
+	if err != nil {
 		t.drop(addr, c)
 		return err
 	}

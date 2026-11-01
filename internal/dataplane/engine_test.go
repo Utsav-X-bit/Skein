@@ -98,7 +98,7 @@ type testNet struct {
 	nodes []*node
 }
 
-func newTestNet(t *testing.T) *testNet {
+func newTestNet(t testing.TB) *testNet {
 	t.Helper()
 	psk := make([]byte, identity.KeySize)
 	for i := range psk {
@@ -108,7 +108,7 @@ func newTestNet(t *testing.T) *testNet {
 }
 
 // addNode creates an engine with the given overlay address and link address.
-func (n *testNet) addNode(t *testing.T, overlay, addr string) *node {
+func (n *testNet) addNode(t testing.TB, overlay, addr string) *node {
 	t.Helper()
 	ident, err := identity.Generate()
 	if err != nil {
@@ -147,7 +147,7 @@ func (n *testNet) addNode(t *testing.T, overlay, addr string) *node {
 }
 
 // know registers a peer on both sides with overlay addresses and endpoints.
-func (n *testNet) know(t *testing.T, a, b *node, aDialer bool) {
+func (n *testNet) know(t testing.TB, a, b *node, aDialer bool) {
 	t.Helper()
 	if err := a.eng.peers.Upsert(peer.Peer{
 		ID: b.id, PublicKey: b.ident.PublicKey, OverlayV4: b.overlay, Dialer: aDialer,
@@ -392,5 +392,28 @@ func TestPunchStartsAHandshakeAtTheGivenAddress(t *testing.T) {
 	}
 	if !a.eng.sessions.HasSession(b.id) || !b.eng.sessions.HasSession(a.id) {
 		t.Fatal("punch did not establish a session")
+	}
+}
+
+// BenchmarkEngineThroughput measures the seal/send/open/deliver path.
+func BenchmarkEngineThroughput(b *testing.B) {
+	n := newTestNet(b)
+	a := n.addNode(b, "10.144.144.1", "192.0.2.1:11010")
+	bb := n.addNode(b, "10.144.144.2", "192.0.2.2:11010")
+	n.know(b, a, bb, true)
+
+	pkt := ipv4Packet(a.overlay, bb.overlay, make([]byte, 1240))
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, ErrNoSession) {
+		b.Fatalf("first send = %v", err)
+	}
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		b.Fatalf("send: %v", err)
+	}
+	b.SetBytes(int64(len(pkt)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := a.eng.SendOverlayPacket(pkt); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

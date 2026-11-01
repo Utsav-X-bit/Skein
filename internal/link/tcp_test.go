@@ -3,6 +3,7 @@ package link
 import (
 	"bytes"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,6 +108,12 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 	if err := a.DialTCP(addr); err != nil {
 		t.Fatalf("DialTCP: %v", err)
 	}
+	a.mu.Lock()
+	forced := a.forced[addr.Addr()]
+	a.mu.Unlock()
+	if !forced {
+		t.Fatal("DialTCP did not mark the fallback")
+	}
 	if err := a.Send(addr, payload); err != nil {
 		t.Fatalf("tcp send: %v", err)
 	}
@@ -121,6 +128,91 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("no TCP frame")
+		}
+	}
+
+	// A UDP frame from the peer proves the datagram path works, so the
+	// fallback preference must be dropped again.
+	aAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.Port())
+	if err := b.Send(aAddr, payload); err != nil {
+		t.Fatalf("udp reply: %v", err)
+	}
+	if _, _, err := a.Recv(buf); err != nil {
+		t.Fatalf("udp reply recv: %v", err)
+	}
+	a.mu.Lock()
+	forced = a.forced[addr.Addr()]
+	a.mu.Unlock()
+	if forced {
+		t.Fatal("a UDP frame from the peer must clear the TCP fallback")
+	}
+}
+
+// TestTCPConcurrentSendsStayFramed guards the per-connection write lock: the
+// dataplane and the control loop send on the same stream.
+func TestTCPConcurrentSendsStayFramed(t *testing.T) {
+	a, err := ListenTCP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := ListenTCP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	addr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), b.LocalAddrs()[0].Port())
+	if err := a.Dial(addr); err != nil {
+		t.Fatal(err)
+	}
+
+	const senders, frames = 2, 200
+
+	// Receive while sending: the link drops frames when its queue is full,
+	// and the stream must still never interleave two frames.
+	received := make(chan []byte, senders*frames)
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, _, err := b.Recv(buf)
+			if err != nil {
+				close(received)
+				return
+			}
+			received <- append([]byte(nil), buf[:n]...)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for g := 0; g < senders; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < frames; i++ {
+				payload := bytes.Repeat([]byte{byte(g)}, 64+i%32)
+				if err := a.Send(addr, payload); err != nil {
+					t.Errorf("send: %v", err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	deadline := time.After(5 * time.Second)
+	for i := 0; i < senders*frames; i++ {
+		select {
+		case frame, ok := <-received:
+			if !ok {
+				t.Fatalf("stream closed after %d frames", i)
+			}
+			for j := range frame {
+				if frame[j] != frame[0] {
+					t.Fatalf("frame %d interleaved: %x", i, frame)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("only %d of %d frames arrived", i, senders*frames)
 		}
 	}
 }
