@@ -5,6 +5,7 @@ package fileperm
 import (
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"syscall"
 )
@@ -42,6 +43,18 @@ func preserveOwner(path, ref string) error {
 			return os.Chown(path, int(st.Uid), int(st.Gid))
 		}
 		return nil
+	}
+	// The daemon runs as root without SUDO_USER. When there is no file to
+	// copy ownership from, the directory's owner is the account that owns
+	// the configuration, so keep it there instead of leaving a root file in
+	// a user's home.
+	if info, err := os.Stat(filepath.Dir(path)); err == nil {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			if int(st.Uid) != os.Geteuid() || int(st.Gid) != os.Getegid() {
+				return os.Chown(path, int(st.Uid), int(st.Gid))
+			}
+			return nil
+		}
 	}
 	return chownToSudoUser(path)
 }

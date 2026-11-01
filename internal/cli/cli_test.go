@@ -391,3 +391,23 @@ func TestInviteNetworkCarriesTheSecret(t *testing.T) {
 		t.Fatalf("used addresses = %v", inv.UsedV4)
 	}
 }
+
+// TestLoadConfigExplainsOwnership guards the hint shown when the root daemon
+// or an elevated init left the config unreadable to the normal user.
+func TestLoadConfigExplainsOwnership(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a 0000 file")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skein.toml")
+	if err := os.WriteFile(path, []byte("[node]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "fix ownership") {
+		t.Fatalf("loadConfig = %v, want an ownership hint", err)
+	}
+}

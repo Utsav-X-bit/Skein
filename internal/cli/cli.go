@@ -220,7 +220,9 @@ func loadConfig(path string) (conf.Config, error) {
 	cfg, err := conf.Load(path)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown $USER %s", path, path)
+			// The daemon runs as root and may have rewritten files the user
+			// cannot read; hand the whole directory back to them.
+			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown -R $(id -u):$(id -g) %s", path, filepath.Dir(path))
 		}
 		return conf.Config{}, fmt.Errorf("load %s (run `skein init` first): %w", path, err)
 	}
