@@ -11,6 +11,7 @@ import (
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/daemon"
+	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
@@ -40,6 +41,12 @@ func run(args []string) int {
 	case "install-service":
 		return installService(args[1:])
 	case "uninstall-service":
+		// Remove the firewall rules this node added, when the config is known.
+		if path, err := configPath(args[1:]); err == nil {
+			if cfg, err := conf.Load(path); err == nil {
+				_ = firewall.Remove(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort})
+			}
+		}
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "skeind: %v\n", err)
 			return 1

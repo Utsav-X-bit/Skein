@@ -590,6 +590,16 @@ func (e *Engine) SendControl(peerID uint64, typ wire.MessageType, payload []byte
 	return e.sendToPeer(peerID, typ, body)
 }
 
+// DropSession forgets the session and any handshake state for a peer so the
+// next attempt starts from scratch.
+func (e *Engine) DropSession(peerID uint64) {
+	e.sessions.RemovePeer(peerID)
+	e.mu.Lock()
+	delete(e.inflight, peerID)
+	delete(e.started, peerID)
+	e.mu.Unlock()
+}
+
 // EnsureSession starts a handshake when one is missing.
 func (e *Engine) EnsureSession(peerID uint64) error { return e.ensureSession(peerID) }
 

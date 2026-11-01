@@ -239,6 +239,18 @@ func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration,
 	p.LastSeen = seen
 }
 
+// ClearActive forgets the validated path so a reconnect must re-prove one.
+func (t *Table) ClearActive(id uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		p.ActiveEndpoint = netip.AddrPort{}
+		p.Path = ""
+		p.RTT = 0
+		p.Direct = false
+	}
+}
+
 // SetState updates the link state.
 func (t *Table) SetState(id uint64, state State) {
 	t.mu.Lock()

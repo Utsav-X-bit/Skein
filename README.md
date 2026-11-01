@@ -173,6 +173,57 @@ requests are rejected and no CORS headers are sent.
 | `GET` | `/api/v1/config` (secrets redacted) |
 | `GET` | `/api/v1/events` (SSE) |
 
+## Firewall and any protocol
+
+`skeind` opens what it needs at startup, idempotently:
+
+- **Linux** — with `ufw` active it allows `<port>/udp` and all traffic on the
+  overlay interface; with `firewalld` it adds the port and puts the interface in
+  the trusted zone.
+- **Windows** — it creates `Skein underlay` (inbound UDP on the port) and
+  `Skein overlay` (all inbound traffic on the interface) firewall rules.
+
+Because the overlay interface is trusted, every protocol works without
+per-service rules:
+
+```bash
+ssh user@10.144.144.2
+python3 -m http.server 8000 --bind 10.144.144.1
+```
+
+The only underlay requirement is that **one side of each pair is reachable** on
+the UDP port: a public IPv4 with a forward, a public IPv6, or the same LAN.
+SSH and every other protocol travel inside the tunnel and never need their own
+router forward.
+
+## Reliability
+
+- Keepalive every 15 s keeps NAT mappings open.
+- 45 s without authenticated traffic marks the peer down, clears the cached
+  endpoint, drops the session, and withdraws its routes; a configured dialer
+  re-handshakes immediately instead of encrypting for a dead address.
+- Handshake retries back off 1 s → 30 s and reset as soon as a route appears.
+- A changed endpoint is only adopted after a challenge/response over the
+  existing session.
+
+## Reaching peers without a public address (roadmap)
+
+Today one side of every pair must be reachable. Two nodes behind NAT/CGNAT
+cannot meet directly, and UDP-blocked networks are unsupported.
+
+Tailscale solves this with STUN, a coordination service, UDP hole punching, and
+DERP relays on TCP 443. The equivalent work for Skein, in order:
+
+1. **Peer-observed endpoints** — a connected relay already sees each node's
+   public mapping and can hand it to the other node; no new server.
+2. **Simultaneous hole punching** bound to a nonce.
+3. **Relay fallback** through any connected peer (forwarding already exists);
+   a small VPS replaces DERP.
+4. **TCP/TLS transport on 443** for UDP-blocked networks.
+
+Until then, add a cheap public VPS as a third peer: both home nodes dial it and
+it forwards between them.
+
 ## How it works
 
 ```

@@ -32,6 +32,7 @@ type Transport interface {
 	SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.MessageType, payload []byte) error
 	Rekey(peerID uint64) error
 	EnsureSession(peerID uint64) error
+	DropSession(peerID uint64)
 }
 
 // Local describes this node's advertisement.
@@ -108,8 +109,12 @@ func (c *Controller) Tick() {
 			_ = c.eng.EnsureSession(p.ID)
 		}
 		if p.State == peer.StateUp && !p.LastSeen.IsZero() && now.Sub(p.LastSeen) > PeerTimeout {
+			// The path is dead: forget the session and the endpoint, or the
+			// dialer would keep encrypting for an unreachable address.
 			c.peers.SetState(p.ID, peer.StateDown)
+			c.peers.ClearActive(p.ID)
 			c.routes.RemoveDirect(p.ID)
+			c.eng.DropSession(p.ID)
 			continue
 		}
 		c.mu.Lock()

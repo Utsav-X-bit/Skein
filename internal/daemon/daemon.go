@@ -18,6 +18,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/control"
 	"github.com/Utsav-X-bit/skein/internal/dataplane"
 	"github.com/Utsav-X-bit/skein/internal/discovery"
+	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/netcfg"
@@ -217,6 +218,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	if err := netcfg.Configure(d.cfg.Node.Interface, d.cfg.Node.MTU, addresses, routes); err != nil {
 		return err
+	}
+	// Open the underlay port and trust the overlay interface so any protocol
+	// works without manual rules.
+	if err := firewall.Ensure(firewall.Config{Interface: d.cfg.Node.Interface, Port: d.cfg.Node.ListenPort}); err != nil {
+		log.Printf("skein: warning: firewall: %v", err)
 	}
 	defer func() {
 		if err := netcfg.Remove(d.cfg.Node.Interface, addresses, routes); err != nil {

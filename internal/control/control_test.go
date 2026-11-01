@@ -20,6 +20,7 @@ type fakeTransport struct {
 	fail    bool
 	rekey   []uint64
 	ensured []uint64
+	dropped []uint64
 }
 
 type sentFrame struct {
@@ -54,6 +55,12 @@ func (f *fakeTransport) Rekey(peerID uint64) error {
 	defer f.mu.Unlock()
 	f.rekey = append(f.rekey, peerID)
 	return nil
+}
+
+func (f *fakeTransport) DropSession(peerID uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dropped = append(f.dropped, peerID)
 }
 
 func (f *fakeTransport) EnsureSession(peerID uint64) error {
@@ -178,6 +185,12 @@ func TestSilentPeerIsMarkedDownAndRoutesWithdrawn(t *testing.T) {
 	}
 	if _, ok := f.routes.Lookup(f.peerID); ok {
 		t.Fatal("route survived peer timeout")
+	}
+	f.eng.mu.Lock()
+	dropped := append([]uint64(nil), f.eng.dropped...)
+	f.eng.mu.Unlock()
+	if len(dropped) != 1 || dropped[0] != f.peerID {
+		t.Fatalf("session was not dropped: %v", dropped)
 	}
 }
 
