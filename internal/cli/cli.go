@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/path"
 	"github.com/Utsav-X-bit/skein/internal/version"
@@ -190,6 +191,11 @@ mdns = true
 		return err
 	}
 	if err := f.Close(); err != nil {
+		os.Remove(keyPath)
+		os.Remove(configPath)
+		return err
+	}
+	if err := fileperm.Restrict(configPath); err != nil {
 		os.Remove(keyPath)
 		os.Remove(configPath)
 		return err

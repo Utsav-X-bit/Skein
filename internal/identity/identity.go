@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 const (
@@ -99,7 +101,8 @@ func Load(path string) (Identity, error) {
 }
 
 // Save writes the private key to path, refusing to overwrite an existing file.
-// The file is created owner-only: mode 0600 on Unix, an owner-only DACL on Windows.
+// The file is created owner-only: mode 0600 on Unix; on Windows, full control
+// for the owner, SYSTEM (the service account), and Administrators.
 func Save(path string, id Identity) error {
 	if len(id.PrivateKey) != KeySize {
 		return fmt.Errorf("private key must be %d bytes, got %d", KeySize, len(id.PrivateKey))
@@ -117,7 +120,7 @@ func Save(path string, id Identity) error {
 		os.Remove(path)
 		return err
 	}
-	if err := restrictFile(path); err != nil {
+	if err := fileperm.Restrict(path); err != nil {
 		os.Remove(path)
 		return fmt.Errorf("restrict identity file permissions: %w", err)
 	}
