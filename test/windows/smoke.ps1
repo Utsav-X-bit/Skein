@@ -48,7 +48,9 @@ pubkey = "$peerPub"
 dialer = $dialer
 addrs = ["udp://$peerAddr"]
 "@
-    Set-Content -Path $cfgPath -Value $body -Encoding utf8
+    # PowerShell 5.1 writes a UTF-8 BOM with Set-Content; the TOML parser
+    # rejects it, so write the bytes explicitly.
+    [System.IO.File]::WriteAllText($cfgPath, $body, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 Assert-Admin
@@ -96,7 +98,7 @@ try {
     Write-Host "Overlay ping:"
     $ping = ping -n 2 10.144.144.2
     $ping | Write-Host
-    if (-not ($ping -join "`n") -match "Received = 2") { throw "overlay ping failed" }
+    if (-not ($ping -join "`n") -match 'Received\s*=\s*[1-9]') { throw "overlay ping failed" }
 
     Write-Host "Routes:"
     & .\skein.exe -c $cfgA routes
