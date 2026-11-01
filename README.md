@@ -56,7 +56,8 @@ Version `0.1.0-dev`.
 ## Build
 
 ```bash
-go build ./cmd/skeind ./cmd/skein
+go build ./cmd/skein          # daemon and CLI in one binary
+go build ./cmd/skeind         # optional thin daemon wrapper
 ```
 
 Windows (put `wintun.dll` next to `skeind.exe`):
@@ -104,7 +105,7 @@ addrs  = ["udp://203.0.113.5:11010"]
 Start the daemon as root/Administrator and check it as your normal user:
 
 ```bash
-sudo ./skeind run -c ~/.config/skein/skein.toml     # the shell expands ~ first
+sudo ./skein run -c ~/.config/skein/skein.toml      # the shell expands ~ first
 ./skein status
 ./skein peers list
 ./skein routes
@@ -114,14 +115,23 @@ sudo ./skeind run -c ~/.config/skein/skein.toml     # the shell expands ~ first
 Service mode:
 
 ```bash
-sudo ./skeind install-service -c ~/.config/skein/skein.toml   # systemd / Windows SCM
+sudo ./skein install-service -c ~/.config/skein/skein.toml   # systemd / Windows SCM
 ```
+
+`skeind` remains available as a thin wrapper with the same `run`,
+`install-service`, and `uninstall-service` commands.
 
 ## Dashboard
 
 ```bash
-./skein dashboard
+sudo ./skein dashboard
 ```
+
+If no daemon is answering, the dashboard starts one from the config file
+(`-c <path>`, or the default location; under `sudo` the invoking user's config
+is used) and stops it again when you quit. If a daemon is already running it
+simply attaches. Daemon output from a dashboard-started daemon goes to
+`<config>.log`.
 
 An animated full-screen view: the local node in the centre, peers on a ring,
 link pulses that speed up with real traffic, per-peer rates eased toward their
@@ -180,6 +190,9 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | Command | Purpose |
 |---|---|
 | `skein init` | Create identity, config, network secret, API token |
+| `skein run` | Run the daemon (root / Administrator) |
+| `skein install-service` | Register the system service |
+| `skein uninstall-service` | Remove the service and its firewall rules |
 | `skein genkey` | Print the public key and node ID |
 | `skein invite` | Print `skein:1:<base64url>` (identity + addresses, no secret) |
 | `skein invite --network` | Print the `skein:2:` join string (contains the secret) |

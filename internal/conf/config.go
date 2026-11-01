@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -209,6 +210,19 @@ func Render(cfg Config) ([]byte, error) {
 
 func formatID(id uint64) string {
 	return fmt.Sprintf("%016x", id)
+}
+
+// DefaultPathForUser returns the configuration path of the invoking user. When
+// the command runs through sudo, that is the sudo user's config, not root's.
+func DefaultPathForUser() (string, error) {
+	if elevated() {
+		if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
+			if u, err := user.Lookup(name); err == nil && u.HomeDir != "" {
+				return filepath.Join(u.HomeDir, ".config", "skein", "skein.toml"), nil
+			}
+		}
+	}
+	return DefaultPath()
 }
 
 // DefaultPath returns the per-user configuration file path.

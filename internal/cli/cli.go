@@ -14,16 +14,20 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/app"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/path"
+	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
@@ -35,9 +39,15 @@ const (
 const usage = `skein — Skein mesh VPN command line
 
 Usage:
-  skein [-c <config>] init        create identity, config, PSK, and API token
-  skein [-c <config>] genkey      print the public key and node ID
-  skein [-c <config>] invite      print this node's invite string
+  skein [-c <config>] init                  create identity, config, secret, join string
+  skein [-c <config>] join <invite>         configure this node from a network invite
+  skein [-c <config>] name [value]          show or set this node's name
+  skein [-c <config>] genkey                print the public key and node ID
+  skein [-c <config>] invite [--network]    print a peer invite or a network join string
+  skein [-c <config>] run                   run the daemon (root / Administrator)
+  skein [-c <config>] install-service       register the system service
+  skein [-c <config>] uninstall-service     remove the system service
+  skein [-c <config>] dashboard             live mesh status; starts the daemon if needed
   skein [-c <config>] status [--json]
   skein [-c <config>] peers [list|add <invite>|rm <peer-id>] [--json]
   skein [-c <config>] routes [--json]
@@ -104,6 +114,28 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "run":
+		runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := app.Run(runCtx, path); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
+	case "install-service":
+		if err := app.InstallService(path); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		fmt.Printf("skein service installed\n  start: systemctl start %s (Linux) or sc start %s (Windows)\n", service.Name, service.Name)
+		return 0
+	case "uninstall-service":
+		if err := app.UninstallService(path); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		fmt.Println("skein service removed")
+		return 0
 	case "dashboard", "top":
 		cfg, err := loadConfig(path)
 		if err != nil {
@@ -111,7 +143,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
-		if err := newDashboard(cfg, stdout, !opts.noColor, motion).run(ctx); err != nil {
+		d := newDashboard(cfg, stdout, !opts.noColor, motion)
+		if err := d.ensureDaemon(ctx, path); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		defer d.closeChild()
+		if err := d.run(ctx); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -169,7 +207,7 @@ func parseGlobal(args []string) (globalOptions, error) {
 	}
 	if opts.path == "" {
 		var err error
-		if opts.path, err = conf.DefaultPath(); err != nil {
+		if opts.path, err = conf.DefaultPathForUser(); err != nil {
 			return opts, err
 		}
 	}

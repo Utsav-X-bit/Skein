@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -77,6 +78,9 @@ type dashboard struct {
 	frame   uint64
 	started time.Time
 	phase   float64
+
+	child     *exec.Cmd
+	childDone chan error
 }
 
 func newDashboard(cfg conf.Config, out io.Writer, color, motion bool) *dashboard {
