@@ -9,14 +9,17 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
 )
 
 // State limits. A STATE datagram must fit one frame.
 const (
-	// Version 2 adds an optional human-readable name per peer record.
-	Version       = 2
+	// Version 2 adds an optional human-readable name per peer record; version 3
+	// adds the peer's self-certifying public key so a mesh can form without
+	// every pair exchanging invites.
+	Version       = 3
 	minVersion    = 1
 	MaxPeers      = 5
 	MaxCandidates = 8
@@ -30,6 +33,7 @@ const (
 type PeerRecord struct {
 	ID         uint64
 	Name       string
+	PublicKey  []byte
 	OverlayV4  netip.Addr
 	OverlayV6  netip.Addr
 	Candidates []netip.AddrPort
@@ -119,6 +123,14 @@ func Encode(s State) ([]byte, error) {
 		}
 		buf = append(buf, byte(len(name)))
 		buf = append(buf, name...)
+		if len(p.PublicKey) != identity.KeySize {
+			return nil, fmt.Errorf("discovery: peer %016x has no public key", p.ID)
+		}
+		derived, err := identity.PeerID(p.PublicKey)
+		if err != nil || derived != p.ID {
+			return nil, fmt.Errorf("discovery: peer %016x has a mismatched public key", p.ID)
+		}
+		buf = append(buf, p.PublicKey...)
 	}
 
 	buf = append(buf, byte(len(s.Routes)))
@@ -227,6 +239,17 @@ func Decode(payload []byte) (State, error) {
 				return State{}, err
 			}
 		}
+		if version >= 3 {
+			if off+identity.KeySize > len(payload) {
+				return State{}, errors.New("discovery: missing peer public key")
+			}
+			rec.PublicKey = append([]byte(nil), payload[off:off+identity.KeySize]...)
+			off += identity.KeySize
+			derived, err := identity.PeerID(rec.PublicKey)
+			if err != nil || derived != rec.ID {
+				return State{}, fmt.Errorf("discovery: peer %016x key does not match its ID", rec.ID)
+			}
+		}
 		s.Peers = append(s.Peers, rec)
 	}
 
@@ -332,6 +355,9 @@ type Merger struct {
 	Peers   *peer.Table
 	Routes  *route.Table
 	Now     func() time.Time
+	// OnPeer registers a peer learned from gossip. The key is self-certifying
+	// (its hash is the peer ID), so a member cannot impersonate another ID.
+	OnPeer func(id uint64, publicKey []byte) error
 
 	seq map[uint64]uint64
 }
@@ -363,13 +389,15 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 			continue
 		}
 		if _, ok := m.Peers.Get(rec.ID); !ok {
-			// Unknown peers are accepted as hints; the key is learned from the
-			// invite or a future handshake, never from gossip.
-			continue
+			// An unknown peer is registered from its self-certifying key, so
+			// the mesh forms without every pair exchanging invites.
+			if len(rec.PublicKey) != identity.KeySize || m.OnPeer == nil {
+				continue
+			}
+			if err := m.OnPeer(rec.ID, rec.PublicKey); err != nil {
+				continue
+			}
 		}
-		// Overlay addresses and names are needed to route and display peers and
-		// can only come from an authenticated peer. Keys are never taken from
-		// gossip.
 		m.Peers.SetOverlay(rec.ID, rec.OverlayV4, rec.OverlayV6)
 		m.Peers.SetName(rec.ID, rec.Name)
 		for _, cand := range rec.Candidates {

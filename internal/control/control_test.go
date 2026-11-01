@@ -131,6 +131,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{peers: peers, routes: routes, eng: eng, now: time.Unix(1_700_000_000, 0), peerID: remote.ID, peerKey: remote.PublicKey}
 	ctl, err := New(Local{
 		ID:         id.ID,
+		PublicKey:  id.PublicKey,
 		OverlayV4:  netip.MustParseAddr("10.144.144.1"),
 		Candidates: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:11010")},
 	}, peers, routes, merger, eng)

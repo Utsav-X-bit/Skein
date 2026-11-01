@@ -48,7 +48,7 @@ func Open(name string, mtu int) (Device, error) {
 	}
 	inner, err := wgtun.CreateTUN(name, mtu)
 	if err != nil {
-		return nil, fmt.Errorf("tun: create %q: %w", name, err)
+		return nil, fmt.Errorf("tun: create %q: %w", name, hint(err))
 	}
 	actual, err := inner.Name()
 	if err != nil {

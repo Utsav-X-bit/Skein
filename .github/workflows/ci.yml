@@ -21,6 +21,29 @@ jobs:
           cp /tmp/skeind.exe /tmp/skein.exe /tmp/release/
           test -f /tmp/release/skeind.exe && test -f /tmp/release/skein.exe
 
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Linux
+        run: |
+          mkdir -p dist/linux-amd64
+          GOOS=linux GOARCH=amd64 go build -trimpath -o dist/linux-amd64/skein ./cmd/skein
+          GOOS=linux GOARCH=amd64 go build -trimpath -o dist/linux-amd64/skeind ./cmd/skeind
+      - name: Build Windows
+        run: |
+          mkdir -p dist/windows-amd64
+          GOOS=windows GOARCH=amd64 go build -trimpath -o dist/windows-amd64/skein.exe ./cmd/skein
+          GOOS=windows GOARCH=amd64 go build -trimpath -o dist/windows-amd64/skeind.exe ./cmd/skeind
+          ./scripts/fetch-wintun.sh amd64 dist/windows-amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skein
+          path: dist/
+
   netns:
     runs-on: ubuntu-latest
     steps:

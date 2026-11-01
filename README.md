@@ -28,8 +28,9 @@ flowchart LR
 - **One UDP port** (default `11010`), dual-stack socket with a paired-socket
   fallback.
 - **Discovery**: static peers, `skein:1:…` invite strings, mDNS on the local
-  link, and authenticated state gossip that carries overlay addresses and
-  routes (never keys).
+  link, and authenticated state gossip carrying overlay addresses, names, and
+  self-certifying public keys, so a mesh forms without every pair exchanging
+  invites.
 - **Bounded routing**: distance vector with full paths, split horizon, and at
   most four links. Relays rewrite only `to_next` and `ttl`.
 - **One binary**: `skein` runs the daemon (`skein run`), the system service,
@@ -66,18 +67,88 @@ flowchart LR
 
 Version `0.1.0-dev`.
 
-## Build
+## Install
+
+### Linux
+
+From source:
 
 ```bash
-go build ./cmd/skein          # daemon and CLI in one binary
-go build ./cmd/skeind         # optional thin daemon wrapper
+git clone https://github.com/Utsav-X-bit/Skein && cd Skein
+go build -trimpath -o skein ./cmd/skein
+sudo install -m 0755 skein /usr/local/bin/skein
 ```
 
-Windows (put `wintun.dll` next to the executable):
+Or unpack a release archive and copy `skein` into `/usr/local/bin`.
+
+First-time setup (no root needed):
 
 ```bash
-GOOS=windows GOARCH=amd64 go build ./cmd/skeind ./cmd/skein
+skein init                       # or: skein join "skein:2:…"
 ```
+
+Run the daemon (root) or install the service:
+
+```bash
+sudo skein run -c ~/.config/skein/skein.toml
+# or
+sudo skein install-service -c /home/$USER/.config/skein/skein.toml
+sudo systemctl enable --now skein
+```
+
+The firewall is opened automatically (ufw or firewalld), and the TUN
+interface, addresses, routes, and MTU are configured by the daemon.
+
+### Windows
+
+1. Get the files — a release archive (`skein.exe`, `skeind.exe`, `wintun.dll`,
+   `wintun-LICENSE.txt`) or build them:
+
+   ```powershell
+   git clone https://github.com/Utsav-X-bit/Skein
+   cd Skein
+   go build -trimpath -o dist\skein.exe  .\cmd\skein
+   go build -trimpath -o dist\skeind.exe .\cmd\skeind
+   .\scripts\fetch-wintun.ps1 -Dest dist
+   ```
+
+   `fetch-wintun.ps1` downloads the pinned Wintun release, verifies its
+   SHA-256, and installs `wintun.dll` plus its license. On Linux, when
+   cross-building, use `./scripts/fetch-wintun.sh amd64 dist/windows-amd64`.
+
+2. Copy the folder anywhere (`C:\Skein` works). `wintun.dll` must sit next to
+   the executable and match its architecture.
+
+3. First-time setup (normal prompt):
+
+   ```powershell
+   cd C:\Skein
+   .\skein.exe init
+   ```
+
+4. Start the daemon from an elevated prompt:
+
+   ```powershell
+   .\skein.exe run -c "$env:APPDATA\skein\skein.toml"
+   ```
+
+5. Or install it as a service:
+
+   ```powershell
+   .\skein.exe install-service -c "$env:APPDATA\skein\skein.toml"
+   sc start skein
+   ```
+
+6. Verify:
+
+   ```powershell
+   .\skein.exe status
+   .\skein.exe peers list
+   ping 10.144.144.1
+   ```
+
+Windows Firewall rules for the underlay port and the overlay interface are
+created automatically on start.
 
 ## Quick start
 
@@ -301,6 +372,19 @@ One side of every pair must be reachable, or introduced by a relay:
   works for endpoint-independent NAT; symmetric NAT keeps the relayed path.
 - **UDP blocked** — after two silent UDP attempts the dialer opens TCP to the
   same port. Set `listen_port = 443` to make both transports use 443.
+
+### Examples
+
+| A | B | C | Result |
+|---|---|---|---|
+| CGNAT v4 + public v6 | CGNAT v4 + public v6 | public v4 | A↔B **direct over IPv6**; A↔C and B↔C direct if C has IPv6, otherwise relayed through whichever node does |
+| CGNAT v4 + public v6 | public v4 + public v6 | CGNAT v4 | A↔B direct over IPv6; C dials B over IPv4; A↔C relayed through B |
+| CGNAT v4 + public v6 | public v4 + public v6 | CGNAT v4 + no v6 | same, with C dialing B and B forwarding |
+
+Candidates include every interface address (v4 and v6), so the dialer tries
+IPv6 first when it works; the route table then keeps the cheapest validated
+path. IPv6 needs UDP `<port>` open on the listener's host firewall, which the
+daemon configures automatically.
 
 Not implemented: TLS camouflage, STUN against an external service, and a
 global DERP-style relay network.

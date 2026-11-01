@@ -117,6 +117,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	ctl, err := control.New(control.Local{
 		ID:         id.ID,
 		Name:       cfg.Node.Name,
+		PublicKey:  id.PublicKey,
 		OverlayV4:  cfg.Node.OverlayIPv4,
 		OverlayV6:  cfg.Node.OverlayIPv6,
 		Candidates: localCandidates(cfg),
@@ -125,6 +126,11 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		dev.Close()
 		udp.Close()
 		return nil, err
+	}
+
+	merger.OnPeer = func(peerID uint64, publicKey []byte) error {
+		// Learned peers use the same rule as mDNS: the lower ID dials.
+		return d.registerPeer(peerID, publicKey, nil, d.id.ID < peerID, "")
 	}
 
 	d.link = udp
@@ -162,15 +168,15 @@ func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPor
 	if id == d.id.ID {
 		return errors.New("daemon: refusing to register the local node as a peer")
 	}
+	if err := d.sessions.SetPeer(id, publicKey); err != nil {
+		return err
+	}
 	if err := d.peers.Upsert(peer.Peer{
 		ID:        id,
 		PublicKey: publicKey,
 		Dialer:    dialer,
 		State:     peer.StateDown,
 	}); err != nil {
-		return err
-	}
-	if err := d.sessions.SetPeer(id, publicKey); err != nil {
 		return err
 	}
 	for _, addr := range addrs {
@@ -187,7 +193,7 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 	if _, ok := d.peers.Get(id); ok {
 		return
 	}
-	if err := d.peers.Upsert(peer.Peer{ID: id, PublicKey: publicKey, Dialer: false, State: peer.StateDown}); err != nil {
+	if err := d.peers.Upsert(peer.Peer{ID: id, PublicKey: publicKey, Dialer: d.id.ID < id, State: peer.StateDown}); err != nil {
 		log.Printf("skein: warning: learned peer %016x rejected: %v", id, err)
 		return
 	}

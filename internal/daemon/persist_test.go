@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
@@ -50,4 +51,25 @@ func TestConfigWithPeersRoundTrips(t *testing.T) {
 		t.Fatalf("parsed addrs = %v", parsed.Peers[0].Addrs)
 	}
 	_ = local
+}
+
+func TestLearnedPeersUseTheLowerIDDialerRule(t *testing.T) {
+	local, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{id: local, peers: peer.NewTable(), events: make(chan api.Event, 1)}
+	d.peerLearned(remote.ID, remote.PublicKey)
+	p, ok := d.peers.Get(remote.ID)
+	if !ok {
+		t.Fatal("peer not registered")
+	}
+	want := local.ID < remote.ID
+	if p.Dialer != want {
+		t.Fatalf("dialer = %v, want %v (local %016x remote %016x)", p.Dialer, want, local.ID, remote.ID)
+	}
 }

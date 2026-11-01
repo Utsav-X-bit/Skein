@@ -150,12 +150,13 @@ the reply travels back along the path it arrived on.
   per peer: [id:8][flags:1][v4:4?][v6:16?][candidate_count:1]
             per candidate: [family:1][address:4|16][port:2]
             [name_len:1][name:name_len]        (version 2)
+            [pubkey:32]                        (version 3)
 [route_count:1]
   per route: [destination:8][cost_ms:4][hops:1][path_len:1][path ids...]
 ```
 
-Version 2 adds the optional node name; version 1 payloads still decode (name
-empty).
+Version 2 adds the optional node name; version 3 adds the peer's public key.
+Version 1 and 2 payloads still decode (name or key empty).
 
 Limits: 5 peers, 8 candidates per peer, 8 routes, 32-byte names, path length 4,
 and the whole payload must fit one frame. Local and configured records are preserved; excess
@@ -163,11 +164,15 @@ transitive hints are dropped deterministically (by hop count, then peer ID).
 
 STATE is authenticated by the session that carries it. The `origin` must equal
 the sending peer, the sequence must increase per origin, and expired payloads
-are rejected. Peer keys are never taken from gossip; third-party candidates are
-hints only. Overlay addresses are learned from STATE (first authenticated claim
-wins) because they are required to map an overlay IP to a peer; a malicious
-member can still lie about another member's address, which is one of the
-documented shared-PSK limitations.
+are rejected.
+
+Version 3 carries each peer's public key. The key is self-certifying — the peer
+ID is the first 8 bytes of `SHA-256(key)` — so a member cannot impersonate
+another member's ID. An unknown peer advertised this way is registered and can
+be dialed, which is what lets a three-node mesh form without every pair
+exchanging invites. A member can still advertise sock-puppet peers it controls;
+the peer table is capped, and a configured key is never overwritten. Overlay
+addresses and names are learned the same way (first authenticated claim wins).
 
 ## Joining a network
 

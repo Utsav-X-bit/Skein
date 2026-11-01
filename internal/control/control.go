@@ -41,6 +41,7 @@ type Transport interface {
 type Local struct {
 	ID         uint64
 	Name       string
+	PublicKey  []byte
 	OverlayV4  netip.Addr
 	OverlayV6  netip.Addr
 	Candidates []netip.AddrPort
@@ -175,6 +176,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 	records := []discovery.PeerRecord{{
 		ID:         c.local.ID,
 		Name:       c.local.Name,
+		PublicKey:  c.local.PublicKey,
 		OverlayV4:  c.local.OverlayV4,
 		OverlayV6:  c.local.OverlayV6,
 		Candidates: c.local.Candidates,
@@ -185,7 +187,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 		if !p.OverlayV4.IsValid() && !p.OverlayV6.IsValid() {
 			continue
 		}
-		rec := discovery.PeerRecord{ID: p.ID, Name: p.Name, OverlayV4: p.OverlayV4, OverlayV6: p.OverlayV6}
+		rec := discovery.PeerRecord{ID: p.ID, Name: p.Name, PublicKey: p.PublicKey, OverlayV4: p.OverlayV4, OverlayV6: p.OverlayV6}
 		for _, cand := range p.Candidates {
 			rec.Candidates = append(rec.Candidates, cand.Addr)
 		}

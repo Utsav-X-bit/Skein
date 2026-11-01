@@ -3,6 +3,7 @@ package discovery
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
@@ -32,9 +33,9 @@ func TestStateRoundTrip(t *testing.T) {
 		Seq:     7,
 		Expires: time.Now().Add(time.Minute),
 		Peers: []PeerRecord{
-			{ID: a.ID, OverlayV4: netip.MustParseAddr("10.144.144.1"), OverlayV6: netip.MustParseAddr("fd00::1"),
+			{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.1"), OverlayV6: netip.MustParseAddr("fd00::1"),
 				Candidates: []netip.AddrPort{netip.MustParseAddrPort("203.0.113.5:11010")}},
-			{ID: b.ID, OverlayV4: netip.MustParseAddr("10.144.144.2")},
+			{ID: b.ID, PublicKey: b.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.2")},
 		},
 		Routes: []RouteRecord{
 			{Destination: b.ID, Cost: 12 * time.Millisecond, Hops: 1, Path: []uint64{b.ID}},
@@ -66,7 +67,7 @@ func TestStateRejectsMalformed(t *testing.T) {
 	a := testIdentity(t)
 	valid, err := Encode(State{
 		Origin: a.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
-		Peers: []PeerRecord{{ID: a.ID, OverlayV4: netip.MustParseAddr("10.144.144.1")}},
+		Peers: []PeerRecord{{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.1")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +108,7 @@ func TestBuildStaysWithinTheFrameCap(t *testing.T) {
 	for i := range 10 {
 		peers = append(peers, PeerRecord{ID: uint64(i + 2), OverlayV4: netip.MustParseAddr("10.144.144.1")})
 	}
-	s, err := Build([]PeerRecord{{ID: a.ID, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, 1, time.Minute, time.Now())
+	s, err := Build([]PeerRecord{{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, 1, time.Minute, time.Now())
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestMergerAppliesPeersAndRoutes(t *testing.T) {
 		Seq:     1,
 		Expires: time.Now().Add(time.Minute),
 		Peers: []PeerRecord{
-			{ID: other.ID, OverlayV4: netip.MustParseAddr("10.144.144.7"),
+			{ID: other.ID, PublicKey: other.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.7"),
 				Candidates: []netip.AddrPort{netip.MustParseAddrPort("198.51.100.9:11010")}},
 		},
 		Routes: []RouteRecord{
@@ -192,7 +193,7 @@ func TestMergerLearnsOverlayAddresses(t *testing.T) {
 		Seq:     1,
 		Expires: time.Now().Add(time.Minute),
 		Peers: []PeerRecord{
-			{ID: other.ID, OverlayV4: netip.MustParseAddr("10.144.144.7"), OverlayV6: netip.MustParseAddr("fd00:6d65:7368::7")},
+			{ID: other.ID, PublicKey: other.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.7"), OverlayV6: netip.MustParseAddr("fd00:6d65:7368::7")},
 		},
 	})
 	if err != nil {
@@ -298,8 +299,8 @@ func TestStateCarriesPeerNames(t *testing.T) {
 	payload, err := Encode(State{
 		Origin: a.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
 		Peers: []PeerRecord{
-			{ID: a.ID, Name: "utsav-laptop", OverlayV4: netip.MustParseAddr("10.144.144.1")},
-			{ID: b.ID, Name: "yoga", OverlayV4: netip.MustParseAddr("10.144.144.2")},
+			{ID: a.ID, Name: "utsav-laptop", PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.1")},
+			{ID: b.ID, Name: "yoga", PublicKey: b.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.2")},
 		},
 	})
 	if err != nil {
@@ -350,7 +351,7 @@ func TestMergerLearnsNames(t *testing.T) {
 	}
 	payload, err := Encode(State{
 		Origin: origin.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
-		Peers: []PeerRecord{{ID: other.ID, Name: "yoga", OverlayV4: netip.MustParseAddr("10.144.144.2")}},
+		Peers: []PeerRecord{{ID: other.ID, Name: "yoga", PublicKey: other.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.2")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -362,5 +363,104 @@ func TestMergerLearnsNames(t *testing.T) {
 	p, _ := peers.Get(other.ID)
 	if p.Name != "yoga" {
 		t.Fatalf("name = %q", p.Name)
+	}
+}
+
+func TestStateCarriesPeerKeys(t *testing.T) {
+	a := testIdentity(t)
+	b := testIdentity(t)
+	payload, err := Encode(State{
+		Origin: a.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{ID: b.ID, PublicKey: b.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.2")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Peers[0].PublicKey, b.PublicKey) {
+		t.Fatal("public key did not round-trip")
+	}
+
+	// A key that does not hash to the claimed ID is rejected on decode.
+	idx := bytes.Index(payload, b.PublicKey)
+	if idx < 0 {
+		t.Fatal("key not found in payload")
+	}
+	tampered := append([]byte(nil), payload...)
+	tampered[idx] ^= 0xff
+	if _, err := Decode(tampered); err == nil {
+		t.Fatal("expected a mismatched key to be rejected")
+	}
+}
+
+func TestMergerRegistersUnknownPeersFromGossip(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	stranger := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	if err := peers.Upsert(peer.Peer{ID: origin.ID, PublicKey: origin.PublicKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Encode(State{
+		Origin: origin.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{
+			ID: stranger.ID, PublicKey: stranger.PublicKey, Name: "nas",
+			OverlayV4: netip.MustParseAddr("10.144.144.3"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+	var learnedID uint64
+	m.OnPeer = func(id uint64, key []byte) error {
+		learnedID = id
+		return peers.Upsert(peer.Peer{ID: id, PublicKey: key})
+	}
+	if err := m.Merge(origin.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	if learnedID != stranger.ID {
+		t.Fatalf("learned %016x, want %016x", learnedID, stranger.ID)
+	}
+	p, ok := peers.Get(stranger.ID)
+	if !ok || p.Name != "nas" || p.OverlayV4.String() != "10.144.144.3" {
+		t.Fatalf("peer = %+v", p)
+	}
+}
+
+func TestMergerSkipsPeersWhenRegistrationFails(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	stranger := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	if err := peers.Upsert(peer.Peer{ID: origin.ID, PublicKey: origin.PublicKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Encode(State{
+		Origin: origin.ID, Seq: 1, Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{ID: stranger.ID, PublicKey: stranger.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.3")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+	m.OnPeer = func(uint64, []byte) error { return errors.New("full") }
+	if err := m.Merge(origin.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := peers.Get(stranger.ID); ok {
+		t.Fatal("peer was registered despite the error")
 	}
 }
