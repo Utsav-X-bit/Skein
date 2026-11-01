@@ -297,6 +297,15 @@ func (t *Table) SetState(id uint64, state State) {
 	}
 }
 
+// SetRTT records the latest round-trip time measured by control traffic.
+func (t *Table) SetRTT(id uint64, rtt time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		p.RTT = rtt
+	}
+}
+
 // SetRxTransport records the transport the peer's frames arrive on, which can
 // differ from the transport this node sends with.
 func (t *Table) SetRxTransport(id uint64, transport string) {

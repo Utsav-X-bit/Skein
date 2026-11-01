@@ -240,6 +240,20 @@ func TestStateIsBroadcastAndMerged(t *testing.T) {
 	}
 }
 
+func TestPongRecordsTheRoundTrip(t *testing.T) {
+	f := newFixture(t)
+	f.now = time.Unix(1_700_000_100, 0)
+	payload := pingPayload(f.now.Add(-42 * time.Millisecond))
+	f.ctl.HandleControl(f.peerID, netip.MustParseAddrPort("192.0.2.2:11010"), wire.Pong, payload)
+	p, ok := f.peers.Get(f.peerID)
+	if !ok {
+		t.Fatal("peer missing")
+	}
+	if p.RTT != 42*time.Millisecond {
+		t.Fatalf("RTT = %v, want 42ms", p.RTT)
+	}
+}
+
 func TestPingHandlerEchoesPayload(t *testing.T) {
 	f := newFixture(t)
 	reply := f.ctl.HandlePing(f.peerID, []byte("ping-data"))

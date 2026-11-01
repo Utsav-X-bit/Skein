@@ -250,6 +250,13 @@ func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.Mes
 	}
 	switch typ {
 	case wire.Pong:
+		// The peer echoes the ping payload; its first word is the send time.
+		if len(payload) == 16 {
+			sent := time.Unix(0, int64(binary.BigEndian.Uint64(payload[0:8])))
+			if rtt := c.now().Sub(sent); rtt > 0 && rtt < time.Minute {
+				c.peers.SetRTT(from, rtt)
+			}
+		}
 		return
 	case wire.State:
 		_ = c.merger.Merge(from, payload)
