@@ -20,7 +20,7 @@ const usage = `skeind — Skein mesh VPN daemon
 
 Usage:
   skeind run -c <config>       start the daemon (root / Administrator)
-  skeind install-service -c <config> [--exe <path>]
+  skeind install-service -c <config>
   skeind uninstall-service
   skeind version               print the version
 `
