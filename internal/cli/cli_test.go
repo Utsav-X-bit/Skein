@@ -501,3 +501,101 @@ func TestLoadConfigMissingExplainsBothPaths(t *testing.T) {
 		}
 	}
 }
+
+func stubDaemon(t *testing.T, running bool) {
+	t.Helper()
+	old := daemonActive
+	daemonActive = func() bool { return running }
+	t.Cleanup(func() { daemonActive = old })
+}
+
+func resetFixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	config := filepath.Join(dir, "skein.toml")
+	identity := filepath.Join(dir, "identity.key")
+	if err := os.WriteFile(config, []byte("[node]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identity, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return config, identity
+}
+
+func TestResetBacksUpConfigAndIdentity(t *testing.T) {
+	stubDaemon(t, false)
+	config, identity := resetFixture(t)
+	var out bytes.Buffer
+	if err := cmdReset(config, false, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(config); !os.IsNotExist(err) {
+		t.Fatal("config still exists")
+	}
+	if _, err := os.Stat(identity); !os.IsNotExist(err) {
+		t.Fatal("identity still exists")
+	}
+	backups, _ := filepath.Glob(filepath.Join(filepath.Dir(config), "reset-*", "skein.toml"))
+	if len(backups) != 1 {
+		t.Fatalf("config backup = %v", backups)
+	}
+	if !strings.Contains(out.String(), "skein init") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestResetPurgeRemovesEverything(t *testing.T) {
+	stubDaemon(t, false)
+	config, identity := resetFixture(t)
+	var out bytes.Buffer
+	if err := cmdReset(config, true, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{config, identity} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists", path)
+		}
+	}
+	if backups, _ := filepath.Glob(filepath.Join(filepath.Dir(config), "reset-*")); len(backups) != 0 {
+		t.Fatalf("purge left backups: %v", backups)
+	}
+}
+
+func TestResetCanKeepIdentity(t *testing.T) {
+	stubDaemon(t, false)
+	config, identity := resetFixture(t)
+	var out bytes.Buffer
+	if err := cmdReset(config, true, true, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(config); !os.IsNotExist(err) {
+		t.Fatal("config still exists")
+	}
+	if _, err := os.Stat(identity); err != nil {
+		t.Fatalf("identity was removed: %v", err)
+	}
+}
+
+func TestResetRefusesARunningDaemon(t *testing.T) {
+	stubDaemon(t, true)
+	config, _ := resetFixture(t)
+	var out bytes.Buffer
+	if err := cmdReset(config, true, false, false, &out); err == nil {
+		t.Fatal("reset ran while the daemon was active")
+	}
+	if err := cmdReset(config, true, false, true, &out); err != nil {
+		t.Fatalf("--force did not proceed: %v", err)
+	}
+}
+
+func TestResetWithNothingToRemove(t *testing.T) {
+	stubDaemon(t, false)
+	var out bytes.Buffer
+	if err := cmdReset(filepath.Join(t.TempDir(), "skein.toml"), false, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "nothing to remove") {
+		t.Fatalf("output = %q", out.String())
+	}
+}

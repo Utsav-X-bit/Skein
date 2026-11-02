@@ -365,6 +365,7 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 |---|---|
 | `skein init` | Create identity, config, network secret, API token |
 | `skein run` | Run the daemon (root / Administrator) |
+| `skein reset [--purge] [--keep-identity]` | Leave the mesh: back up or remove the config and identity, then re-init or join |
 | `skein setup [--remove]` | Allow UDP `listen_port` and all traffic on the overlay interface (ufw, firewalld, iptables, Windows Firewall) |
 | `skein install-service` | Register the system service |
 | `skein uninstall-service` | Remove the service and its firewall rules |

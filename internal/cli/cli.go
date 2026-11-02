@@ -48,6 +48,8 @@ Usage:
   skein [-c <config>] invite [--network]    print a peer invite or a network join string
   skein [-c <config>] run                   run the daemon (root / Administrator)
   skein [-c <config>] setup [--remove]      allow the firewall for the underlay and overlay
+  skein [-c <config>] reset [--purge] [--keep-identity] [--force]
+                                            leave the mesh: back up or remove config and identity
   skein [-c <config>] install-service       register the system service
   skein [-c <config>] uninstall-service     remove the system service
   skein [-c <config>] dashboard             live mesh status; starts the daemon if needed
@@ -154,6 +156,26 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		defer d.closeChild()
 		if err := d.run(ctx); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
+	case "reset":
+		purge, keepIdentity, force := false, false, false
+		for _, arg := range rest[1:] {
+			switch arg {
+			case "--purge":
+				purge = true
+			case "--keep-identity":
+				keepIdentity = true
+			case "--force":
+				force = true
+			default:
+				fmt.Fprintf(stderr, "skein: unknown reset flag %q\n", arg)
+				return 2
+			}
+		}
+		if err := cmdReset(path, purge, keepIdentity, force, stdout); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -973,5 +995,67 @@ func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(stdout, "firewall: allowed UDP %d and all traffic on %s (manager: %s)\n", cfg.Node.ListenPort, cfg.Node.Interface, manager)
+	return nil
+}
+
+// daemonActive is a variable so tests can stub the platform check.
+var daemonActive = daemonRunning
+
+// cmdReset leaves the mesh. The daemon owns the config while it runs, so a
+// live daemon must be stopped first; the files are backed up unless --purge.
+func cmdReset(configPath string, purge, keepIdentity, force bool, stdout io.Writer) error {
+	if daemonActive() && !force {
+		return fmt.Errorf("the daemon is running and rewrites the config; stop it first:\n  Linux: sudo systemctl stop skein\n  Windows: Stop-Service skein\n  or pass --force if it is already stopped")
+	}
+	dir := filepath.Dir(configPath)
+	identity := filepath.Join(dir, "identity.key")
+	tmp := configPath + ".tmp"
+
+	existing := 0
+	for _, path := range []string{configPath, identity} {
+		if _, err := os.Stat(path); err == nil {
+			existing++
+		}
+	}
+	if existing == 0 {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(stdout, "reset: nothing to remove in %s\n", dir)
+		return nil
+	}
+
+	if purge {
+		paths := []string{configPath, tmp}
+		if !keepIdentity {
+			paths = append(paths, identity)
+		}
+		for _, path := range paths {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		fmt.Fprintln(stdout, "reset: removed the local mesh configuration")
+	} else {
+		backup := filepath.Join(dir, "reset-"+time.Now().Format("20060102-150405"))
+		if err := os.MkdirAll(backup, 0o700); err != nil {
+			return err
+		}
+		move := func(path string) error {
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				return nil
+			}
+			return os.Rename(path, filepath.Join(backup, filepath.Base(path)))
+		}
+		if err := move(configPath); err != nil {
+			return err
+		}
+		_ = os.Remove(tmp)
+		if !keepIdentity {
+			if err := move(identity); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(stdout, "reset: moved the local mesh configuration to %s\n", backup)
+	}
+	fmt.Fprintln(stdout, "next: run `skein init` or `skein join <invite>`; the service stays registered")
 	return nil
 }
