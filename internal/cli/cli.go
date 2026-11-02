@@ -692,7 +692,33 @@ func runOnline(ctx context.Context, cfg conf.Config, args []string, jsonOut bool
 		if err != nil {
 			return err
 		}
-		return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/peers/%016x/probe", id))
+		if err := c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/peers/%016x/probe", id)); err != nil {
+			return err
+		}
+		var peers []peerDTO
+		if err := c.get(ctx, "/api/v1/peers", &peers); err != nil {
+			fmt.Fprintf(stdout, "probe: %016x reachable\n", id)
+			return nil
+		}
+		for _, p := range peers {
+			if p.ID != fmt.Sprintf("%016x", id) {
+				continue
+			}
+			line := fmt.Sprintf("probe: %s %s", p.ID, dash(p.State))
+			if p.Endpoint != "" {
+				line += " via " + p.Endpoint
+			}
+			if p.Transport != "" {
+				line += " (" + p.Transport + ")"
+			}
+			if p.RTTMs > 0 {
+				line += fmt.Sprintf(", %.1f ms", p.RTTMs)
+			}
+			fmt.Fprintln(stdout, line)
+			return nil
+		}
+		fmt.Fprintf(stdout, "probe: %016x reachable\n", id)
+		return nil
 	case "ping":
 		if len(args) != 2 {
 			return errors.New("usage: skein ping <overlay-ip>")
