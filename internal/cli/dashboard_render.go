@@ -504,7 +504,8 @@ func maxRate(a, b float64) float64 {
 
 func lastSeen(ms int64) string {
 	if ms <= 0 {
-		return "now"
+		// The daemon reports zero for a peer it has never heard from.
+		return "never"
 	}
 	return humanDuration(time.Duration(ms)*time.Millisecond) + " ago"
 }
@@ -741,32 +742,53 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		points[p.ID] = point{cx + int(math.Round(float64(rx)*math.Cos(a))), cy + int(math.Round(float64(ry)*math.Sin(a))), p.ID, trunc(d.displayName(v, p.ID), 10)}
 	}
 
-	edges := d.topologyEdges(v)
-	routeEdges := map[mapEdge]bool{}
+	routes := d.routeEdges(v)
+	reported := d.activityEdges(v)
+	selected := map[mapEdge]bool{}
 	if v.ui.focus == focusRoutes {
 		if r, ok := selectedRoute(v); ok {
 			path := d.routePath(v, r)
 			for i := 1; i < len(path); i++ {
-				routeEdges[mapEdge{path[i-1], path[i]}] = true
+				selected[mapEdge{path[i-1], path[i]}] = true
 			}
 		}
 	}
 
-	for e := range edges {
+	drawEdge := func(e mapEdge) {
 		a, b := points[e.from], points[e.to]
-		color := ansiDim
-		if routeEdges[e] || e.from == v.ui.selected || e.to == v.ui.selected {
+		glyph, color := '·', ansiDim // reported: this node cannot use it
+		if routes[e] {
+			glyph, color = '─', ansiSlate // usable route
+		}
+		if selected[e] || e.from == v.ui.selected || e.to == v.ui.selected {
 			color = ansiBrand
 		}
-		c.line(a.x, a.y, b.x, b.y, '·', color)
+		c.line(a.x, a.y, b.x, b.y, glyph, color)
 		for _, pulse := range d.edgePulses(v, e.from, e.to) {
 			d.drawPulse(c, a.x, a.y, b.x, b.y, e.from+e.to+pulse.color, pulse.color, pulse.reverse, v.phase)
 		}
+	}
+	for e := range routes {
+		drawEdge(e)
+	}
+	for e := range reported {
+		if !routes[e] {
+			drawEdge(e)
+		}
+	}
+	states := map[string]string{}
+	for _, p := range v.peers {
+		states[p.ID] = p.State
 	}
 	for id, p := range points {
 		glyph, col := "●", ansiHealthy
 		if id == "me" {
 			glyph, col = "◆", ansiCyan
+		} else {
+			col = stateColor(states[id])
+			if peerActive(v, id) {
+				col = ansiOut
+			}
 		}
 		if id == v.ui.selected {
 			col = ansiBrand
@@ -774,9 +796,6 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 			if !d.unicode {
 				glyph = "O"
 			}
-		}
-		if id != "me" && peerActive(v, id) && id != v.ui.selected {
-			col = ansiOut
 		}
 		c.text(p.x, p.y, glyph, col)
 		labelX := p.x + 2
@@ -789,8 +808,11 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		}
 		c.text(max(0, labelX), p.y, p.name, labelColor)
 	}
-	if len(edges) == 0 {
+	if len(routes) == 0 && len(reported) == 0 {
 		c.text(max(0, cx-10), cy+1, "waiting for routes", ansiDim)
+	}
+	if height >= 6 && width >= 34 {
+		c.text(1, height-1, "● up  ● down  ─ route  · reported", ansiSlate)
 	}
 	return c.lines(d.color)
 }
@@ -1028,29 +1050,52 @@ func easeOut(t float64) float64 {
 // peers reported by the mesh.
 type mapEdge struct{ from, to string }
 
-// topologyEdges returns the node pairs that route paths and fresh activity
-// actually substantiate. Unknown nodes are ignored, so the map never invents
-// an edge.
-func (d *dashboard) topologyEdges(v view) map[mapEdge]bool {
+// knownNodes is "me" plus every peer the dashboard can name.
+func knownNodes(v view) map[string]bool {
 	known := map[string]bool{"me": true}
 	for _, p := range v.peers {
 		known[p.ID] = true
 	}
-	edges := map[mapEdge]bool{}
-	addPath := func(path []string) {
-		for i := 1; i < len(path); i++ {
-			from, to := path[i-1], path[i]
-			if from == to || !known[from] || !known[to] {
-				continue
-			}
-			edges[mapEdge{from, to}] = true
+	return known
+}
+
+func addEdgePath(edges map[mapEdge]bool, known map[string]bool, path []string) {
+	for i := 1; i < len(path); i++ {
+		from, to := path[i-1], path[i]
+		if from == to || !known[from] || !known[to] {
+			continue
 		}
+		edges[mapEdge{from, to}] = true
 	}
+}
+
+// routeEdges are paths this node can actually use (solid on the map).
+func (d *dashboard) routeEdges(v view) map[mapEdge]bool {
+	known := knownNodes(v)
+	edges := map[mapEdge]bool{}
 	for _, r := range v.routes {
-		addPath(d.routePath(v, r))
+		addEdgePath(edges, known, d.routePath(v, r))
 	}
+	return edges
+}
+
+// activityEdges are remote links reported by peers (dotted on the map). They
+// do not imply this node can reach either endpoint.
+func (d *dashboard) activityEdges(v view) map[mapEdge]bool {
+	known := knownNodes(v)
+	edges := map[mapEdge]bool{}
 	for _, a := range freshActivitiesFrom(v.activities, time.Now().UnixMilli()) {
-		addPath(d.activityPath(v, a))
+		addEdgePath(edges, known, d.activityPath(v, a))
+	}
+	return edges
+}
+
+// topologyEdges is the union, used where the source distinction does not
+// matter.
+func (d *dashboard) topologyEdges(v view) map[mapEdge]bool {
+	edges := d.routeEdges(v)
+	for e := range d.activityEdges(v) {
+		edges[e] = true
 	}
 	return edges
 }

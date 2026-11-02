@@ -268,3 +268,43 @@ func TestMeshSubstantiatesRemotePeerLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestMapDistinguishesRoutesFromReportedLinks(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st:     statusDTO{ID: "local"},
+		peers:  []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}},
+		routes: []routeDTO{{Destination: "a", NextHop: "a", Hops: 1, Path: []string{"a"}}},
+		activities: []activityDTO{
+			{Origin: "a", Destination: "b", Path: []string{"b"}, TxBytes: 10, ExpiresMS: 1 << 62},
+		},
+	}
+	out := strings.Join(d.renderRouteMap(v, 100, 20), "\n")
+	if !strings.Contains(out, "─") {
+		t.Fatalf("usable route is not drawn solid:\n%s", out)
+	}
+	if !strings.Contains(out, "·") {
+		t.Fatalf("reported link is not drawn dotted:\n%s", out)
+	}
+}
+
+func TestMapNodeColorFollowsPeerState(t *testing.T) {
+	d := coloredDashboard()
+	v := view{
+		st:    statusDTO{ID: "local"},
+		peers: []peerDTO{{ID: "a", Name: "alpha", State: "down"}, {ID: "b", Name: "bravo", State: "up"}},
+	}
+	out := strings.Join(d.renderRouteMap(v, 100, 20), "\n")
+	if !strings.Contains(out, "\x1b["+ansiError+"m●") {
+		t.Fatalf("down peer is not red:\n%q", out)
+	}
+	if !strings.Contains(out, "\x1b["+ansiHealthy+"m●") {
+		t.Fatalf("up peer is not green:\n%q", out)
+	}
+}
+
+func TestLastSeenNever(t *testing.T) {
+	if got := lastSeen(0); got != "never" {
+		t.Fatalf("lastSeen(0) = %q", got)
+	}
+}
