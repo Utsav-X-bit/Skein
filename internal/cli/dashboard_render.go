@@ -56,7 +56,7 @@ func (d *dashboard) footer(v view, width int, wide bool) string {
 		motion = "paused"
 	}
 	if wide {
-		return d.line(fmt.Sprintf(" %s  SPACE %s motion · TAB panels · j/k select · ? help · q quit", sparkline(v.spark), motion), width)
+		return d.line(fmt.Sprintf(" %s  focus %s  SPACE %s motion · TAB panels · j/k select · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), motion), width)
 	}
 	if width < 96 {
 		return d.line(fmt.Sprintf(" %s · SPACE %s · ? · q", focusName(v.ui.focus), motion), width)
@@ -72,14 +72,14 @@ func (d *dashboard) renderWide(v view, l dashboardLayout) []string {
 	routesH := min(5, max(3, right.h/4))
 	activityH := max(3, right.h-detailH-routesH)
 	rightLines := d.renderDetailCard(v, dashboardRect{w: right.w, h: detailH})
-	rightLines = append(rightLines, d.card("ROUTES", d.renderRoutes(v, max(1, right.w-2), max(1, routesH-2)), dashboardRect{w: right.w, h: routesH})...)
-	rightLines = append(rightLines, d.card("ACTIVITY", d.renderActivity(v, max(1, right.w-2), max(1, activityH-2)), dashboardRect{w: right.w, h: activityH})...)
+	rightLines = append(rightLines, d.focusedCard("ROUTES", d.renderRoutes(v, max(1, right.w-2), max(1, routesH-2)), dashboardRect{w: right.w, h: routesH}, v.ui.focus == focusRoutes)...)
+	rightLines = append(rightLines, d.focusedCard("ACTIVITY", d.renderActivity(v, max(1, right.w-2), max(1, activityH-2)), dashboardRect{w: right.w, h: activityH}, v.ui.focus == focusEvents)...)
 	return joinColumns([][]string{leftLines, centerLines, rightLines}, []int{left.w, center.w, right.w}, left.h)
 }
 
 func (d *dashboard) renderMapCard(v view, r dashboardRect) []string {
 	body := d.renderRouteMap(v, max(1, r.w-2), max(1, r.h-2))
-	return d.card("LIVE ROUTE MAP", body, r)
+	return d.focusedCard("LIVE ROUTE MAP", body, r, v.ui.focus == focusMesh)
 }
 
 func joinColumns(columns [][]string, widths []int, height int) []string {

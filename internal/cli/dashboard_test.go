@@ -207,9 +207,13 @@ func TestMissionControlAdaptsToTerminalBounds(t *testing.T) {
 func TestDashboardKeysOnlyChangeDashboardState(t *testing.T) {
 	d := testDashboard()
 	d.peers = []peerDTO{{ID: "a", State: "up"}, {ID: "b", State: "up"}}
-	d.moveSelection(1)
+	d.handleKey('j')
 	if d.ui.selected != "b" {
-		t.Fatalf("selected = %q", d.ui.selected)
+		t.Fatalf("j selected = %q", d.ui.selected)
+	}
+	d.handleKey('k')
+	if d.ui.selected != "a" {
+		t.Fatalf("k selected = %q", d.ui.selected)
 	}
 	d.handleKey(' ')
 	if !d.ui.paused {
@@ -221,6 +225,27 @@ func TestDashboardKeysOnlyChangeDashboardState(t *testing.T) {
 	}
 	if !d.handleKey('q') {
 		t.Fatal("q did not request quit")
+	}
+}
+
+func TestDashboardTabVisiblyMovesFocusInWideLayout(t *testing.T) {
+	d := testDashboard()
+	d.peers = []peerDTO{{ID: "a", Name: "alpha", State: "up"}}
+
+	v := d.view()
+	initial := strings.Join(d.buildSized(v, 160, 45), "\n")
+	if !strings.Contains(initial, "▸ SELECTED LINK") {
+		t.Fatalf("initial overview focus is not visible:\n%s", initial)
+	}
+
+	d.handleKey('\t')
+	v = d.view()
+	afterTab := strings.Join(d.buildSized(v, 160, 45), "\n")
+	if !strings.Contains(afterTab, "▸ LIVE ROUTE MAP") {
+		t.Fatalf("mesh focus is not visible after TAB:\n%s", afterTab)
+	}
+	if strings.Contains(afterTab, "▸ SELECTED LINK") {
+		t.Fatalf("overview focus remained visible after TAB:\n%s", afterTab)
 	}
 }
 
