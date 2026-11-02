@@ -128,3 +128,30 @@ func TestPunchRequestIsIgnoredWithoutAnObservedTarget(t *testing.T) {
 		t.Fatalf("expected no introduction without the target's endpoint, got %d", len(frames))
 	}
 }
+
+func TestPunchDeliveryTriesEveryCandidate(t *testing.T) {
+	f := newFixture(t)
+	candA := netip.MustParseAddrPort("198.51.100.7:11010")
+	candB := netip.MustParseAddrPort("[2001:db8::7]:11010")
+	f.peers.AddCandidate(f.peerID, candA, peer.SourceState)
+	f.peers.AddCandidate(f.peerID, candB, peer.SourceState)
+
+	observed := netip.MustParseAddrPort("203.0.113.9:40000")
+	payload := encodePunch(punchRequest{Target: f.peerID, Addr: observed, HasAddr: true})
+	f.ctl.HandleControl(0x1111, netip.MustParseAddrPort("192.0.2.9:11010"), wire.Punch, payload)
+
+	f.eng.mu.Lock()
+	punched := append([]punchCall(nil), f.eng.punched...)
+	f.eng.mu.Unlock()
+	got := map[netip.AddrPort]bool{}
+	for _, call := range punched {
+		if call.peer == f.peerID {
+			got[call.addr] = true
+		}
+	}
+	for _, want := range []netip.AddrPort{observed, candA, candB} {
+		if !got[want] {
+			t.Fatalf("punch did not try %s: %v", want, punched)
+		}
+	}
+}

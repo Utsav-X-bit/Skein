@@ -495,7 +495,23 @@ func (c *Controller) handlePunch(from uint64, src netip.AddrPort, payload []byte
 		if tooSoon {
 			return
 		}
-		_ = c.eng.Punch(req.Target, req.Addr)
+		// Try the relay's observed endpoint and every candidate this node
+		// knows for the peer, so a reachable public address is not missed.
+		addrs := []netip.AddrPort{req.Addr}
+		if p, ok := c.peers.Get(req.Target); ok {
+			for _, cand := range p.Candidates {
+				addrs = append(addrs, cand.Addr)
+			}
+		}
+		seen := make(map[netip.AddrPort]bool, len(addrs))
+		for _, addr := range addrs {
+			addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+			if seen[addr] {
+				continue
+			}
+			seen[addr] = true
+			_ = c.eng.Punch(req.Target, addr)
+		}
 		return
 	}
 
