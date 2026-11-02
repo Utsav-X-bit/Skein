@@ -242,6 +242,7 @@ func TestStateIsBroadcastAndMerged(t *testing.T) {
 
 func TestPongRecordsTheRoundTrip(t *testing.T) {
 	f := newFixture(t)
+	f.peers.SetActive(f.peerID, netip.MustParseAddrPort("192.0.2.2:11010"), 5*time.Millisecond, "udp", f.now)
 	f.now = time.Unix(1_700_000_100, 0)
 	payload := pingPayload(f.now.Add(-42 * time.Millisecond))
 	f.ctl.HandleControl(f.peerID, netip.MustParseAddrPort("192.0.2.2:11010"), wire.Pong, payload)
@@ -251,6 +252,10 @@ func TestPongRecordsTheRoundTrip(t *testing.T) {
 	}
 	if p.RTT != 42*time.Millisecond {
 		t.Fatalf("RTT = %v, want 42ms", p.RTT)
+	}
+	r, ok := f.routes.Lookup(f.peerID)
+	if !ok || r.Cost != 42*time.Millisecond {
+		t.Fatalf("route cost = %+v, want 42ms", r)
 	}
 }
 

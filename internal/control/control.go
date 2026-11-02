@@ -303,6 +303,12 @@ func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.Mes
 			sent := time.Unix(0, int64(binary.BigEndian.Uint64(payload[0:8])))
 			if rtt := c.now().Sub(sent); rtt > 0 && rtt < time.Minute {
 				c.peers.SetRTT(from, rtt)
+				// Route costs drive mesh path selection. Only a proven direct link
+				// may contribute its Pong RTT; a relayed Pong is end-to-end and
+				// must not be installed as a one-hop link cost.
+				if p, ok := c.peers.Get(from); ok && p.Direct {
+					_ = c.routes.UpdateDirect(route.DirectLink{PeerID: from, RTT: rtt})
+				}
 			}
 		}
 		return
