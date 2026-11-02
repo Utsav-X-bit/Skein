@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,6 +267,10 @@ func (e *Engine) readLink(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, link.ErrTruncated) {
 				e.counters.Oversize.Add(1)
+				continue
+			}
+			if transientReadError(err) {
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 			select {
@@ -707,6 +712,22 @@ func (e *Engine) Rekey(peerID uint64) error {
 	if !ok {
 		return ErrUnknownPeer
 	}
+	now := e.now()
+	e.mu.Lock()
+	last := e.inflight[peerID]
+	tries := 0
+	if last != nil {
+		tries = last.tries
+		backoff := minBackoff << min(tries, 5)
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		if tries > 0 && now.Sub(last.sentAt) < backoff {
+			e.mu.Unlock()
+			return nil
+		}
+	}
+	e.mu.Unlock()
 	e.markStarted(peerID)
 	attempt, msg, err := e.sessions.Begin(peerID)
 	if err != nil {
@@ -714,7 +735,7 @@ func (e *Engine) Rekey(peerID uint64) error {
 		return err
 	}
 	e.mu.Lock()
-	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: e.now()}
+	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: now, tries: tries + 1}
 	e.mu.Unlock()
 	if err := e.sendHandshake(p, attempt, msg); err != nil {
 		e.counters.RekeyFail.Add(1)
@@ -1036,6 +1057,14 @@ var (
 	debugOnce    sync.Once
 	debugEnabled bool
 )
+
+// transientReadError reports a kernel resource error that a retry can fix.
+func transientReadError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no buffer space") ||
+		strings.Contains(msg, "cannot allocate memory") ||
+		strings.Contains(msg, "temporarily unavailable")
+}
 
 func debugFrames() bool {
 	debugOnce.Do(func() { debugEnabled = os.Getenv("SKEIN_DEBUG") != "" })

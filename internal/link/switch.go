@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Switch carries frames over UDP and falls back to TCP for peers that cannot
@@ -55,6 +57,14 @@ func Listen(port uint16) (*Switch, error) {
 	return s, nil
 }
 
+// transientLinkError reports a recoverable kernel resource error.
+func transientLinkError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no buffer space") ||
+		strings.Contains(msg, "cannot allocate memory") ||
+		strings.Contains(msg, "temporarily unavailable")
+}
+
 func (s *Switch) readUDP() {
 	defer s.wg.Done()
 	buf := make([]byte, MaxDatagram+1)
@@ -62,6 +72,10 @@ func (s *Switch) readUDP() {
 		n, from, err := s.udp.Recv(buf)
 		if err != nil {
 			if errors.Is(err, ErrTruncated) {
+				continue
+			}
+			if transientLinkError(err) {
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 			select {
@@ -94,6 +108,10 @@ func (s *Switch) readTCP() {
 		n, from, err := s.tcp.Recv(buf)
 		if err != nil {
 			if errors.Is(err, ErrTruncated) {
+				continue
+			}
+			if transientLinkError(err) {
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 			select {

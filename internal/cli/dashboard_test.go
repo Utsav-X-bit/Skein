@@ -113,6 +113,9 @@ func TestRatesAndFormatting(t *testing.T) {
 }
 
 func TestStripANSIAndFit(t *testing.T) {
+	old := uiUnicode
+	uiUnicode = false
+	t.Cleanup(func() { uiUnicode = old })
 	if got := stripANSI("\x1b[32mup\x1b[0m"); got != "up" {
 		t.Fatalf("stripANSI = %q", got)
 	}
