@@ -16,6 +16,7 @@ import (
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
 func runCLI(t *testing.T, args ...string) (int, string, string) {
@@ -409,5 +410,19 @@ func TestLoadConfigExplainsOwnership(t *testing.T) {
 	_, err := loadConfig(path)
 	if err == nil || !strings.Contains(err.Error(), "fix ownership") {
 		t.Fatalf("loadConfig = %v, want an ownership hint", err)
+	}
+}
+
+func TestVersionFlagsWorkWithoutAConfig(t *testing.T) {
+	for _, arg := range []string{"version", "-v", "--version"} {
+		var out, errOut bytes.Buffer
+		code := Run(context.Background(), []string{"-c", "/nonexistent/skein.toml", arg}, &out, &errOut)
+		if code != 0 {
+			t.Fatalf("%s exit = %d, stderr = %q", arg, code, errOut.String())
+		}
+		want := "skein " + version.Info()
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("%s output = %q, want %q", arg, out.String(), want)
+		}
 	}
 }

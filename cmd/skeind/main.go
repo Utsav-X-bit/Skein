@@ -19,7 +19,8 @@ Usage:
   skeind run -c <config>       start the daemon (root / Administrator)
   skeind install-service -c <config>
   skeind uninstall-service
-  skeind version               print the version
+  skeind version | -v | --version
+                               print the version
 
 The same commands exist in the skein binary: skein run, skein install-service,
 skein uninstall-service.
@@ -72,8 +73,8 @@ func run(args []string) int {
 		}
 		fmt.Println("skein service removed")
 		return 0
-	case "version":
-		fmt.Println("skeind " + version.Version)
+	case "version", "-v", "--version":
+		fmt.Println("skeind " + version.Info())
 		return 0
 	case "help", "-h", "--help":
 		fmt.Print(usage)

@@ -55,6 +55,9 @@ func (d *dashboard) renderBrand(v view, r dashboardRect) []string {
 	if v.st.ID != "" {
 		meta = v.st.ID + " · " + dash(v.st.OverlayIPv4)
 	}
+	if v.st.Version != "" {
+		meta += " · " + v.st.Version
+	}
 	if len(brand) > 1 && meta != "" {
 		brand[1] += "  " + meta
 	}

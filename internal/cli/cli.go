@@ -54,7 +54,7 @@ Usage:
   skein [-c <config>] routes [--json]
   skein [-c <config>] probe <peer-id>
   skein [-c <config>] ping <overlay-ip>
-  skein version
+  skein version | -v | --version
 `
 
 // Run executes one CLI invocation and returns the process exit code.
@@ -167,8 +167,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
-	case "version":
-		fmt.Fprintln(stdout, "skein "+version.Version)
+	case "version", "-v", "--version":
+		fmt.Fprintln(stdout, "skein "+version.Info())
 		return 0
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)

@@ -433,7 +433,7 @@ func (d *Daemon) Status() api.Status {
 		ID:            fmt.Sprintf("%016x", d.id.ID),
 		OverlayIPv4:   d.cfg.Node.OverlayIPv4.String(),
 		UptimeSeconds: int64(time.Since(d.start).Seconds()),
-		Version:       version.Version,
+		Version:       version.Info(),
 		ListenPort:    d.cfg.Node.ListenPort,
 		PeerCount:     d.peers.Len(),
 		RxBytes:       snap.RxBytes,
