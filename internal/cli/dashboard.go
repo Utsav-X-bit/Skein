@@ -272,10 +272,10 @@ func (d *dashboard) poll(ctx context.Context) error {
 	}
 	var activities []activityDTO
 	if err := d.client.get(ctx, "/api/v1/activities", &activities); err != nil {
-		d.mu.Lock()
-		d.fetchErr = err
-		d.mu.Unlock()
-		return err
+		// The live activity feed enriches the mesh map, but it is not part of
+		// the daemon liveness contract. Keep a usable snapshot when attached
+		// to a daemon from before this endpoint existed.
+		activities = nil
 	}
 
 	now := time.Now()

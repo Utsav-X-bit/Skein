@@ -22,7 +22,7 @@ func brandLines(elapsed time.Duration, unicode, motion bool) []string {
 		mark = asciiMark
 	}
 	if !motion || elapsed >= 600*time.Millisecond {
-		return []string{mark[0] + "  Skein", mark[1] + "  MESH VPN", mark[2]}
+		return []string{mark[0] + "  Skein", mark[1] + "  SKEIN", mark[2]}
 	}
 	stage := int(elapsed / (60 * time.Millisecond))
 	if stage < 1 {
@@ -40,7 +40,7 @@ func brandLines(elapsed time.Duration, unicode, motion bool) []string {
 	}
 	if elapsed >= 420*time.Millisecond {
 		out[0] += "  Skein"
-		out[1] += "  MESH VPN"
+		out[1] += "  SKEIN"
 	}
 	return out
 }

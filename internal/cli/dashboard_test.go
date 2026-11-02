@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +52,34 @@ func TestDashboardEmptyMeshHintsAtJoin(t *testing.T) {
 	out := strings.Join(d.build(view{st: statusDTO{ID: "abc", OverlayIPv4: "10.144.144.1"}}, 120), "\n")
 	if !strings.Contains(out, "skein join") {
 		t.Fatalf("empty mesh should hint at join:\n%s", out)
+	}
+}
+
+func TestDashboardPollKeepsDaemonSnapshotWhenActivityFeedIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/status":
+			_, _ = io.WriteString(w, `{"id":"local","overlay_ipv4":"10.144.144.1"}`)
+		case "/api/v1/peers", "/api/v1/routes":
+			_, _ = io.WriteString(w, `[]`)
+		case "/api/v1/activities":
+			http.NotFound(w, r) // Daemon version from before activity telemetry.
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	d := testDashboard()
+	d.client.base = server.URL
+	d.client.http = server.Client()
+	if err := d.poll(context.Background()); err != nil {
+		t.Fatalf("poll rejected a reachable daemon without activity telemetry: %v", err)
+	}
+	v := d.view()
+	if v.err != nil || v.lastFetch.IsZero() || v.st.ID != "local" {
+		t.Fatalf("reachable daemon snapshot was not retained: %+v", v)
 	}
 }
 
