@@ -59,6 +59,7 @@ type Daemon struct {
 	events    chan api.Event
 	closeOnce sync.Once
 	closeErr  error
+	persistMu sync.Mutex
 }
 
 // New builds a daemon and opens its TUN device and UDP socket.
@@ -151,6 +152,9 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		}
 	}
 
+	ctl.SetEventHandler(func(typ string, peerID uint64) {
+		d.emit(api.Event{Type: typ, PeerID: fmt.Sprintf("%016x", peerID)})
+	})
 	d.link = udp
 	d.tun = dev
 	d.eng = eng
@@ -247,6 +251,8 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 // persistPeers rewrites the configuration so learned peers survive a restart.
 // The daemon owns the peer list; stop it before editing peers by hand.
 func (d *Daemon) persistPeers() {
+	d.persistMu.Lock()
+	defer d.persistMu.Unlock()
 	if d.cfg.Path == "" {
 		return
 	}
@@ -347,6 +353,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer stopAPI()
 	go d.serveAPI(apiCtx)
 	go d.refreshWAN(ctx)
+	go d.pruneStalePeers(ctx)
 
 	go func() { _ = d.ctl.Run(ctx) }()
 	return d.eng.Run(ctx)
@@ -597,4 +604,38 @@ func (d *Daemon) RemovePeer(id uint64) error {
 // ProbePeer implements api.Prober.
 func (d *Daemon) ProbePeer(ctx context.Context, id uint64) error {
 	return d.ctl.Probe(ctx, id)
+}
+
+// stalePeerTTL is how long a peer that has never connected may stay in the
+// table. A legitimate node connects at least once; a stale identity from an
+// earlier mesh never does.
+const stalePeerTTL = 15 * time.Minute
+
+func stalePeer(p peer.Peer, now time.Time, ttl time.Duration) bool {
+	return p.State == peer.StateDown && p.LastSeen.IsZero() && !p.Added.IsZero() && now.Sub(p.Added) >= ttl
+}
+
+// pruneStalePeers removes configured peers that have never been seen, so old
+// invites and regenerated keys do not linger in the peers list or the map.
+func (d *Daemon) pruneStalePeers(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			for _, p := range d.peers.List() {
+				if !stalePeer(p, now, stalePeerTTL) {
+					continue
+				}
+				d.peers.Remove(p.ID)
+				d.routes.RemoveDirect(p.ID)
+				d.eng.DropSession(p.ID)
+				d.persistPeers()
+				d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", p.ID)})
+			}
+		}
+	}
 }

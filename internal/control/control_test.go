@@ -198,6 +198,12 @@ func TestPingIsSentOnTheInterval(t *testing.T) {
 
 func TestSilentPeerIsMarkedDownAndRoutesWithdrawn(t *testing.T) {
 	f := newFixture(t)
+	var events []string
+	f.ctl.SetEventHandler(func(typ string, peerID uint64) {
+		if peerID == f.peerID {
+			events = append(events, typ)
+		}
+	})
 	f.peers.MarkSeen(f.peerID, f.now)
 	f.now = f.now.Add(PeerTimeout + time.Second)
 	f.ctl.Tick()
@@ -213,6 +219,9 @@ func TestSilentPeerIsMarkedDownAndRoutesWithdrawn(t *testing.T) {
 	f.eng.mu.Unlock()
 	if len(dropped) != 1 || dropped[0] != f.peerID {
 		t.Fatalf("session was not dropped: %v", dropped)
+	}
+	if len(events) != 1 || events[0] != "peer_down" {
+		t.Fatalf("events = %v", events)
 	}
 }
 

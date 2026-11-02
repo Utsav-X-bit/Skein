@@ -113,6 +113,9 @@ func (d *dashboard) statusLine(v view, width int) string {
 		}
 	}
 	parts := []string{}
+	if e := recentEvent(v); e != "" {
+		parts = append(parts, d.paint(ansiBrand, "● "+e))
+	}
 	if name := localNameOf(v.st); name != "ME" {
 		parts = append(parts, name)
 	}
@@ -177,6 +180,14 @@ func (d *dashboard) page(v view, width, height int) (string, []string) {
 	}
 }
 
+// recentEvent is the newest daemon event while it is still worth showing.
+func recentEvent(v view) string {
+	if v.event == "" || v.eventAt.IsZero() || time.Since(v.eventAt) > 20*time.Second {
+		return ""
+	}
+	return v.event
+}
+
 func (d *dashboard) footer(v view, width int, wide bool) string {
 	motion := "live"
 	if v.ui.paused {
@@ -189,13 +200,17 @@ func (d *dashboard) footer(v view, width int, wide bool) string {
 	} else if width >= 96 {
 		hint = " · ENTER expand"
 	}
+	lead := sparkline(v.spark)
+	if e := recentEvent(v); e != "" {
+		lead = d.paint(ansiBrand, "● ") + e
+	}
 	if wide {
-		return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion · TAB panels · j/k select%s · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion, hint), width)
+		return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion · TAB panels · j/k select%s · ? help · q quit", lead, focusName(v.ui.focus), pos, motion, hint), width)
 	}
 	if width < 96 {
 		return d.line(fmt.Sprintf(" %s · %s · TAB pages · j/k · SPACE %s · ? · q", focusName(v.ui.focus), pos, motion), width)
 	}
-	return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion%s · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion, hint), width)
+	return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion%s · ? help · q quit", lead, focusName(v.ui.focus), pos, motion, hint), width)
 }
 
 func (d *dashboard) position(v view) string {

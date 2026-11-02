@@ -3,6 +3,7 @@ package daemon
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"context"
 
@@ -88,4 +89,20 @@ func TestAllCandidatesIncludeThePublicAddr(t *testing.T) {
 		}
 	}
 	t.Fatalf("public_addr missing from candidates: %v", cands)
+}
+
+func TestStalePeerPredicate(t *testing.T) {
+	now := time.Now()
+	if !stalePeer(peer.Peer{State: peer.StateDown, Added: now.Add(-20 * time.Minute)}, now, 15*time.Minute) {
+		t.Fatal("a never-seen peer older than the TTL is not stale")
+	}
+	if stalePeer(peer.Peer{State: peer.StateDown, Added: now.Add(-20 * time.Minute), LastSeen: now}, now, 15*time.Minute) {
+		t.Fatal("a peer that has been seen is stale")
+	}
+	if stalePeer(peer.Peer{State: peer.StateUp, Added: now.Add(-20 * time.Minute)}, now, 15*time.Minute) {
+		t.Fatal("a connected peer is stale")
+	}
+	if stalePeer(peer.Peer{State: peer.StateDown, Added: now}, now, 15*time.Minute) {
+		t.Fatal("a fresh peer is stale")
+	}
 }

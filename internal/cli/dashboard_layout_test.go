@@ -280,3 +280,20 @@ func TestTabStripAndStatusFitNarrowTerminals(t *testing.T) {
 		}
 	}
 }
+
+func TestRecentEventsAppearInTheDashboard(t *testing.T) {
+	d := testDashboard()
+	v := layoutFixture()
+	v.event = "peer_removed 852bd109f429"
+	v.eventAt = time.Now()
+	if !strings.Contains(d.statusLine(v, 60), "peer_removed") {
+		t.Fatalf("status line lacks the event: %q", d.statusLine(v, 60))
+	}
+	if !strings.Contains(d.footer(v, 160, true), "peer_removed") {
+		t.Fatalf("footer lacks the event: %q", d.footer(v, 160, true))
+	}
+	v.eventAt = time.Now().Add(-time.Minute)
+	if strings.Contains(d.statusLine(v, 60), "peer_removed") {
+		t.Fatal("an old event is still shown")
+	}
+}

@@ -61,7 +61,10 @@ type Peer struct {
 	RxBytes        uint64
 	TxBytes        uint64
 	LastSeen       time.Time
-	Direct         bool
+	// Added is when this entry first appeared locally. Never-seen peers older
+	// than the stale timeout are pruned.
+	Added  time.Time
+	Direct bool
 }
 
 // Table is a concurrency-safe peer store. Every read returns a deep copy.
@@ -93,6 +96,10 @@ func (t *Table) Upsert(p Peer) error {
 	defer t.mu.Unlock()
 	existing, ok := t.peers[p.ID]
 	if ok {
+		p.Added = existing.Added
+		if p.Added.IsZero() {
+			p.Added = time.Now()
+		}
 		if !bytes.Equal(existing.PublicKey, p.PublicKey) {
 			return fmt.Errorf("peer: %016x is already bound to a different public key", p.ID)
 		}
@@ -107,6 +114,9 @@ func (t *Table) Upsert(p Peer) error {
 		if len(p.Candidates) == 0 {
 			p.Candidates = existing.Candidates
 		}
+	}
+	if p.Added.IsZero() {
+		p.Added = time.Now()
 	}
 	clone := p
 	clone.PublicKey = append([]byte(nil), p.PublicKey...)

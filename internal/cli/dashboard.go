@@ -78,7 +78,8 @@ type dashboard struct {
 	metrics    map[string]*linkMetrics
 	ui         dashboardState
 	activities []activityDTO
-	events     []string
+	event      string
+	eventAt    time.Time
 	spark      []float64
 
 	st        statusDTO
@@ -229,13 +230,9 @@ func (d *dashboard) eventLoop(ctx context.Context) {
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
 			continue
 		}
-		at := time.UnixMilli(ev.TimeMS).Format("15:04:05")
-		entry := fmt.Sprintf("%s  %-16s %s", at, ev.Type, shortID(ev.PeerID))
 		d.mu.Lock()
-		d.events = append(d.events, entry)
-		if len(d.events) > 6 {
-			d.events = d.events[len(d.events)-6:]
-		}
+		d.event = fmt.Sprintf("%s %s", ev.Type, shortID(ev.PeerID))
+		d.eventAt = time.Now()
 		d.mu.Unlock()
 	}
 }
@@ -418,7 +415,7 @@ func (d *dashboard) viewLocked() view {
 	return view{
 		st: d.st, peers: append([]peerDTO(nil), d.peers...), routes: append([]routeDTO(nil), d.routes...),
 		rates: rates, rtts: rtts, spark: append([]float64(nil), d.spark...),
-		events: append([]string(nil), d.events...), frame: d.frame, phase: d.phase,
+		event: d.event, eventAt: d.eventAt, frame: d.frame, phase: d.phase,
 		activities: append([]activityDTO(nil), d.activities...), metrics: cloneMetrics(d.metrics), ui: d.ui,
 		motion: d.motion, err: d.fetchErr, lastFetch: d.lastFetch,
 		recoverErr: d.recoverErr,
@@ -432,7 +429,8 @@ type view struct {
 	rates      map[string]rate
 	rtts       map[string]float64
 	spark      []float64
-	events     []string
+	event      string
+	eventAt    time.Time
 	frame      uint64
 	phase      float64
 	motion     bool

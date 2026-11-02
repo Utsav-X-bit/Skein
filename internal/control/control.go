@@ -68,6 +68,7 @@ type Controller struct {
 	challenges  map[[16]byte][]chan challengeReply
 	trafficPrev map[uint64]trafficSample
 	lastRTT     map[uint64]time.Duration
+	onEvent     func(typ string, peerID uint64)
 }
 
 type trafficSample struct{ rx, tx uint64 }
@@ -119,6 +120,22 @@ func (c *Controller) SetLocalName(name string) {
 	c.local.Name = name
 }
 
+// SetEventHandler reports control transitions (peer_down) to the daemon.
+func (c *Controller) SetEventHandler(fn func(typ string, peerID uint64)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onEvent = fn
+}
+
+func (c *Controller) event(typ string, peerID uint64) {
+	c.mu.Lock()
+	fn := c.onEvent
+	c.mu.Unlock()
+	if fn != nil {
+		fn(typ, peerID)
+	}
+}
+
 // SetClock overrides the clock for tests.
 func (c *Controller) SetClock(now func() time.Time) {
 	c.mu.Lock()
@@ -155,6 +172,7 @@ func (c *Controller) Tick() {
 			c.peers.ClearActive(p.ID)
 			c.routes.RemoveDirect(p.ID)
 			c.eng.DropSession(p.ID)
+			c.event("peer_down", p.ID)
 			continue
 		}
 		if r, ok := c.routes.Lookup(p.ID); ok && r.NextHop != p.ID {
