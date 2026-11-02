@@ -32,11 +32,23 @@ func (d *dashboard) buildSized(v view, width, height int) []string {
 	}
 	if v.ui.inspector {
 		rect := inspectorRect(l, width, height)
+		var overlay []string
 		if l.mode == modeShort {
-			lines = append(lines, d.renderInspector(v, width)...)
+			overlay = d.renderInspector(v, width)
 		} else {
-			lines = append(lines, d.focusedCard("SELECTED LINK", d.renderInspector(v, max(1, rect.w-2)), rect, true)...)
+			overlay = d.focusedCard("SELECTED LINK", d.renderInspector(v, max(1, rect.w-2)), rect, true)
 		}
+		// The panel expands into place instead of popping open.
+		if v.motion && !v.ui.paused && !v.ui.inspectorAt.IsZero() {
+			if elapsed := time.Since(v.ui.inspectorAt); elapsed < inspectorReveal {
+				shown := int(easeOut(float64(elapsed)/float64(inspectorReveal)) * float64(len(overlay)))
+				if shown < 1 {
+					shown = 1
+				}
+				overlay = overlay[:shown]
+			}
+		}
+		lines = append(lines, overlay...)
 		lines = append(lines, d.footer(v, width, l.mode == modeWide))
 		return clampLines(lines, height)
 	}
@@ -987,4 +999,15 @@ func inspectorRect(l dashboardLayout, width, height int) dashboardRect {
 		y := l.brand.h + l.metrics.h
 		return dashboardRect{y: y, w: width, h: max(0, height-y-l.footer.h)}
 	}
+}
+
+// easeOut is the shared ease-out curve for short reveals.
+func easeOut(t float64) float64 {
+	if t <= 0 {
+		return 0
+	}
+	if t >= 1 {
+		return 1
+	}
+	return 1 - math.Pow(1-t, 3)
 }

@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"io"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/conf"
 )
 
 func layoutFixture() view {
@@ -150,5 +154,47 @@ func TestEnterOpensInspectorAndEscapeReturns(t *testing.T) {
 	d.handleKey('x')
 	if d.ui.focus != focusPeers || d.ui.inspector {
 		t.Fatalf("escape: focus=%v inspector=%v", d.ui.focus, d.ui.inspector)
+	}
+}
+
+func TestInspectorExpandsIntoPlace(t *testing.T) {
+	d := newDashboard(conf.Config{API: conf.API{Listen: "127.0.0.1:1", Token: make([]byte, 32)}}, io.Discard, false, true)
+	base := view{
+		st:     statusDTO{ID: "local", Name: "XD_OD"},
+		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up", Endpoint: "[2406:b400:72:ff06:4bcb:8b68:20e3:a714]:43921"}},
+		ui:     dashboardState{focus: focusOverview, selected: "p", inspector: true},
+		motion: true,
+	}
+	base.ui.inspectorAt = time.Now()
+	partial := d.buildSized(base, 160, 45)
+	base.ui.inspectorAt = time.Now().Add(-inspectorReveal)
+	full := d.buildSized(base, 160, 45)
+	if len(partial) >= len(full) {
+		t.Fatalf("expansion did not animate: %d >= %d lines", len(partial), len(full))
+	}
+	if !strings.Contains(strings.Join(full, "\n"), "[2406:b400:72:ff06:4bcb:8b68:20e3:a714]:43921") {
+		t.Fatal("settled inspector lost the endpoint")
+	}
+	// Reduced motion shows the final panel immediately.
+	base.ui.inspectorAt = time.Now()
+	base.motion = false
+	if got := len(d.buildSized(base, 160, 45)); got != len(full) {
+		t.Fatalf("motionless inspector = %d lines, want %d", got, len(full))
+	}
+}
+
+func TestEscapeClearsTheInspectorTimestamp(t *testing.T) {
+	d := testDashboard()
+	d.peers = []peerDTO{{ID: "p", State: "up"}}
+	d.ui.focus = focusPeers
+	d.ui.selected = "p"
+	d.handleKey('\r')
+	if d.ui.inspectorAt.IsZero() {
+		t.Fatal("opening the inspector did not record a timestamp")
+	}
+	d.handleKey(27)
+	d.handleKey('x')
+	if !d.ui.inspectorAt.IsZero() {
+		t.Fatal("closing the inspector kept the timestamp")
 	}
 }

@@ -45,9 +45,10 @@ const (
 const (
 	// frameInterval is 25 fps: a packet crossing a long lane must not jump
 	// several cells per frame.
-	frameInterval = 40 * time.Millisecond
-	pollInterval  = time.Second
-	revealWindow  = 700 * time.Millisecond
+	frameInterval   = 40 * time.Millisecond
+	pollInterval    = time.Second
+	revealWindow    = 700 * time.Millisecond
+	inspectorReveal = 220 * time.Millisecond
 )
 
 type rate struct {

@@ -33,6 +33,7 @@ type dashboardState struct {
 	routeSel    string // route destination
 	activitySel string // origin|destination|path
 	inspector   bool
+	inspectorAt time.Time
 	paused      bool
 	help        bool
 	esc, csi    bool
@@ -129,6 +130,7 @@ func (d *dashboard) handleKey(key byte) (quit bool) {
 	case '?':
 		d.ui.help = !d.ui.help
 		d.ui.inspector = false
+		d.ui.inspectorAt = time.Time{}
 	}
 	return false
 }
@@ -155,6 +157,7 @@ func (d *dashboard) focusOrder() []dashboardFocus {
 
 func (d *dashboard) nextFocus(delta int) {
 	d.ui.help, d.ui.inspector = false, false
+	d.ui.inspectorAt = time.Time{}
 	order := d.focusOrder()
 	index := 0
 	for i, f := range order {
@@ -171,6 +174,7 @@ func (d *dashboard) closeOverlay() {
 		return
 	}
 	d.ui.inspector, d.ui.help = false, false
+	d.ui.inspectorAt = time.Time{}
 	for _, f := range d.focusOrder() {
 		if f == d.ui.prevFocus {
 			d.ui.focus = f
@@ -184,6 +188,7 @@ func (d *dashboard) closeOverlay() {
 func (d *dashboard) openInspector() {
 	if d.ui.inspector && d.ui.focus == focusOverview {
 		d.ui.inspector = false
+		d.ui.inspectorAt = time.Time{}
 		return
 	}
 	if d.ui.focus == focusRoutes {
@@ -206,6 +211,7 @@ func (d *dashboard) openInspector() {
 	d.ui.focus = focusOverview
 	d.ui.help = false
 	d.ui.inspector = true
+	d.ui.inspectorAt = time.Now()
 }
 
 func (d *dashboard) moveSelection(delta int) {
