@@ -53,8 +53,17 @@ func (f *fakeState) Peers() []Peer {
 func (f *fakeState) Routes() []Route {
 	return []Route{{Destination: "0123456789abcdef", NextHop: "0123456789abcdef", CostMs: 12.4, Hops: 1}}
 }
+func (f *fakeState) Activities() []Activity { return nil }
 func (f *fakeState) Config() ConfigView {
 	return ConfigView{OverlayIPv4: "10.144.144.1", NetworkSecret: "redacted", APIToken: "redacted"}
+}
+
+func TestActivitiesReturnsAnArray(t *testing.T) {
+	srv, _, _, _ := newTestServer(t)
+	rec := do(t, srv.Handler(), http.MethodGet, "/api/v1/activities", "", nil)
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("activities = %s", rec.Body.String())
+	}
 }
 func (f *fakeState) Events() <-chan Event { return f.events }
 
@@ -138,7 +147,7 @@ func TestRejectsBrowserOrigin(t *testing.T) {
 func TestReadEndpoints(t *testing.T) {
 	srv, _, _, _ := newTestServer(t)
 	h := srv.Handler()
-	for _, path := range []string{"/api/v1/status", "/api/v1/peers", "/api/v1/routes", "/api/v1/config"} {
+	for _, path := range []string{"/api/v1/status", "/api/v1/peers", "/api/v1/routes", "/api/v1/activities", "/api/v1/config"} {
 		rec := do(t, h, http.MethodGet, path, "", nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s code = %d", path, rec.Code)

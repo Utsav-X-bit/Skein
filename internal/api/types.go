@@ -36,10 +36,27 @@ type Peer struct {
 
 // Route is one resolved route.
 type Route struct {
-	Destination string  `json:"destination"`
-	NextHop     string  `json:"next_hop"`
-	CostMs      float64 `json:"cost_ms"`
-	Hops        uint8   `json:"hops"`
+	Destination string   `json:"destination"`
+	NextHop     string   `json:"next_hop"`
+	CostMs      float64  `json:"cost_ms"`
+	Hops        uint8    `json:"hops"`
+	Path        []string `json:"path,omitempty"`
+}
+
+// Activity is a payload-free, aggregate authenticated mesh link sample.
+type Activity struct {
+	Origin      string   `json:"origin"`
+	Destination string   `json:"destination"`
+	Seq         uint64   `json:"seq"`
+	RxBytes     uint64   `json:"rx_bytes"`
+	TxBytes     uint64   `json:"tx_bytes"`
+	RTTMs       float64  `json:"rtt_ms"`
+	JitterMs    float64  `json:"jitter_ms"`
+	Transport   string   `json:"transport"`
+	Direct      bool     `json:"direct"`
+	ObservedMS  int64    `json:"observed_ms"`
+	ExpiresMS   int64    `json:"expires_ms"`
+	Path        []string `json:"path,omitempty"`
 }
 
 // ConfigView is the redacted effective configuration.

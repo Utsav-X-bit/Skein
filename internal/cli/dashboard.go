@@ -62,12 +62,15 @@ type dashboard struct {
 	color  bool
 	motion bool
 
-	mu      sync.Mutex
-	prev    map[string]sample
-	targets map[string]rate
-	disp    map[string]displayPeer
-	events  []string
-	spark   []float64
+	mu         sync.Mutex
+	prev       map[string]sample
+	targets    map[string]rate
+	disp       map[string]displayPeer
+	metrics    map[string]*linkMetrics
+	ui         dashboardState
+	activities []activityDTO
+	events     []string
+	spark      []float64
 
 	st        statusDTO
 	peers     []peerDTO
@@ -102,6 +105,7 @@ func newDashboard(cfg conf.Config, out io.Writer, color, motion bool) *dashboard
 		prev:    make(map[string]sample),
 		targets: make(map[string]rate),
 		disp:    make(map[string]displayPeer),
+		metrics: make(map[string]*linkMetrics),
 		started: time.Now(),
 	}
 }
@@ -144,7 +148,7 @@ func (d *dashboard) run(ctx context.Context) error {
 	_ = d.poll(ctx)
 	go d.eventLoop(ctx)
 
-	keys := make(chan byte, 1)
+	keys := make(chan byte, 8)
 	if restore != nil {
 		go func() {
 			buf := make([]byte, 1)
@@ -168,7 +172,10 @@ func (d *dashboard) run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case key := <-keys:
-			if key == 'q' || key == 3 {
+			d.mu.Lock()
+			quit := d.handleKey(key)
+			d.mu.Unlock()
+			if quit {
 				return nil
 			}
 		case <-polls.C:
@@ -254,11 +261,19 @@ func (d *dashboard) poll(ctx context.Context) error {
 		d.mu.Unlock()
 		return err
 	}
+	var activities []activityDTO
+	if err := d.client.get(ctx, "/api/v1/activities", &activities); err != nil {
+		d.mu.Lock()
+		d.fetchErr = err
+		d.mu.Unlock()
+		return err
+	}
 
 	now := time.Now()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.st, d.peers, d.routes = st, peers, routes
+	d.activities = activities
 	d.lastFetch = now
 	d.fetchErr = nil
 
@@ -275,6 +290,7 @@ func (d *dashboard) poll(ctx context.Context) error {
 			}
 		}
 		d.targets[p.ID] = r
+		d.observeMetric(p.ID, r, p.RTTMs, now)
 		total += r.rx + r.tx
 		next[p.ID] = sample{rx: p.RxBytes, tx: p.TxBytes, at: now}
 	}
@@ -340,11 +356,8 @@ func (d *dashboard) draw() {
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
 		width, height = w, h
 	}
-	if width < 64 {
-		width = 64
-	}
-	if width > 140 {
-		width = 140
+	if width < 1 {
+		width = 1
 	}
 
 	d.mu.Lock()
@@ -354,7 +367,7 @@ func (d *dashboard) draw() {
 	view := d.viewLocked()
 	d.mu.Unlock()
 
-	lines := d.build(view, width)
+	lines := d.buildSized(view, width, height)
 	if d.motion {
 		// Entrance: reveal top-to-bottom over ~700 ms with an ease-out curve.
 		t := float64(time.Since(d.started)) / float64(revealWindow)
@@ -398,6 +411,7 @@ func (d *dashboard) viewLocked() view {
 		st: d.st, peers: append([]peerDTO(nil), d.peers...), routes: append([]routeDTO(nil), d.routes...),
 		rates: rates, rtts: rtts, spark: append([]float64(nil), d.spark...),
 		events: append([]string(nil), d.events...), frame: d.frame, phase: d.phase,
+		activities: append([]activityDTO(nil), d.activities...), metrics: cloneMetrics(d.metrics), ui: d.ui,
 		motion: d.motion, err: d.fetchErr, lastFetch: d.lastFetch,
 		recoverErr: d.recoverErr,
 	}
@@ -417,9 +431,12 @@ type view struct {
 	err        error
 	recoverErr error
 	lastFetch  time.Time
+	activities []activityDTO
+	metrics    map[string]linkMetrics
+	ui         dashboardState
 }
 
-func (d *dashboard) build(v view, width int) []string {
+func (d *dashboard) buildLegacy(v view, width int) []string {
 	inner := width - 4
 	lines := make([]string, 0, 40)
 

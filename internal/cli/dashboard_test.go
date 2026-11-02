@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 )
@@ -157,5 +158,55 @@ func TestDashboardShowsRecoveryHint(t *testing.T) {
 	}
 	if !strings.Contains(out, "needs Administrator") {
 		t.Fatalf("missing recovery hint:\n%s", out)
+	}
+}
+
+func TestMissionControlAdaptsToTerminalBounds(t *testing.T) {
+	d := testDashboard()
+	v := view{st: statusDTO{ID: "0123456789abcdef", OverlayIPv4: "10.144.144.1"}, peers: []peerDTO{{ID: "1111111111111111", Name: "relay", State: "up", RTTMs: 4}}, routes: []routeDTO{{Destination: "1111111111111111", NextHop: "1111111111111111", Hops: 1, Path: []string{"1111111111111111"}}}}
+	for _, tc := range []struct{ w, h int }{{40, 12}, {80, 24}, {120, 36}, {160, 45}} {
+		for _, line := range d.buildSized(v, tc.w, tc.h) {
+			if got := len([]rune(stripANSI(line))); got > tc.w {
+				t.Fatalf("%dx%d line width %d: %q", tc.w, tc.h, got, line)
+			}
+		}
+	}
+}
+
+func TestDashboardKeysOnlyChangeDashboardState(t *testing.T) {
+	d := testDashboard()
+	d.peers = []peerDTO{{ID: "a", State: "up"}, {ID: "b", State: "up"}}
+	d.moveSelection(1)
+	if d.ui.selected != "b" {
+		t.Fatalf("selected = %q", d.ui.selected)
+	}
+	d.handleKey(' ')
+	if !d.ui.paused {
+		t.Fatal("space did not pause")
+	}
+	d.handleKey('?')
+	if !d.ui.help {
+		t.Fatal("help not shown")
+	}
+	if !d.handleKey('q') {
+		t.Fatal("q did not request quit")
+	}
+}
+
+func TestMeshAddsOnlyFreshReportedRemoteEdges(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st:         statusDTO{ID: "local"},
+		peers:      []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}},
+		activities: []activityDTO{{Origin: "a", Destination: "b", Path: []string{"b"}, TxBytes: 100, ExpiresMS: time.Now().Add(time.Second).UnixMilli()}},
+		motion:     true,
+	}
+	out := strings.Join(d.build(v, 110), "\n")
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "bravo") {
+		t.Fatalf("remote activity nodes missing:\n%s", out)
+	}
+	v.activities[0].ExpiresMS = time.Now().Add(-time.Second).UnixMilli()
+	if strings.Contains(strings.Join(d.renderActivity(v, 110, 1), "\n"), "alpha → bravo") {
+		t.Fatal("expired activity was rendered")
 	}
 }

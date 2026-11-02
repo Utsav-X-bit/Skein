@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
@@ -19,11 +20,12 @@ const (
 	// Version 2 adds an optional human-readable name per peer record; version 3
 	// adds the peer's self-certifying public key so a mesh can form without
 	// every pair exchanging invites.
-	Version       = 3
+	Version       = 4
 	minVersion    = 1
 	MaxPeers      = 5
 	MaxCandidates = 8
 	MaxRoutes     = 8
+	MaxActivity   = 8
 	MaxPath       = route.MaxHops
 	headerSize    = 1 + 8 + 8 + 4
 	maxStateBytes = 1400 - 54
@@ -49,11 +51,12 @@ type RouteRecord struct {
 
 // State is one authenticated advertisement.
 type State struct {
-	Origin  uint64
-	Seq     uint64
-	Expires time.Time
-	Peers   []PeerRecord
-	Routes  []RouteRecord
+	Origin   uint64
+	Seq      uint64
+	Expires  time.Time
+	Peers    []PeerRecord
+	Routes   []RouteRecord
+	Activity []activity.Record
 }
 
 // Encode serializes a bounded STATE payload.
@@ -66,6 +69,9 @@ func Encode(s State) ([]byte, error) {
 	}
 	if len(s.Routes) > MaxRoutes {
 		return nil, fmt.Errorf("discovery: %d routes exceeds %d", len(s.Routes), MaxRoutes)
+	}
+	if len(s.Activity) > MaxActivity {
+		return nil, fmt.Errorf("discovery: %d activity records exceeds %d", len(s.Activity), MaxActivity)
 	}
 
 	buf := make([]byte, 0, 256)
@@ -144,6 +150,26 @@ func Encode(s State) ([]byte, error) {
 		buf = binary.BigEndian.AppendUint64(buf, r.Destination)
 		buf = binary.BigEndian.AppendUint32(buf, uint32(r.Cost/time.Millisecond))
 		buf = append(buf, r.Hops, byte(len(r.Path)))
+		for _, id := range r.Path {
+			buf = binary.BigEndian.AppendUint64(buf, id)
+		}
+	}
+	buf = append(buf, byte(len(s.Activity)))
+	for _, r := range s.Activity {
+		if r.Destination == 0 || len(r.Path) > MaxPath || (!r.Direct && (len(r.Path) == 0 || r.Path[len(r.Path)-1] != r.Destination)) || r.Transport > activity.TransportMixed || r.ObservedAt.IsZero() {
+			return nil, fmt.Errorf("discovery: invalid activity to %016x", r.Destination)
+		}
+		buf = binary.BigEndian.AppendUint64(buf, r.Destination)
+		buf = binary.BigEndian.AppendUint64(buf, r.RxBytes)
+		buf = binary.BigEndian.AppendUint64(buf, r.TxBytes)
+		buf = binary.BigEndian.AppendUint64(buf, uint64(r.ObservedAt.UnixMilli()))
+		buf = binary.BigEndian.AppendUint32(buf, uint32(r.RTT/time.Microsecond))
+		buf = binary.BigEndian.AppendUint32(buf, uint32(r.Jitter/time.Microsecond))
+		flags := byte(0)
+		if r.Direct {
+			flags = 1
+		}
+		buf = append(buf, flags, byte(r.Transport), byte(len(r.Path)))
 		for _, id := range r.Path {
 			buf = binary.BigEndian.AppendUint64(buf, id)
 		}
@@ -287,6 +313,43 @@ func Decode(payload []byte) (State, error) {
 		}
 		s.Routes = append(s.Routes, rec)
 	}
+	if version >= 4 {
+		if off >= len(payload) {
+			return State{}, errors.New("discovery: missing activity count")
+		}
+		count := int(payload[off])
+		off++
+		if count > MaxActivity {
+			return State{}, fmt.Errorf("discovery: %d activity records exceeds %d", count, MaxActivity)
+		}
+		for range count {
+			if off+43 > len(payload) {
+				return State{}, errors.New("discovery: truncated activity")
+			}
+			rec := activity.Record{
+				Destination: binary.BigEndian.Uint64(payload[off : off+8]),
+				RxBytes:     binary.BigEndian.Uint64(payload[off+8 : off+16]),
+				TxBytes:     binary.BigEndian.Uint64(payload[off+16 : off+24]),
+				ObservedAt:  time.UnixMilli(int64(binary.BigEndian.Uint64(payload[off+24 : off+32]))),
+				RTT:         time.Duration(binary.BigEndian.Uint32(payload[off+32:off+36])) * time.Microsecond,
+				Jitter:      time.Duration(binary.BigEndian.Uint32(payload[off+36:off+40])) * time.Microsecond,
+			}
+			flags, transport, pathLen := payload[off+40], activity.Transport(payload[off+41]), int(payload[off+42])
+			off += 43
+			if rec.Destination == 0 || flags&^byte(1) != 0 || transport > activity.TransportMixed || pathLen > MaxPath || off+8*pathLen > len(payload) {
+				return State{}, errors.New("discovery: invalid activity record")
+			}
+			rec.Direct, rec.Transport = flags&1 != 0, transport
+			for range pathLen {
+				rec.Path = append(rec.Path, binary.BigEndian.Uint64(payload[off:off+8]))
+				off += 8
+			}
+			if !rec.Direct && (len(rec.Path) == 0 || rec.Path[len(rec.Path)-1] != rec.Destination) {
+				return State{}, errors.New("discovery: activity path does not match destination")
+			}
+			s.Activity = append(s.Activity, rec)
+		}
+	}
 	if off != len(payload) {
 		return State{}, errors.New("discovery: trailing bytes in state")
 	}
@@ -297,17 +360,18 @@ func Decode(payload []byte) (State, error) {
 // local node; later records are hints about other members. Routes are ordered
 // by hop count and peer ID, and the payload is trimmed to fit one frame while
 // preserving the local record.
-func Build(peers []PeerRecord, routes []RouteRecord, seq uint64, ttl time.Duration, now time.Time) (State, error) {
+func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, seq uint64, ttl time.Duration, now time.Time) (State, error) {
 	if len(peers) == 0 {
 		return State{}, errors.New("discovery: at least the local peer record is required")
 	}
 	local := peers[0]
 	s := State{
-		Origin:  local.ID,
-		Seq:     seq,
-		Expires: now.Add(ttl),
-		Peers:   append([]PeerRecord(nil), peers...),
-		Routes:  append([]RouteRecord(nil), routes...),
+		Origin:   local.ID,
+		Seq:      seq,
+		Expires:  now.Add(ttl),
+		Peers:    append([]PeerRecord(nil), peers...),
+		Routes:   append([]RouteRecord(nil), routes...),
+		Activity: append([]activity.Record(nil), records...),
 	}
 	sortRoutes(s.Routes)
 	for {
@@ -317,6 +381,10 @@ func Build(peers []PeerRecord, routes []RouteRecord, seq uint64, ttl time.Durati
 		// Drop the least useful route, then the least useful peer hint.
 		if len(s.Routes) > 0 {
 			s.Routes = s.Routes[:len(s.Routes)-1]
+			continue
+		}
+		if len(s.Activity) > 0 {
+			s.Activity = s.Activity[:len(s.Activity)-1]
 			continue
 		}
 		if len(s.Peers) > 1 {
@@ -357,7 +425,8 @@ type Merger struct {
 	Now     func() time.Time
 	// OnPeer registers a peer learned from gossip. The key is self-certifying
 	// (its hash is the peer ID), so a member cannot impersonate another ID.
-	OnPeer func(id uint64, publicKey []byte) error
+	OnPeer     func(id uint64, publicKey []byte) error
+	OnActivity func(origin, seq uint64, records []activity.Record, expires time.Time)
 
 	seq map[uint64]uint64
 }
@@ -428,6 +497,14 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		if err := m.Routes.MergeAdvertisement(from, adv); err != nil {
 			continue
 		}
+	}
+	if m.OnActivity != nil && len(s.Activity) > 0 {
+		records := make([]activity.Record, len(s.Activity))
+		copy(records, s.Activity)
+		for i := range records {
+			records[i].Path = append([]uint64(nil), records[i].Path...)
+		}
+		m.OnActivity(s.Origin, s.Seq, records, s.Expires)
 	}
 	return nil
 }

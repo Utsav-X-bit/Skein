@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/discovery"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
@@ -64,7 +65,11 @@ type Controller struct {
 	lastState   time.Time
 	seq         uint64
 	challenges  map[[16]byte][]chan challengeReply
+	trafficPrev map[uint64]trafficSample
+	lastRTT     map[uint64]time.Duration
 }
+
+type trafficSample struct{ rx, tx uint64 }
 
 // New creates a controller.
 func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.Merger, eng Transport) (*Controller, error) {
@@ -86,6 +91,8 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 		lastPunchIn: make(map[uint64]time.Time),
 		observed:    make(map[uint64]netip.AddrPort),
 		challenges:  make(map[[16]byte][]chan challengeReply),
+		trafficPrev: make(map[uint64]trafficSample),
+		lastRTT:     make(map[uint64]time.Duration),
 	}, nil
 }
 
@@ -219,11 +226,52 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 			Path:        r.Path,
 		})
 	}
-	state, err := discovery.Build(records, routes, seq, discovery.TTLFor, now)
+	activities := c.activityRecords(now)
+	state, err := discovery.Build(records, routes, activities, seq, discovery.TTLFor, now)
 	if err != nil {
 		return nil, err
 	}
 	return discovery.Encode(state)
+}
+
+// activityRecords produces aggregate direct-link deltas only. It never
+// observes packet contents or individual flows.
+func (c *Controller) activityRecords(now time.Time) []activity.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []activity.Record
+	for _, p := range c.peers.List() {
+		if p.State != peer.StateUp || !p.Direct {
+			continue
+		}
+		prev := c.trafficPrev[p.ID]
+		rx, tx := uint64(0), uint64(0)
+		if p.RxBytes >= prev.rx {
+			rx = p.RxBytes - prev.rx
+		}
+		if p.TxBytes >= prev.tx {
+			tx = p.TxBytes - prev.tx
+		}
+		c.trafficPrev[p.ID] = trafficSample{p.RxBytes, p.TxBytes}
+		jitter := time.Duration(0)
+		if old := c.lastRTT[p.ID]; old > 0 && p.RTT > 0 {
+			jitter = p.RTT - old
+			if jitter < 0 {
+				jitter = -jitter
+			}
+		}
+		if p.RTT > 0 {
+			c.lastRTT[p.ID] = p.RTT
+		}
+		if rx == 0 && tx == 0 {
+			continue
+		}
+		out = append(out, activity.Record{Destination: p.ID, RxBytes: rx, TxBytes: tx, RTT: p.RTT, Jitter: jitter, Transport: activity.TransportFromStrings(p.Transport, p.RxTransport), Direct: true, ObservedAt: now, Path: []uint64{p.ID}})
+		if len(out) == discovery.MaxActivity {
+			break
+		}
+	}
+	return out
 }
 
 // HandlePing answers a keepalive with an authenticated Pong.

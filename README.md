@@ -47,8 +47,9 @@ flowchart LR
   atomically, so a restart keeps the mesh.
 - **Named nodes**: each node sets `node.name`; names travel in STATE gossip and
   appear in the dashboard, `skein peers`, and the API.
-- **Live dashboard**: `skein dashboard` renders an animated mesh view with
-  per-peer throughput, transport (udp/tcp), RTT, and an event feed.
+- **Mission-control dashboard**: `skein dashboard` adapts from compact to wide
+  terminals, renders only known route paths, and shows per-link throughput,
+  transport, RTT, jitter, and authenticated aggregate mesh activity.
 
 ## Status
 
@@ -289,11 +290,22 @@ is used) and stops it again when you quit. If a daemon is already running it
 simply attaches. Daemon output from a dashboard-started daemon goes to
 `<config>.log`.
 
-An animated full-screen view: the local node in the centre, peers on a ring,
-link pulses that speed up with real traffic, per-peer rates eased toward their
-targets, transport and RTT, a throughput sparkline, and the live event feed.
-`q` quits. `--no-motion` (or `SKEIN_NO_MOTION=1`) renders a static snapshot;
-non-TTY output is always static.
+The full-screen mission-control view reflows for compact, standard, wide, and
+short terminals. Its route map draws direct links and resolved relay paths; it
+does not invent peer-to-peer edges. Link motion appears only for measured local
+traffic or fresh, authenticated aggregate mesh activity.
+
+`Tab` (or `h`/`l`) changes panels; arrow keys (or `j`/`k`) select a peer;
+`Enter` opens its inspector; `Space` pauses decorative/activity motion; `?`
+opens the key reference; and `q` quits. The inspector reports current RX/TX
+speed and peak (byte-counter deltas), current/rolling RTT, jitter (the change
+between RTT samples), transport, hop/direct status, and freshness.
+
+Mesh activity gossip contains only bounded aggregate byte deltas, link
+performance, peer IDs, and route IDs—never packet contents, overlay addresses,
+ports, or flow identifiers. Remote samples expire quickly and are labelled as
+stale rather than extrapolated. `--no-motion` (or `SKEIN_NO_MOTION=1`) renders
+a static snapshot; non-TTY output is always static.
 
 ## Naming nodes
 

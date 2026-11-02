@@ -11,6 +11,7 @@ import (
 
 	"github.com/grandcat/zeroconf"
 
+	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
@@ -40,6 +41,7 @@ func TestStateRoundTrip(t *testing.T) {
 		Routes: []RouteRecord{
 			{Destination: b.ID, Cost: 12 * time.Millisecond, Hops: 1, Path: []uint64{b.ID}},
 		},
+		Activity: []activity.Record{{Destination: b.ID, RxBytes: 4096, TxBytes: 2048, RTT: 7 * time.Millisecond, Jitter: time.Millisecond, Transport: activity.TransportUDP, Direct: true, ObservedAt: time.Now(), Path: []uint64{b.ID}}},
 	}
 	payload, err := Encode(s)
 	if err != nil {
@@ -60,6 +62,9 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if len(got.Routes) != 1 || got.Routes[0].Cost != 12*time.Millisecond || got.Routes[0].Path[0] != b.ID {
 		t.Fatalf("routes = %+v", got.Routes)
+	}
+	if len(got.Activity) != 1 || got.Activity[0].Destination != b.ID || got.Activity[0].RxBytes != 4096 {
+		t.Fatalf("activity = %+v", got.Activity)
 	}
 }
 
@@ -108,7 +113,7 @@ func TestBuildStaysWithinTheFrameCap(t *testing.T) {
 	for i := range 10 {
 		peers = append(peers, PeerRecord{ID: uint64(i + 2), OverlayV4: netip.MustParseAddr("10.144.144.1")})
 	}
-	s, err := Build([]PeerRecord{{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, 1, time.Minute, time.Now())
+	s, err := Build([]PeerRecord{{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, nil, 1, time.Minute, time.Now())
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

@@ -19,6 +19,7 @@ type StateReader interface {
 	Status() Status
 	Peers() []Peer
 	Routes() []Route
+	Activities() []Activity
 	Config() ConfigView
 	Events() <-chan Event
 }
@@ -67,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/peers/{id}", s.wrap(s.deletePeer))
 	mux.HandleFunc("POST /api/v1/peers/{id}/probe", s.wrap(s.probePeer))
 	mux.HandleFunc("GET /api/v1/routes", s.wrap(s.getRoutes))
+	mux.HandleFunc("GET /api/v1/activities", s.wrap(s.getActivities))
 	mux.HandleFunc("GET /api/v1/config", s.wrap(s.getConfig))
 	mux.HandleFunc("GET /api/v1/events", s.wrap(s.getEvents))
 	mux.HandleFunc("POST /api/v1/name", s.wrap(s.postName))
@@ -201,6 +203,14 @@ func (s *Server) getRoutes(w http.ResponseWriter, r *http.Request) {
 		routes = []Route{}
 	}
 	writeJSON(w, http.StatusOK, routes)
+}
+
+func (s *Server) getActivities(w http.ResponseWriter, r *http.Request) {
+	activities := s.state.Activities()
+	if activities == nil {
+		activities = []Activity{}
+	}
+	writeJSON(w, http.StatusOK, activities)
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {

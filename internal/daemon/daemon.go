@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/control"
@@ -44,6 +45,7 @@ type Daemon struct {
 	routes   *route.Table
 	sessions *session.Manager
 	merger   *discovery.Merger
+	activity *activity.Cache
 	eng      *dataplane.Engine
 	ctl      *control.Controller
 
@@ -79,6 +81,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		routes:   routes,
 		sessions: sessions,
 		merger:   merger,
+		activity: activity.NewCache(32),
 		start:    time.Now(),
 		events:   make(chan api.Event, 64),
 	}
@@ -140,6 +143,11 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	merger.OnPeer = func(peerID uint64, publicKey []byte) error {
 		// Learned peers use the same rule as mDNS: the lower ID dials.
 		return d.registerPeer(peerID, publicKey, nil, d.id.ID < peerID, "")
+	}
+	merger.OnActivity = func(origin, seq uint64, records []activity.Record, expires time.Time) {
+		for _, record := range records {
+			d.activity.Put(origin, seq, record, expires)
+		}
 	}
 
 	d.link = udp
@@ -478,12 +486,30 @@ func (d *Daemon) Routes() []api.Route {
 	list := d.routes.Routes()
 	out := make([]api.Route, 0, len(list))
 	for _, r := range list {
-		out = append(out, api.Route{
+		row := api.Route{
 			Destination: fmt.Sprintf("%016x", r.Destination),
 			NextHop:     fmt.Sprintf("%016x", r.NextHop),
 			CostMs:      float64(r.Cost) / float64(time.Millisecond),
 			Hops:        r.Hops,
-		})
+		}
+		for _, id := range r.Path {
+			row.Path = append(row.Path, fmt.Sprintf("%016x", id))
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// Activities exposes fresh authenticated aggregate samples for the dashboard.
+func (d *Daemon) Activities() []api.Activity {
+	samples := d.activity.Snapshot(time.Now())
+	out := make([]api.Activity, 0, len(samples))
+	for _, sample := range samples {
+		row := api.Activity{Origin: fmt.Sprintf("%016x", sample.Origin), Destination: fmt.Sprintf("%016x", sample.Destination), Seq: sample.Seq, RxBytes: sample.RxBytes, TxBytes: sample.TxBytes, RTTMs: float64(sample.RTT) / float64(time.Millisecond), JitterMs: float64(sample.Jitter) / float64(time.Millisecond), Transport: sample.Transport.String(), Direct: sample.Direct, ObservedMS: sample.ObservedAt.UnixMilli(), ExpiresMS: sample.ExpiresAt.UnixMilli()}
+		for _, id := range sample.Path {
+			row.Path = append(row.Path, fmt.Sprintf("%016x", id))
+		}
+		out = append(out, row)
 	}
 	return out
 }
