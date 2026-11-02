@@ -927,6 +927,22 @@ func pingOverlay(ctx context.Context, ipText string, w io.Writer) error {
 	return cmd.Run()
 }
 
+// reportSetupError treats a missing overlay interface as a partial success:
+// the port is open, and the daemon applies the interface rule when it creates
+// the adapter.
+func reportSetupError(err error, cfg conf.Config, stdout io.Writer) error {
+	if errors.Is(err, firewall.ErrInterfaceMissing) {
+		fmt.Fprintf(stdout, "firewall: allowed UDP %d\n", cfg.Node.ListenPort)
+		fmt.Fprintf(stdout, "firewall: overlay interface %q does not exist yet; start the daemon once (it applies this rule at startup) or check the name with Get-NetAdapter, then rerun setup\n", cfg.Node.Interface)
+		return nil
+	}
+	hint := "run as root: sudo skein setup"
+	if runtime.GOOS == "windows" {
+		hint = "run from an elevated PowerShell"
+	}
+	return fmt.Errorf("firewall: %w\n  %s", err, hint)
+}
+
 // cmdSetup opens the firewall for the underlay port and the overlay interface.
 func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
 	cfg, err := loadConfig(configPath)
@@ -947,7 +963,7 @@ func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
 		return nil
 	}
 	if err := firewall.Ensure(fw); err != nil {
-		return fmt.Errorf("firewall: %w\n  run as root (sudo skein setup) or as Administrator; on Windows the interface exists after the daemon starts once", err)
+		return reportSetupError(err, cfg, stdout)
 	}
 	if manager == "" {
 		fmt.Fprintln(stdout, "firewall: no supported manager (ufw, firewalld, iptables); nothing changed")

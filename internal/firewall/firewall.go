@@ -3,10 +3,27 @@
 package firewall
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// ErrInterfaceMissing reports that the overlay interface does not exist yet,
+// so a rule that binds to it cannot be created.
+var ErrInterfaceMissing = errors.New("firewall: overlay interface not found")
+
+// classifyInterfaceError turns the platform error for a missing adapter into
+// ErrInterfaceMissing.
+func classifyInterfaceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "interface was not found") {
+		return fmt.Errorf("%w: %v", ErrInterfaceMissing, err)
+	}
+	return err
+}
 
 // Config identifies the underlay port and overlay interface.
 type Config struct {

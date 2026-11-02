@@ -240,3 +240,14 @@ func TestRemoveIPTables(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyInterfaceError(t *testing.T) {
+	err := classifyInterfaceError(errors.New("New-NetFirewallRule : The specified interface was not found on the system."))
+	if !errors.Is(err, ErrInterfaceMissing) {
+		t.Fatalf("missing interface error was not classified: %v", err)
+	}
+	other := classifyInterfaceError(errors.New("access denied"))
+	if errors.Is(other, ErrInterfaceMissing) {
+		t.Fatal("access denied was classified as a missing interface")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -470,5 +471,21 @@ func TestSetupConfiguresTheFirewall(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(f.calls, "\n"), "ufw delete allow in on skein0") {
 		t.Fatalf("remove calls = %v", f.calls)
+	}
+}
+
+func TestSetupReportsAMissingInterfaceAsPartialSuccess(t *testing.T) {
+	cfg := conf.Default()
+	cfg.Node.Interface = "Skein"
+	var out bytes.Buffer
+	if err := reportSetupError(firewall.ErrInterfaceMissing, cfg, &out); err != nil {
+		t.Fatalf("missing interface should be a partial success: %v", err)
+	}
+	if !strings.Contains(out.String(), "allowed UDP 11010") || !strings.Contains(out.String(), "does not exist yet") {
+		t.Fatalf("output = %q", out.String())
+	}
+	out.Reset()
+	if err := reportSetupError(errors.New("access denied"), cfg, &out); err == nil {
+		t.Fatal("a real failure should be returned")
 	}
 }

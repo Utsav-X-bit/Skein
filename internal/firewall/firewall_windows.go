@@ -41,7 +41,7 @@ func ensureInterface(cfg Config) error {
 			`New-NetFirewallRule -DisplayName "%s" -Direction Inbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
 			overlayRule, cfg.Interface)
 		if _, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
-			return err
+			return classifyInterfaceError(err)
 		}
 	}
 	if !ruleExists(overlayOutRule) {
@@ -49,7 +49,7 @@ func ensureInterface(cfg Config) error {
 			`New-NetFirewallRule -DisplayName "%s" -Direction Outbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
 			overlayOutRule, cfg.Interface)
 		if _, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
-			return err
+			return classifyInterfaceError(err)
 		}
 	}
 	return nil
