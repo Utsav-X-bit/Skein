@@ -651,6 +651,9 @@ func (e *Engine) DropSession(peerID uint64) {
 	e.mu.Unlock()
 }
 
+// HasSession reports whether an established session exists for peerID.
+func (e *Engine) HasSession(peerID uint64) bool { return e.sessions.HasSession(peerID) }
+
 // EnsureSession starts a handshake when one is missing.
 func (e *Engine) EnsureSession(peerID uint64) error { return e.ensureSession(peerID) }
 

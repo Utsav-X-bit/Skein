@@ -33,6 +33,7 @@ type Transport interface {
 	SendControl(peerID uint64, typ wire.MessageType, payload []byte) error
 	SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.MessageType, payload []byte) error
 	Rekey(peerID uint64) error
+	HasSession(peerID uint64) bool
 	EnsureSession(peerID uint64) error
 	DropSession(peerID uint64)
 	Punch(peerID uint64, addr netip.AddrPort) error
@@ -357,6 +358,30 @@ func (c *Controller) Probe(ctx context.Context, peerID uint64) error {
 	}
 	if len(p.Candidates) == 0 {
 		return errors.New("control: peer has no candidate endpoints")
+	}
+	if !c.eng.HasSession(peerID) {
+		// A challenge is encrypted with the session key, so a down peer can
+		// only be tested by starting a handshake and waiting for a confirm.
+		c.eng.DropSession(peerID)
+		if err := c.eng.EnsureSession(peerID); err != nil {
+			return fmt.Errorf("control: handshake to %016x: %w", peerID, err)
+		}
+		deadline := time.NewTimer(ProbeTimeout)
+		defer deadline.Stop()
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-deadline.C:
+				return errors.New("control: no handshake reply from any candidate; UDP to the peer is likely blocked")
+			case <-ticker.C:
+				if c.eng.HasSession(peerID) {
+					return nil
+				}
+			}
+		}
 	}
 
 	var token [16]byte

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sync"
 	"testing"
@@ -15,13 +16,14 @@ import (
 )
 
 type fakeTransport struct {
-	mu      sync.Mutex
-	sent    []sentFrame
-	fail    bool
-	rekey   []uint64
-	ensured []uint64
-	dropped []uint64
-	punched []punchCall
+	mu        sync.Mutex
+	sent      []sentFrame
+	fail      bool
+	rekey     []uint64
+	ensured   []uint64
+	dropped   []uint64
+	punched   []punchCall
+	noSession bool
 }
 
 type punchCall struct {
@@ -74,6 +76,12 @@ func (f *fakeTransport) DropSession(peerID uint64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dropped = append(f.dropped, peerID)
+}
+
+func (f *fakeTransport) HasSession(uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.noSession
 }
 
 func (f *fakeTransport) EnsureSession(peerID uint64) error {
@@ -313,5 +321,31 @@ func TestStateAdvertisesTheLocalName(t *testing.T) {
 	}
 	if len(state.Peers) == 0 || state.Peers[0].Name != "utsav-laptop" {
 		t.Fatalf("state peers = %+v", state.Peers)
+	}
+}
+
+func TestProbeWithoutASessionStartsAHandshake(t *testing.T) {
+	f := newFixture(t)
+	f.eng.noSession = true
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := f.ctl.Probe(ctx, f.peerID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Probe = %v, want the context deadline while waiting for a handshake", err)
+	}
+	f.eng.mu.Lock()
+	ensured := append([]uint64(nil), f.eng.ensured...)
+	dropped := append([]uint64(nil), f.eng.dropped...)
+	f.eng.mu.Unlock()
+	found := func(ids []uint64) bool {
+		for _, id := range ids {
+			if id == f.peerID {
+				return true
+			}
+		}
+		return false
+	}
+	if !found(ensured) || !found(dropped) {
+		t.Fatalf("handshake was not started: ensured=%v dropped=%v", ensured, dropped)
 	}
 }
