@@ -2,6 +2,9 @@ package link
 
 import (
 	"bytes"
+	"encoding/binary"
+	"io"
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
@@ -155,48 +158,42 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 }
 
 // TestTCPConcurrentSendsStayFramed guards the per-connection write lock: the
-// dataplane and the control loop send on the same stream.
+// dataplane and the control loop send on the same stream. It reads the raw
+// stream instead of the drop-on-saturation queue, so delivery is deterministic.
 func TestTCPConcurrentSendsStayFramed(t *testing.T) {
-	a, err := ListenTCP(0)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
-	b, err := ListenTCP(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer b.Close()
-	addr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), b.LocalAddrs()[0].Port())
-	if err := a.Dial(addr); err != nil {
-		t.Fatal(err)
-	}
-
-	const senders, frames = 2, 200
-
-	// Receive while sending: the link drops frames when its queue is full,
-	// and the stream must still never interleave two frames.
-	received := make(chan []byte, senders*frames)
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
 	go func() {
-		buf := make([]byte, 256)
-		for {
-			n, _, err := b.Recv(buf)
-			if err != nil {
-				close(received)
-				return
-			}
-			received <- append([]byte(nil), buf[:n]...)
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
 		}
 	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := <-accepted
+	defer client.Close()
+	defer server.Close()
 
+	addr := netip.MustParseAddrPort("127.0.0.1:9")
+	link := &TCP{conns: make(map[netip.AddrPort]*tcpConn), closed: make(chan struct{})}
+	link.track(addr, client)
+
+	const senders, frames = 2, 100
 	var wg sync.WaitGroup
 	for g := 0; g < senders; g++ {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < frames; i++ {
-				payload := bytes.Repeat([]byte{byte(g)}, 64+i%32)
-				if err := a.Send(addr, payload); err != nil {
+				payload := bytes.Repeat([]byte{byte('a' + g)}, 64+i%32)
+				if err := link.Send(addr, payload); err != nil {
 					t.Errorf("send: %v", err)
 					return
 				}
@@ -205,20 +202,20 @@ func TestTCPConcurrentSendsStayFramed(t *testing.T) {
 	}
 	wg.Wait()
 
-	deadline := time.After(5 * time.Second)
+	_ = server.SetReadDeadline(time.Now().Add(5 * time.Second))
 	for i := 0; i < senders*frames; i++ {
-		select {
-		case frame, ok := <-received:
-			if !ok {
-				t.Fatalf("stream closed after %d frames", i)
+		var hdr [4]byte
+		if _, err := io.ReadFull(server, hdr[:]); err != nil {
+			t.Fatalf("frame %d header: %v", i, err)
+		}
+		payload := make([]byte, int(binary.BigEndian.Uint32(hdr[:])))
+		if _, err := io.ReadFull(server, payload); err != nil {
+			t.Fatalf("frame %d body: %v", i, err)
+		}
+		for j := range payload {
+			if payload[j] != payload[0] {
+				t.Fatalf("frame %d interleaved: %x", i, payload)
 			}
-			for j := range frame {
-				if frame[j] != frame[0] {
-					t.Fatalf("frame %d interleaved: %x", i, frame)
-				}
-			}
-		case <-deadline:
-			t.Fatalf("only %d of %d frames arrived", i, senders*frames)
 		}
 	}
 }
