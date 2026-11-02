@@ -32,7 +32,7 @@ func TestDashboardBuildShowsMeshState(t *testing.T) {
 
 	out := strings.Join(d.build(view{st: st, peers: peers, routes: routes}, 120), "\n")
 	for _, want := range []string{
-		"SKEIN", "PEERS", "ROUTES", "ACTIVITY",
+		"Skein", "PEERS", "SELECTED LINK",
 		"63c96384a48a4ebf", "10.144.144.1",
 		"yoga", "10.144.144.2", "udp", "up", "down",
 		"1.2 ms", "125.99.177.247:11010",
@@ -208,5 +208,33 @@ func TestMeshAddsOnlyFreshReportedRemoteEdges(t *testing.T) {
 	v.activities[0].ExpiresMS = time.Now().Add(-time.Second).UnixMilli()
 	if strings.Contains(strings.Join(d.renderActivity(v, 110, 1), "\n"), "alpha → bravo") {
 		t.Fatal("expired activity was rendered")
+	}
+}
+
+func TestWideLayoutAllocatesARealMapColumn(t *testing.T) {
+	l := resolveLayout(160, 45)
+	if l.mode != modeWide {
+		t.Fatalf("mode = %v", l.mode)
+	}
+	mesh, peers, inspector := l.rects[focusMesh], l.rects[focusPeers], l.rects[focusOverview]
+	if mesh.w < 70 || mesh.h < 28 {
+		t.Fatalf("wide mesh is not given the available space: %+v", mesh)
+	}
+	if peers.w < 26 || inspector.w < 30 || peers.right() > mesh.x || mesh.right() > inspector.x {
+		t.Fatalf("wide columns overlap or are too narrow: peers=%+v mesh=%+v inspector=%+v", peers, mesh, inspector)
+	}
+}
+
+func TestBrandRevealAndASCIIFallback(t *testing.T) {
+	if strings.Contains(strings.Join(brandLines(0, true, true), "\n"), "Skein") {
+		t.Fatal("wordmark is visible before its settle")
+	}
+	if !strings.Contains(strings.Join(brandLines(800*time.Millisecond, true, true), "\n"), "Skein") {
+		t.Fatal("wordmark is absent from final brand frame")
+	}
+	for _, r := range strings.Join(brandLines(time.Second, false, false), "\n") {
+		if r > 127 {
+			t.Fatalf("ASCII fallback emitted %q", r)
+		}
 	}
 }

@@ -9,7 +9,7 @@ import (
 )
 
 // build is retained for snapshot callers; interactive drawing supplies height.
-func (d *dashboard) build(v view, width int) []string { return d.buildSized(v, width, 999) }
+func (d *dashboard) build(v view, width int) []string { return d.buildSized(v, width, 36) }
 
 func (d *dashboard) buildSized(v view, width, height int) []string {
 	if width < 1 {
@@ -19,52 +19,84 @@ func (d *dashboard) buildSized(v view, width, height int) []string {
 	if l.mode == modeShort {
 		return d.renderShort(v, width, height)
 	}
-	lines := []string{d.bar("SKEIN // MISSION CONTROL", width)}
-	up, down := 0, 0
-	for _, p := range v.peers {
-		if p.State == "up" {
-			up++
-		} else {
-			down++
-		}
-	}
-	node := dash(v.st.ID)
-	overlay := dash(v.st.OverlayIPv4)
-	lines = append(lines, d.line(fmt.Sprintf(" %s  overlay %s  %d up / %d down  traffic %s", node, overlay, up, down, humanRate(totalRate(v.rates))), width))
-	if v.err != nil {
-		lines = append(lines, d.line(" ! disconnected from daemon · last updated "+age(v.lastFetch), width))
-	}
-	if v.recoverErr != nil {
-		for _, msg := range strings.Split(v.recoverErr.Error(), "\n") {
-			lines = append(lines, d.line(" ! "+msg, width))
-		}
+	lines := append([]string(nil), d.renderBrand(v, l.brand)...)
+	if l.metrics.h > 0 {
+		lines = append(lines, d.renderMetricStrip(v, l.metrics)...)
 	}
 	if v.ui.help {
-		return append(lines, d.renderHelp(width)...)
+		lines = append(lines, d.renderHelp(width)...)
+		return append(lines, d.footer(v, width, l.mode == modeWide))
+	}
+	if l.mode == modeWide {
+		lines = append(lines, d.renderWide(v, l)...)
+		lines = append(lines, d.footer(v, width, true))
+		return lines
 	}
 	switch l.mode {
 	case modeCompact:
-		lines = append(lines, d.line(" [Overview] [Mesh] [Peers] [Routes] [Events]  TAB switch · ? help", width))
-		lines = append(lines, d.renderFocused(v, width, max(4, height-len(lines)-2))...)
+		lines = append(lines, d.line(" [MAP] [PEERS] [LINK] [ACTIVITY]  TAB switch · ? help", width))
+		lines = append(lines, d.renderFocused(v, width, max(4, l.rects[focusMesh].h-1))...)
 	default:
-		lines = append(lines, d.bar("MESH ROUTE MAP", width))
-		lines = append(lines, d.renderRouteMap(v, width, min(11, max(6, height/3)))...)
-		lines = append(lines, d.bar("PEERS", width))
-		lines = append(lines, d.renderPeers(v, width, min(5, max(2, height/6)))...)
-		lines = append(lines, d.bar("INSPECTOR", width))
-		lines = append(lines, d.renderInspector(v, width)...)
-		lines = append(lines, d.bar("ROUTES", width))
-		lines = append(lines, d.renderRoutes(v, width, min(4, max(1, height/8)))...)
-		lines = append(lines, d.bar("ACTIVITY", width))
-		lines = append(lines, d.renderActivity(v, width, min(3, max(1, height/9)))...)
+		mapCard := d.renderMapCard(v, l.rects[focusMesh])
+		peerCard := d.renderPeerCard(v, l.rects[focusPeers])
+		detailCard := d.renderDetailCard(v, l.rects[focusOverview])
+		lines = append(lines, mapCard...)
+		lines = append(lines, joinColumns([][]string{peerCard, detailCard}, []int{l.rects[focusPeers].w, l.rects[focusOverview].w}, l.rects[focusPeers].h)...)
 	}
+	lines = append(lines, d.footer(v, width, false))
+	if len(lines) > height && height > 0 {
+		return lines[:height]
+	}
+	return lines
+}
+
+func (d *dashboard) footer(v view, width int, wide bool) string {
 	motion := "live"
 	if v.ui.paused {
 		motion = "paused"
 	}
-	lines = append(lines, d.line(fmt.Sprintf(" %s  focus %s  SPACE %s motion · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), motion), width))
-	if len(lines) > height && height > 0 {
-		return lines[:height]
+	if wide {
+		return d.line(fmt.Sprintf(" %s  SPACE %s motion · TAB panels · j/k select · ? help · q quit", sparkline(v.spark), motion), width)
+	}
+	if width < 96 {
+		return d.line(fmt.Sprintf(" %s · SPACE %s · ? · q", focusName(v.ui.focus), motion), width)
+	}
+	return d.line(fmt.Sprintf(" %s  focus %s  SPACE %s motion · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), motion), width)
+}
+
+func (d *dashboard) renderWide(v view, l dashboardLayout) []string {
+	left, center, right := l.rects[focusPeers], l.rects[focusMesh], l.rects[focusOverview]
+	leftLines := d.renderPeerCard(v, left)
+	centerLines := d.renderMapCard(v, center)
+	detailH := max(5, right.h/2)
+	routesH := min(5, max(3, right.h/4))
+	activityH := max(3, right.h-detailH-routesH)
+	rightLines := d.renderDetailCard(v, dashboardRect{w: right.w, h: detailH})
+	rightLines = append(rightLines, d.card("ROUTES", d.renderRoutes(v, max(1, right.w-2), max(1, routesH-2)), dashboardRect{w: right.w, h: routesH})...)
+	rightLines = append(rightLines, d.card("ACTIVITY", d.renderActivity(v, max(1, right.w-2), max(1, activityH-2)), dashboardRect{w: right.w, h: activityH})...)
+	return joinColumns([][]string{leftLines, centerLines, rightLines}, []int{left.w, center.w, right.w}, left.h)
+}
+
+func (d *dashboard) renderMapCard(v view, r dashboardRect) []string {
+	body := d.renderRouteMap(v, max(1, r.w-2), max(1, r.h-2))
+	return d.card("LIVE ROUTE MAP", body, r)
+}
+
+func joinColumns(columns [][]string, widths []int, height int) []string {
+	lines := make([]string, 0, height)
+	for y := 0; y < height; y++ {
+		var b strings.Builder
+		for x, column := range columns {
+			line := ""
+			if y < len(column) {
+				line = column[y]
+			}
+			b.WriteString(fit(line, widths[x]))
+			if x < len(columns)-1 {
+				b.WriteString("  ")
+			}
+		}
+		lines = append(lines, b.String())
 	}
 	return lines
 }
@@ -162,19 +194,29 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 		}
 		mark := " "
 		if p.ID == v.ui.selected || (v.ui.selected == "" && i == 0) {
-			mark = ">"
+			mark = d.paint(ansiBrand, ">")
 		}
 		m := v.metrics[p.ID]
 		rtt := "—"
-		if m.rtt > 0 {
-			rtt = fmt.Sprintf("%.1fms", m.rtt)
+		value := m.rtt
+		if value == 0 {
+			value = p.RTTMs
+		}
+		if value > 0 {
+			rtt = fmt.Sprintf("%.1f ms", value)
 		}
 		name := p.Name
 		if name == "" {
 			name = shortID(p.ID)
 		}
 		overlay := dash(p.OverlayIPv4)
-		lines = append(lines, d.line(fmt.Sprintf("%s %-13s %-15s %-9s %5s ↓%-8s ↑%-8s", mark, trunc(name, 13), overlay, p.State, rtt, humanRate(m.rx), humanRate(m.tx)), width))
+		state, code := p.State, ansiError
+		if p.State == "up" {
+			code = ansiHealthy
+		} else if p.State == "degraded" {
+			code = ansiWarn
+		}
+		lines = append(lines, d.line(fmt.Sprintf("%s %-13s %-15s %-9s %5s ↓%-8s ↑%-8s", mark, trunc(name, 13), overlay, d.paint(code, state), rtt, humanRate(m.rx), humanRate(m.tx)), width))
 	}
 	return lines
 }
@@ -185,6 +227,7 @@ func (d *dashboard) renderInspector(v view, width int) []string {
 		return []string{d.line(" select a peer to inspect speed, latency, and path health", width)}
 	}
 	m := v.metrics[p.ID]
+	r := v.rates[p.ID]
 	name := p.Name
 	if name == "" {
 		name = shortID(p.ID)
@@ -199,15 +242,33 @@ func (d *dashboard) renderInspector(v view, width int) []string {
 	} else {
 		state += " relayed"
 	}
+	rtt := m.rtt
+	if rtt == 0 {
+		rtt = p.RTTMs
+	}
+	minRTT, maxRTT := m.minRTT, m.maxRTT
+	if minRTT == 0 {
+		minRTT = rtt
+	}
+	if maxRTT == 0 {
+		maxRTT = rtt
+	}
 	latency := "unavailable"
-	if m.rtt > 0 {
-		latency = fmt.Sprintf("%.1fms (%.1f–%.1f, jitter %.1f)", m.rtt, m.minRTT, m.maxRTT, m.jitter)
+	if rtt > 0 {
+		latency = fmt.Sprintf("%.1f ms (%.1f–%.1f, jitter %.1f)", rtt, minRTT, maxRTT, m.jitter)
 	}
 	return []string{
 		d.line(fmt.Sprintf(" %s · %s · %s · %s", name, state, transport, dash(p.Endpoint)), width),
-		d.line(fmt.Sprintf(" RX %s  TX %s  peak %s  RTT %s", humanRate(m.rx), humanRate(m.tx), humanRate(m.peak), latency), width),
+		d.line(fmt.Sprintf(" RX %s  TX %s  peak %s  RTT %s", humanRate(maxRate(m.rx, r.rx)), humanRate(maxRate(m.tx, r.tx)), humanRate(maxRate(m.peak, r.rx+r.tx)), latency), width),
 		d.line(" last seen "+lastSeen(p.LastSeenMS)+" · ENTER select · ESC return", width),
 	}
+}
+
+func maxRate(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func lastSeen(ms int64) string {

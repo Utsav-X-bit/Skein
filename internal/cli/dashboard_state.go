@@ -160,8 +160,9 @@ func (r dashboardRect) right() int  { return r.x + r.w }
 func (r dashboardRect) bottom() int { return r.y + r.h }
 
 type dashboardLayout struct {
-	mode  dashboardMode
-	rects map[dashboardFocus]dashboardRect
+	mode                   dashboardMode
+	brand, metrics, footer dashboardRect
+	rects                  map[dashboardFocus]dashboardRect
 }
 
 func resolveLayout(width, height int) dashboardLayout {
@@ -171,10 +172,37 @@ func resolveLayout(width, height int) dashboardLayout {
 		l.mode = modeShort
 	case width < 96:
 		l.mode = modeCompact
+		l.brand = dashboardRect{w: width, h: min(2, height)}
+		l.footer = dashboardRect{y: max(0, height-1), w: width, h: 1}
+		l.rects[focusMesh] = dashboardRect{y: l.brand.h, w: width, h: max(0, height-l.brand.h-l.footer.h)}
 	case width < 144:
 		l.mode = modeStandard
+		l.brand = dashboardRect{w: width, h: min(3, height)}
+		l.metrics = dashboardRect{y: l.brand.h, w: width, h: min(4, max(0, height-l.brand.h-1))}
+		l.footer = dashboardRect{y: max(0, height-1), w: width, h: 1}
+		contentY := l.brand.h + l.metrics.h
+		contentH := max(0, height-contentY-l.footer.h)
+		mapH := max(6, contentH*2/3)
+		if mapH > contentH {
+			mapH = contentH
+		}
+		l.rects[focusMesh] = dashboardRect{x: 0, y: contentY, w: width, h: mapH}
+		lowerH := contentH - mapH
+		left := width/2 - 1
+		l.rects[focusPeers] = dashboardRect{x: 0, y: contentY + mapH, w: left, h: lowerH}
+		l.rects[focusOverview] = dashboardRect{x: left + 2, y: contentY + mapH, w: width - left - 2, h: lowerH}
 	default:
 		l.mode = modeWide
+		l.brand = dashboardRect{w: width, h: min(3, height)}
+		l.metrics = dashboardRect{y: l.brand.h, w: width, h: min(4, max(0, height-l.brand.h-1))}
+		l.footer = dashboardRect{y: max(0, height-1), w: width, h: 1}
+		contentY := l.brand.h + l.metrics.h
+		contentH := max(0, height-contentY-l.footer.h)
+		left, right, gap := 30, 36, 2
+		center := width - left - right - 2*gap
+		l.rects[focusPeers] = dashboardRect{x: 0, y: contentY, w: left, h: contentH}
+		l.rects[focusMesh] = dashboardRect{x: left + gap, y: contentY, w: center, h: contentH}
+		l.rects[focusOverview] = dashboardRect{x: left + gap + center + gap, y: contentY, w: right, h: contentH}
 	}
 	return l
 }

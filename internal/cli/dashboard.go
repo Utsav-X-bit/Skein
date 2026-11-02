@@ -24,14 +24,21 @@ import (
 // Palette. Terminals render these from their own 16-colour scheme, so the
 // dashboard inherits the user's theme instead of fighting it.
 const (
-	ansiReset  = "\x1b[0m"
-	ansiDim    = "2"
-	ansiGreen  = "32"
-	ansiRed    = "31"
-	ansiYellow = "33"
-	ansiCyan   = "1;36"
-	ansiBlue   = "34"
-	ansiWhite  = "1;37"
+	ansiReset   = "\x1b[0m"
+	ansiDim     = "2"
+	ansiGreen   = "32"
+	ansiRed     = "31"
+	ansiYellow  = "33"
+	ansiCyan    = "1;36"
+	ansiBlue    = "34"
+	ansiWhite   = "1;37"
+	ansiBrand   = "38;2;94;234;212"
+	ansiTraffic = "38;2;96;165;250"
+	ansiHealthy = "38;2;74;222;128"
+	ansiWarn    = "38;2;251;191;36"
+	ansiError   = "38;2;248;113;113"
+	ansiSlate   = "38;2;100;116;139"
+	ansiBorder  = "38;2;51;65;85"
 )
 
 const (
@@ -57,10 +64,11 @@ type displayPeer struct {
 }
 
 type dashboard struct {
-	client *client
-	out    io.Writer
-	color  bool
-	motion bool
+	client  *client
+	out     io.Writer
+	color   bool
+	motion  bool
+	unicode bool
 
 	mu         sync.Mutex
 	prev       map[string]sample
@@ -102,6 +110,7 @@ func newDashboard(cfg conf.Config, out io.Writer, color, motion bool) *dashboard
 		out:     out,
 		color:   color,
 		motion:  motion,
+		unicode: color && os.Getenv("SKEIN_ASCII") == "",
 		prev:    make(map[string]sample),
 		targets: make(map[string]rate),
 		disp:    make(map[string]displayPeer),

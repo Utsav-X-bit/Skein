@@ -290,10 +290,12 @@ is used) and stops it again when you quit. If a daemon is already running it
 simply attaches. Daemon output from a dashboard-started daemon goes to
 `<config>.log`.
 
-The full-screen mission-control view reflows for compact, standard, wide, and
-short terminals. Its route map draws direct links and resolved relay paths; it
-does not invent peer-to-peer edges. Link motion appears only for measured local
-traffic or fresh, authenticated aggregate mesh activity.
+The full-screen dashboard is a dense, btop-style network console. It uses a
+woven Skein infinity mark derived from `Logo.png` and reflows for compact,
+standard, wide, and short terminals. Its route map draws direct links and
+resolved relay paths; it does not invent peer-to-peer edges. Link motion
+appears only for measured local traffic or fresh, authenticated aggregate mesh
+activity.
 
 `Tab` (or `h`/`l`) changes panels; arrow keys (or `j`/`k`) select a peer;
 `Enter` opens its inspector; `Space` pauses decorative/activity motion; `?`
@@ -305,7 +307,8 @@ Mesh activity gossip contains only bounded aggregate byte deltas, link
 performance, peer IDs, and route IDs—never packet contents, overlay addresses,
 ports, or flow identifiers. Remote samples expire quickly and are labelled as
 stale rather than extrapolated. `--no-motion` (or `SKEIN_NO_MOTION=1`) renders
-a static snapshot; non-TTY output is always static.
+a static snapshot; non-TTY output is always static. Set `SKEIN_ASCII=1` for an
+ASCII version of the Skein mark on terminals without reliable Unicode.
 
 ## Naming nodes
 
