@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/Utsav-X-bit/skein/internal/conf"
 )
 
@@ -87,6 +89,7 @@ type dashboard struct {
 	routes    []routeDTO
 	lastFetch time.Time
 	fetchErr  error
+	polling   bool
 
 	frame     uint64
 	started   time.Time
@@ -137,18 +140,22 @@ func (d *dashboard) run(ctx context.Context) error {
 		d.motion = false
 	}
 	if !d.motion {
-		// Reduced motion: one static snapshot, refreshed on a slow tick.
-		enableVT()
-		if err := d.poll(ctx); err != nil {
-			return err
+		// Reduced motion: one static snapshot, sized to the terminal.
+		restoreVT := enableVT()
+		defer restoreVT()
+		_ = d.poll(ctx)
+		width, height := 100, 34
+		if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
+			width, height = w, h
 		}
-		for _, line := range d.build(d.view(), 100) {
+		for _, line := range d.buildSized(d.view(), width, height) {
 			fmt.Fprintln(d.out, stripANSI(line))
 		}
 		return nil
 	}
 
-	enableVT()
+	restoreVT := enableVT()
+	defer restoreVT()
 	fd := int(os.Stdin.Fd())
 	var restore func()
 	if term.IsTerminal(fd) {
@@ -194,7 +201,12 @@ func (d *dashboard) run(ctx context.Context) error {
 				return nil
 			}
 		case <-polls.C:
-			_ = d.poll(ctx)
+			if d.beginPoll() {
+				go func() {
+					defer d.endPoll()
+					_ = d.poll(ctx)
+				}()
+			}
 		case <-frames.C:
 			d.frame++
 			d.phase += frameInterval.Seconds()
@@ -203,7 +215,37 @@ func (d *dashboard) run(ctx context.Context) error {
 	}
 }
 
+func (d *dashboard) beginPoll() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.polling {
+		return false
+	}
+	d.polling = true
+	return true
+}
+
+func (d *dashboard) endPoll() {
+	d.mu.Lock()
+	d.polling = false
+	d.mu.Unlock()
+}
+
 func (d *dashboard) eventLoop(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		d.streamEvents(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (d *dashboard) streamEvents(ctx context.Context) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.client.base+"/api/v1/events", nil)
 	if err != nil {
 		return
@@ -267,10 +309,9 @@ func (d *dashboard) poll(ctx context.Context) error {
 	}
 	var routes []routeDTO
 	if err := d.client.get(ctx, "/api/v1/routes", &routes); err != nil {
-		d.mu.Lock()
-		d.fetchErr = err
-		d.mu.Unlock()
-		return err
+		// Keep the last good route table; one endpoint failing must not blank
+		// the whole snapshot.
+		routes = nil
 	}
 	var activities []activityDTO
 	if err := d.client.get(ctx, "/api/v1/activities", &activities); err != nil {
@@ -283,7 +324,10 @@ func (d *dashboard) poll(ctx context.Context) error {
 	now := time.Now()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.st, d.peers, d.routes = st, peers, routes
+	d.st, d.peers = st, peers
+	if routes != nil {
+		d.routes = routes
+	}
 	d.activities = activities
 	d.lastFetch = now
 	d.fetchErr = nil
@@ -296,8 +340,13 @@ func (d *dashboard) poll(ctx context.Context) error {
 		if ok && now.After(prev.at) {
 			dt := now.Sub(prev.at).Seconds()
 			if dt > 0 {
-				r.rx = math.Max(0, float64(p.RxBytes-prev.rx)/dt)
-				r.tx = math.Max(0, float64(p.TxBytes-prev.tx)/dt)
+				// Counters reset when the daemon restarts; never underflow.
+				if p.RxBytes >= prev.rx {
+					r.rx = float64(p.RxBytes-prev.rx) / dt
+				}
+				if p.TxBytes >= prev.tx {
+					r.tx = float64(p.TxBytes-prev.tx) / dt
+				}
 			}
 		}
 		d.targets[p.ID] = r
@@ -306,6 +355,13 @@ func (d *dashboard) poll(ctx context.Context) error {
 		next[p.ID] = sample{rx: p.RxBytes, tx: p.TxBytes, at: now}
 	}
 	d.prev = next
+	for id := range d.targets {
+		if _, ok := next[id]; !ok {
+			delete(d.targets, id)
+			delete(d.disp, id)
+			delete(d.metrics, id)
+		}
+	}
 	d.spark = append(d.spark, total)
 	if len(d.spark) > 48 {
 		d.spark = d.spark[len(d.spark)-48:]
@@ -496,8 +552,16 @@ func (c *canvas) set(x, y int, r rune, color string) {
 
 func (c *canvas) text(x, y int, s string, color string) {
 	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			continue
+		}
 		c.set(x, y, r, color)
-		x++
+		if w == 2 {
+			// Reserve the continuation cell; lines() skips it.
+			c.set(x+1, y, 0, color)
+		}
+		x += w
 	}
 }
 
@@ -538,6 +602,9 @@ func (c *canvas) lines(color bool) []string {
 		cur := ""
 		for x := 0; x < c.w; x++ {
 			cl := c.cells[y*c.w+x]
+			if cl.r == 0 {
+				continue
+			}
 			code := ""
 			if color {
 				code = cl.color
@@ -559,6 +626,22 @@ func (c *canvas) lines(color bool) []string {
 		out[y] = b.String()
 	}
 	return out
+}
+
+func totalRx(rates map[string]rate) float64 {
+	var total float64
+	for _, r := range rates {
+		total += r.rx
+	}
+	return total
+}
+
+func totalTx(rates map[string]rate) float64 {
+	var total float64
+	for _, r := range rates {
+		total += r.tx
+	}
+	return total
 }
 
 func totalRate(rates map[string]rate) float64 {

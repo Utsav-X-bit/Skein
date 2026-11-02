@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // uiUnicode selects the truncation marker. ASCII terminals get "...",
@@ -18,7 +20,26 @@ func ellipsisMark() string {
 
 // visibleWidth counts the terminal cells of s, ignoring SGR sequences.
 func visibleWidth(s string) int {
-	return utf8.RuneCountInString(stripANSI(s))
+	return runewidth.StringWidth(stripANSI(s))
+}
+
+// truncateCells keeps the longest prefix that fits n terminal cells.
+func truncateCells(s string, n int) string {
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			b.WriteRune(r)
+			continue
+		}
+		if used+w > n {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String()
 }
 
 // clip truncates s to n visible cells. SGR sequences are preserved, and a
@@ -31,10 +52,10 @@ func clip(s string, n int) string {
 		return s
 	}
 	mark := ellipsisMark()
-	markWidth := utf8.RuneCountInString(mark)
+	markWidth := runewidth.StringWidth(mark)
 	if n <= markWidth {
 		// No room for both content and a marker; keep raw cells.
-		return string([]rune(stripANSI(s))[:n])
+		return truncateCells(stripANSI(s), n)
 	}
 	keep := n - markWidth
 
@@ -61,8 +82,17 @@ func clip(s string, n int) string {
 			break
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		if seen+w > keep {
+			break
+		}
 		b.WriteRune(r)
-		seen++
+		seen += w
 		i += size
 	}
 	b.WriteString(mark)
@@ -131,6 +161,27 @@ func compactFields(name, state, transport, endpoint, rateLine string, width int)
 	return []string{fit(line1, width), fit(" "+rateLine, width)}
 }
 
+// breakCells splits a token into chunks of at most width cells.
+func breakCells(s string, width int) []string {
+	var out []string
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if used+w > width && used > 0 {
+			out = append(out, b.String())
+			b.Reset()
+			used = 0
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	if b.Len() > 0 {
+		out = append(out, b.String())
+	}
+	return out
+}
+
 // wrapVisible word-wraps s to width visible cells. SGR sequences travel with
 // their word, so wrapped lines keep their color.
 func wrapVisible(s string, width int) []string {
@@ -152,6 +203,21 @@ func wrapVisible(s string, width int) []string {
 			continue
 		}
 		w := visibleWidth(word)
+		if w > width {
+			if curWidth > 0 {
+				flush()
+			}
+			parts := breakCells(word, width)
+			for i, part := range parts {
+				if i < len(parts)-1 {
+					lines = append(lines, part)
+					continue
+				}
+				cur.WriteString(part)
+				curWidth = visibleWidth(part)
+			}
+			continue
+		}
 		switch {
 		case curWidth == 0:
 			cur.WriteString(word)

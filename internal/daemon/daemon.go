@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -60,6 +61,16 @@ type Daemon struct {
 	closeOnce sync.Once
 	closeErr  error
 	persistMu sync.Mutex
+	cfgMu     sync.RWMutex
+}
+
+// config returns a snapshot safe to read outside the daemon lock.
+func (d *Daemon) config() conf.Config {
+	d.cfgMu.RLock()
+	defer d.cfgMu.RUnlock()
+	cfg := d.cfg
+	cfg.Peers = append([]conf.Peer(nil), d.cfg.Peers...)
+	return cfg
 }
 
 // New builds a daemon and opens its TUN device and UDP socket.
@@ -142,6 +153,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	}
 
 	merger.SetLocalOverlay(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv6)
+	merger.SetLocalPrefixes(cfg.Node.OverlayIPv4Prefix, cfg.Node.OverlayIPv6Prefix)
 	merger.OnPeer = func(peerID uint64, publicKey []byte) error {
 		// Learned peers use the same rule as mDNS: the lower ID dials.
 		return d.registerPeer(peerID, publicKey, nil, d.id.ID < peerID, "")
@@ -196,7 +208,7 @@ func allCandidates(ctx context.Context, cfg conf.Config) []netip.AddrPort {
 // refreshWAN keeps the advertised public endpoint current.
 func (d *Daemon) refreshWAN(ctx context.Context) {
 	update := func() {
-		d.ctl.SetLocalCandidates(allCandidates(ctx, d.cfg))
+		d.ctl.SetLocalCandidates(allCandidates(ctx, d.config()))
 	}
 	update()
 	ticker := time.NewTicker(5 * time.Minute)
@@ -222,7 +234,6 @@ func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPor
 		ID:        id,
 		PublicKey: publicKey,
 		Dialer:    dialer,
-		State:     peer.StateDown,
 	}); err != nil {
 		return err
 	}
@@ -253,32 +264,58 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 func (d *Daemon) persistPeers() {
 	d.persistMu.Lock()
 	defer d.persistMu.Unlock()
-	if d.cfg.Path == "" {
+	d.persistLocked(d.config())
+}
+
+// persistLocked rewrites cfg with the current peer list. The caller holds
+// persistMu.
+func (d *Daemon) persistLocked(base conf.Config) {
+	if base.Path == "" {
 		return
 	}
-	cfg := configWithPeers(d.cfg, d.peers.List())
+	cfg := configWithPeers(base, d.peers.List())
 	text, err := conf.Render(cfg)
 	if err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
 	}
-	tmp := cfg.Path + ".tmp"
-	if err := os.WriteFile(tmp, text, 0o600); err != nil {
+	// CreateTemp uses O_EXCL with a random name, so a symlink planted in the
+	// user-owned config directory can never redirect this root write.
+	tmp, err := os.CreateTemp(filepath.Dir(cfg.Path), filepath.Base(cfg.Path)+".tmp-*")
+	if err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
 	}
-	if err := fileperm.Restrict(tmp); err != nil {
-		log.Printf("skein: warning: cannot restrict %s: %v", tmp, err)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(text); err != nil {
+		tmp.Close()
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		log.Printf("skein: warning: cannot persist peers: %v", err)
+		return
+	}
+	if err := fileperm.Restrict(tmpName); err != nil {
+		log.Printf("skein: warning: cannot restrict %s: %v", tmpName, err)
 	}
 	// The daemon runs as root; keep the config owned by the user who owns it.
-	if err := fileperm.PreserveOwner(tmp, cfg.Path); err != nil {
+	if err := fileperm.PreserveOwner(tmpName, cfg.Path); err != nil {
 		log.Printf("skein: warning: cannot preserve config ownership: %v", err)
 	}
-	if err := os.Rename(tmp, cfg.Path); err != nil {
+	if err := os.Rename(tmpName, cfg.Path); err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
 	}
+	d.cfgMu.Lock()
 	d.cfg = cfg
+	d.cfgMu.Unlock()
 }
 
 func (d *Daemon) sessionEstablished(peerID uint64) {
@@ -301,30 +338,31 @@ func (d *Daemon) emit(ev api.Event) {
 
 // Run configures the interface and runs every loop until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
-	addresses := []netip.Prefix{netip.PrefixFrom(d.cfg.Node.OverlayIPv4, d.cfg.Node.OverlayIPv4Prefix.Bits())}
-	routes := []netip.Prefix{d.cfg.Node.OverlayIPv4Prefix}
-	if d.cfg.Node.OverlayIPv6.IsValid() {
-		addresses = append(addresses, netip.PrefixFrom(d.cfg.Node.OverlayIPv6, d.cfg.Node.OverlayIPv6Prefix.Bits()))
-		routes = append(routes, d.cfg.Node.OverlayIPv6Prefix)
+	cfg := d.config()
+	addresses := []netip.Prefix{netip.PrefixFrom(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv4Prefix.Bits())}
+	routes := []netip.Prefix{cfg.Node.OverlayIPv4Prefix}
+	if cfg.Node.OverlayIPv6.IsValid() {
+		addresses = append(addresses, netip.PrefixFrom(cfg.Node.OverlayIPv6, cfg.Node.OverlayIPv6Prefix.Bits()))
+		routes = append(routes, cfg.Node.OverlayIPv6Prefix)
 	}
 	if warnings, err := netcfg.Conflicts(routes); err == nil {
 		for _, w := range warnings {
 			log.Printf("skein: warning: %s", w)
 		}
 	}
-	if err := netcfg.Reconcile(d.cfg.Node.Interface, routes, routes); err != nil {
+	if err := netcfg.Reconcile(cfg.Node.Interface, routes, routes); err != nil {
 		log.Printf("skein: warning: reconcile: %v", err)
 	}
-	if err := netcfg.Configure(d.cfg.Node.Interface, d.cfg.Node.MTU, addresses, routes); err != nil {
+	if err := netcfg.Configure(cfg.Node.Interface, cfg.Node.MTU, addresses, routes); err != nil {
 		return err
 	}
 	// Open the underlay port and trust the overlay interface so any protocol
 	// works without manual rules.
-	if err := firewall.Ensure(firewall.Config{Interface: d.cfg.Node.Interface, Port: d.cfg.Node.ListenPort}); err != nil {
+	if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
 		log.Printf("skein: warning: firewall: %v", err)
 	}
 	defer func() {
-		if err := netcfg.Remove(d.cfg.Node.Interface, addresses, routes); err != nil {
+		if err := netcfg.Remove(cfg.Node.Interface, addresses, routes); err != nil {
 			log.Printf("skein: warning: remove network configuration: %v", err)
 		}
 	}()
@@ -338,9 +376,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	log.Printf("skein: mesh status: run \"skein dashboard\" in another terminal")
 
-	if d.cfg.Discovery.MDNS {
-		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(d.cfg)}
-		mdns, err := discovery.StartMDNS(ctx, inv, discovery.Fingerprint(d.cfg.Node.NetworkSecret), d.cfg.Node.ListenPort, d.discovered)
+	if cfg.Discovery.MDNS {
+		inv := identity.Invite{ID: d.id.ID, PublicKey: d.id.PublicKey, Addrs: localCandidates(cfg)}
+		mdns, err := discovery.StartMDNS(ctx, inv, discovery.Fingerprint(cfg.Node.NetworkSecret), cfg.Node.ListenPort, d.discovered)
 		if err != nil {
 			log.Printf("skein: warning: mDNS unavailable: %v", err)
 		} else {
@@ -351,7 +389,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	apiCtx, stopAPI := context.WithCancel(ctx)
 	defer stopAPI()
-	go d.serveAPI(apiCtx)
+	d.http = &http.Server{
+		Addr:              cfg.API.Listen,
+		Handler:           d.api.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		BaseContext:       func(net.Listener) context.Context { return apiCtx },
+	}
+	go d.serveAPI(apiCtx, d.http)
 	go d.refreshWAN(ctx)
 	go d.pruneStalePeers(ctx)
 
@@ -359,13 +405,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return d.eng.Run(ctx)
 }
 
-func (d *Daemon) serveAPI(ctx context.Context) {
-	d.http = &http.Server{
-		Addr:              d.cfg.API.Listen,
-		Handler:           d.api.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	ln, err := net.Listen("tcp", d.cfg.API.Listen)
+func (d *Daemon) serveAPI(ctx context.Context, srv *http.Server) {
+	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		log.Printf("skein: error: API listen: %v", err)
 		return
@@ -374,9 +415,9 @@ func (d *Daemon) serveAPI(ctx context.Context) {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = d.http.Shutdown(shutdownCtx)
+		_ = srv.Shutdown(shutdownCtx)
 	}()
-	if err := d.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("skein: error: API server: %v", err)
 	}
 }
@@ -387,6 +428,7 @@ func (d *Daemon) discovered(inv identity.Invite) {
 	}
 	dialer := d.id.ID < inv.ID
 	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer, ""); err != nil {
+		log.Printf("skein: warning: discovered peer %016x rejected: %v", inv.ID, err)
 		return
 	}
 	for _, addr := range inv.Addrs {
@@ -406,7 +448,9 @@ func (d *Daemon) Close() error {
 		}
 		if d.http != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_ = d.http.Shutdown(ctx)
+			if err := d.http.Shutdown(ctx); err != nil {
+				_ = d.http.Close()
+			}
 			cancel()
 		}
 		if d.tun != nil {
@@ -439,19 +483,20 @@ func configWithPeers(cfg conf.Config, peers []peer.Peer) conf.Config {
 // Status implements api.StateReader.
 func (d *Daemon) Status() api.Status {
 	snap := d.eng.Counters()
+	cfg := d.config()
 	st := api.Status{
 		ID:            fmt.Sprintf("%016x", d.id.ID),
 		Name:          d.ctl.LocalName(),
-		OverlayIPv4:   d.cfg.Node.OverlayIPv4.String(),
+		OverlayIPv4:   cfg.Node.OverlayIPv4.String(),
 		UptimeSeconds: int64(time.Since(d.start).Seconds()),
 		Version:       version.Info(),
-		ListenPort:    d.cfg.Node.ListenPort,
+		ListenPort:    cfg.Node.ListenPort,
 		PeerCount:     d.peers.Len(),
 		RxBytes:       snap.RxBytes,
 		TxBytes:       snap.TxBytes,
 	}
-	if d.cfg.Node.OverlayIPv6.IsValid() {
-		st.OverlayIPv6 = d.cfg.Node.OverlayIPv6.String()
+	if cfg.Node.OverlayIPv6.IsValid() {
+		st.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
 	}
 	return st
 }
@@ -530,22 +575,23 @@ func (d *Daemon) Activities() []api.Activity {
 
 // Config implements api.StateReader with secrets redacted.
 func (d *Daemon) Config() api.ConfigView {
+	cfg := d.config()
 	view := api.ConfigView{
-		OverlayIPv4Prefix: d.cfg.Node.OverlayIPv4Prefix.String(),
-		OverlayIPv6Prefix: d.cfg.Node.OverlayIPv6Prefix.String(),
-		OverlayIPv4:       d.cfg.Node.OverlayIPv4.String(),
-		ListenPort:        d.cfg.Node.ListenPort,
-		MTU:               d.cfg.Node.MTU,
-		Interface:         d.cfg.Node.Interface,
-		APIListen:         d.cfg.API.Listen,
-		MDNS:              d.cfg.Discovery.MDNS,
+		OverlayIPv4Prefix: cfg.Node.OverlayIPv4Prefix.String(),
+		OverlayIPv6Prefix: cfg.Node.OverlayIPv6Prefix.String(),
+		OverlayIPv4:       cfg.Node.OverlayIPv4.String(),
+		ListenPort:        cfg.Node.ListenPort,
+		MTU:               cfg.Node.MTU,
+		Interface:         cfg.Node.Interface,
+		APIListen:         cfg.API.Listen,
+		MDNS:              cfg.Discovery.MDNS,
 		NetworkSecret:     "redacted",
 		APIToken:          "redacted",
 	}
-	if d.cfg.Node.OverlayIPv6.IsValid() {
-		view.OverlayIPv6 = d.cfg.Node.OverlayIPv6.String()
+	if cfg.Node.OverlayIPv6.IsValid() {
+		view.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
 	}
-	for _, p := range d.cfg.Peers {
+	for _, p := range cfg.Peers {
 		view.Peers = append(view.Peers, fmt.Sprintf("%016x", p.ID))
 	}
 	return view
@@ -581,9 +627,14 @@ func (d *Daemon) SetName(name string) error {
 	if err := conf.ValidateName(name); err != nil {
 		return err
 	}
+	d.persistMu.Lock()
+	d.cfgMu.Lock()
 	d.cfg.Node.Name = name
+	cfg := d.cfg
+	d.cfgMu.Unlock()
 	d.ctl.SetLocalName(name)
-	d.persistPeers()
+	d.persistLocked(cfg)
+	d.persistMu.Unlock()
 	d.emit(api.Event{Type: "name_changed"})
 	return nil
 }
@@ -626,6 +677,7 @@ func (d *Daemon) pruneStalePeers(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now()
+			removed := false
 			for _, p := range d.peers.List() {
 				if !stalePeer(p, now, stalePeerTTL) {
 					continue
@@ -633,8 +685,12 @@ func (d *Daemon) pruneStalePeers(ctx context.Context) {
 				d.peers.Remove(p.ID)
 				d.routes.RemoveDirect(p.ID)
 				d.eng.DropSession(p.ID)
-				d.persistPeers()
+				removed = true
 				d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", p.ID)})
+			}
+			if removed {
+				// One rewrite per pass, not one per removed peer.
+				d.persistPeers()
 			}
 		}
 	}

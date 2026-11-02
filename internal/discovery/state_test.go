@@ -6,8 +6,10 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/grandcat/zeroconf"
 
@@ -108,10 +110,6 @@ func TestBuildStaysWithinTheFrameCap(t *testing.T) {
 			Destination: dest, Cost: time.Duration(i) * time.Millisecond, Hops: 1,
 			Path: []uint64{dest},
 		})
-	}
-	var peers []PeerRecord
-	for i := range 10 {
-		peers = append(peers, PeerRecord{ID: uint64(i + 2), OverlayV4: netip.MustParseAddr("10.144.144.1")})
 	}
 	s, err := Build([]PeerRecord{{ID: a.ID, PublicKey: a.PublicKey, OverlayV4: netip.MustParseAddr("10.144.144.9")}}, routes, nil, 1, time.Minute, time.Now())
 	if err != nil {
@@ -563,5 +561,82 @@ func TestMergeIgnoresPeersClaimingTheLocalOverlay(t *testing.T) {
 	}
 	if _, ok := peers.Get(state.Peers[0].ID); ok {
 		t.Fatal("a peer claiming the local overlay was registered")
+	}
+}
+
+func TestDecodeClampsAdvertisementTTL(t *testing.T) {
+	origin := testIdentity(t)
+	payload, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     1,
+		Expires: time.Now().Add(10 * 365 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := time.Until(s.Expires); until > TTLFor+time.Second {
+		t.Fatalf("decoded TTL = %v, want <= %v", until, TTLFor)
+	}
+}
+
+func TestMergerRejectsOverlayOutsidePrefix(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	other := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	for _, id := range []identity.Identity{origin, other} {
+		if err := peers.Upsert(peer.Peer{ID: id.ID, PublicKey: id.PublicKey}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     1,
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{
+			{ID: other.ID, PublicKey: other.PublicKey, OverlayV4: netip.MustParseAddr("10.9.9.9")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+	m.SetLocalPrefixes(netip.MustParsePrefix("10.144.144.0/24"), netip.Prefix{})
+	if err := m.Merge(origin.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := peers.Get(other.ID); p.OverlayV4.IsValid() {
+		t.Fatalf("out-of-prefix overlay was accepted: %s", p.OverlayV4)
+	}
+}
+
+func TestEncodeTruncatesNameOnRuneBoundary(t *testing.T) {
+	origin := testIdentity(t)
+	name := strings.Repeat("東", 20) // 60 bytes, 20 runes
+	payload, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     1,
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{
+			ID: origin.ID, PublicKey: origin.PublicKey, Name: name,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("encode rejected a long Unicode name: %v", err)
+	}
+	s, err := Decode(payload)
+	if err != nil {
+		t.Fatalf("decode rejected the encoded name: %v", err)
+	}
+	if got := s.Peers[0].Name; len(got) > 32 || !utf8.ValidString(got) {
+		t.Fatalf("encoded name = %q (%d bytes)", got, len(got))
 	}
 }

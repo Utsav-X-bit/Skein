@@ -127,8 +127,7 @@ func TestProberBoundedConcurrency(t *testing.T) {
 		cands[i] = netip.MustParseAddrPort("192.0.2." + itoa(i+1) + ":11010")
 	}
 	var active, peak int
-	var mu chan struct{}
-	mu = make(chan struct{}, 1)
+	mu := make(chan struct{}, 1)
 	p := &Prober{
 		Timeout:     time.Second,
 		Concurrency: 3,

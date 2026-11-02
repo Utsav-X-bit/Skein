@@ -121,10 +121,14 @@ func (u *UDP) Send(addr netip.AddrPort, payload []byte) error {
 	}
 	addr = normalize(addr)
 	conn := u.conns[0]
-	if len(u.conns) > 1 && addr.Addr().Is4() {
-		conn = u.conns[0]
+	if len(u.conns) > 1 {
+		want4 := addr.Addr().Is4()
 		for _, c := range u.conns {
-			if local, ok := c.LocalAddr().(*net.UDPAddr); ok && local.IP.To4() != nil {
+			local, ok := c.LocalAddr().(*net.UDPAddr)
+			if !ok {
+				continue
+			}
+			if (local.IP.To4() != nil) == want4 {
 				conn = c
 				break
 			}

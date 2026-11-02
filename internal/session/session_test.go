@@ -302,8 +302,9 @@ func TestRekeySupersedesAndKeepsPreviousEpoch(t *testing.T) {
 func TestHigherEpochWinsConfirmationRace(t *testing.T) {
 	p := newPair(t)
 	establish(t, p)
+	first, _ := p.a.ActiveEpoch(p.bID)
 
-	// Start epoch two but hold the confirmation.
+	// Start the next epoch but hold the confirmation.
 	attempt2, msg1, err := p.a.Begin(p.bID)
 	if err != nil {
 		t.Fatal(err)
@@ -317,17 +318,17 @@ func TestHigherEpochWinsConfirmationRace(t *testing.T) {
 	}
 	// A late epoch-one confirmation must not displace epoch two.
 	epoch2 := attemptEpoch(t, p.a, p.bID, attempt2)
-	if epoch2 != 2 {
-		t.Fatalf("epoch = %d, want 2", epoch2)
+	if epoch2 != first+1 {
+		t.Fatalf("epoch = %d, want %d", epoch2, first+1)
 	}
 	if err := confirmBoth(t, p, attempt2); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := p.a.ActiveEpoch(p.bID); got != 2 {
-		t.Fatalf("active epoch = %d, want 2", got)
+	if got, _ := p.a.ActiveEpoch(p.bID); got != epoch2 {
+		t.Fatalf("active epoch = %d, want %d", got, epoch2)
 	}
-	if got, _ := p.b.ActiveEpoch(p.aID); got != 2 {
-		t.Fatalf("responder active epoch = %d, want 2", got)
+	if got, _ := p.b.ActiveEpoch(p.aID); got != epoch2 {
+		t.Fatalf("responder active epoch = %d, want %d", got, epoch2)
 	}
 }
 
@@ -585,5 +586,81 @@ func TestUnknownPeerWithWrongSecretNeverConfirms(t *testing.T) {
 	}
 	if bm.HasSession(p.aID) {
 		t.Fatal("session installed without a confirmed secret")
+	}
+}
+
+func TestCompletedHandshakeRetiresPending(t *testing.T) {
+	p := newPair(t)
+	attempt := establish(t, p)
+	for _, tc := range []struct {
+		m    *Manager
+		peer uint64
+	}{{p.a, p.bID}, {p.b, p.aID}} {
+		tc.m.mu.Lock()
+		ps := tc.m.peers[tc.peer]
+		tc.m.mu.Unlock()
+		ps.mu.Lock()
+		pending, ready := len(ps.pending), len(ps.ready)
+		ps.mu.Unlock()
+		if pending != 0 || ready != 0 {
+			side := "a"
+			if tc.m == p.b {
+				side = "b"
+			}
+			t.Fatalf("side %s attempt %x left %d pending and %d ready entries", side, attempt, pending, ready)
+		}
+	}
+}
+
+func TestUnverifiedPeersAreEvictedBeforeVerified(t *testing.T) {
+	local, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	psk := make([]byte, identity.KeySize)
+	m, err := NewManager(local, psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, _ := identity.Generate()
+	if err := m.SetPeer(verified.ID, verified.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	for range maxPeers {
+		id, _ := identity.Generate()
+		if err := m.setPeer(id.ID, id.PublicKey, false); err != nil {
+			t.Fatalf("fill unverified: %v", err)
+		}
+	}
+	legit, _ := identity.Generate()
+	if err := m.SetPeer(legit.ID, legit.PublicKey); err != nil {
+		t.Fatalf("legitimate peer rejected: %v", err)
+	}
+	m.mu.Lock()
+	_, kept := m.peers[verified.ID]
+	m.mu.Unlock()
+	if !kept {
+		t.Fatal("verified peer was evicted")
+	}
+}
+
+func TestStaleHandshakeIsPruned(t *testing.T) {
+	a, _ := identity.Generate()
+	b, _ := identity.Generate()
+	psk := make([]byte, identity.KeySize)
+	attempt := [AttemptSize]byte{1}
+	hs, err := NewHandshake(a, b.PublicKey, psk, true, attempt, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs.started = time.Now().Add(-2 * handshakeTimeout)
+	ps := &peerState{
+		pending: map[[AttemptSize]byte]*Handshake{attempt: hs},
+		ready:   map[[AttemptSize]byte]*Session{},
+		recv:    map[uint32]*Session{},
+	}
+	ps.pruneLocked()
+	if _, ok := ps.pending[attempt]; ok {
+		t.Fatal("stale handshake was not pruned")
 	}
 }

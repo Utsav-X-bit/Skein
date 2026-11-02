@@ -82,10 +82,14 @@ func parse(msg []byte, txID [12]byte) (netip.Addr, error) {
 		return netip.Addr{}, errors.New("stun: truncated attributes")
 	}
 
+	end := headerSize + length
 	off := headerSize
-	for off+4 <= headerSize+length {
+	for off+4 <= end {
 		attrType := binary.BigEndian.Uint16(msg[off : off+2])
 		attrLen := int(binary.BigEndian.Uint16(msg[off+2 : off+4]))
+		if off+4+attrLen > end || off+4+attrLen > len(msg) {
+			return netip.Addr{}, errors.New("stun: attribute overruns message")
+		}
 		value := msg[off+4 : off+4+attrLen]
 		switch attrType {
 		case attrXorMapped:

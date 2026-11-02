@@ -237,6 +237,7 @@ func (e *Engine) readTUN(ctx context.Context) error {
 			}
 		}
 		if n <= 0 {
+			time.Sleep(time.Millisecond)
 			continue
 		}
 		if err := e.SendOverlayPacket(buf[:n]); err != nil {
@@ -263,6 +264,10 @@ func (e *Engine) readLink(ctx context.Context) error {
 			n, src, err = e.link.Recv(buf)
 		}
 		if err != nil {
+			if errors.Is(err, link.ErrTruncated) {
+				e.counters.Oversize.Add(1)
+				continue
+			}
 			select {
 			case <-e.closed:
 				return nil
@@ -276,8 +281,6 @@ func (e *Engine) readLink(ctx context.Context) error {
 			e.counters.Oversize.Add(1)
 			continue
 		}
-		e.counters.RxPackets.Add(1)
-		e.counters.RxBytes.Add(uint64(n))
 		if debugFrames() {
 			if h, _, perr := wire.Parse(buf[:n]); perr == nil {
 				log.Printf("skein: recv type=%d from=%016x to_next=%016x to_final=%016x len=%d via %s",
@@ -325,7 +328,8 @@ func (e *Engine) SendOverlayPacket(pkt []byte) error {
 		_ = e.ensureSession(peerID)
 		return ErrNoSession
 	}
-	ad := associatedData(wire.Data, peerID, e.cfg.LocalID, epoch)
+	adArr := associatedData(wire.Data, peerID, e.cfg.LocalID, epoch)
+	ad := adArr[:]
 	_, counter, ct, err := e.sessions.Seal(peerID, ad, pkt)
 	if err != nil {
 		e.counters.AuthFailure.Add(1)
@@ -370,8 +374,8 @@ func (e *Engine) validateOutbound(pkt []byte) (netip.Addr, error) {
 		if len(pkt) < 40 {
 			return netip.Addr{}, ErrBadPacket
 		}
-		total := int(binary.BigEndian.Uint16(pkt[4:6]))
-		if total < 40 || total > len(pkt) {
+		payloadLen := int(binary.BigEndian.Uint16(pkt[4:6]))
+		if payloadLen == 0 || 40+payloadLen > len(pkt) {
 			return netip.Addr{}, ErrBadPacket
 		}
 		src := netip.AddrFrom16([16]byte(pkt[8:24]))
@@ -405,7 +409,7 @@ func (e *Engine) handleFrame(src netip.AddrPort, frame []byte, transport string)
 		return ErrNotForUs
 	}
 	if h.ToFinal != e.cfg.LocalID {
-		return e.forward(frame, h)
+		return e.forward(frame, h, src)
 	}
 	switch h.Type {
 	case wire.Handshake:
@@ -418,16 +422,27 @@ func (e *Engine) handleFrame(src netip.AddrPort, frame []byte, transport string)
 }
 
 func (e *Engine) handleHandshake(src netip.AddrPort, h wire.Header, payload []byte) error {
-	e.mu.Lock()
-	if _, ok := e.started[h.From]; !ok {
+	if e.peers.Exists(h.From) {
+		e.mu.Lock()
 		e.started[h.From] = e.now()
+		e.mu.Unlock()
 	}
-	e.mu.Unlock()
 
 	reply, attempt, err := e.sessions.HandleHandshake(h.From, payload)
 	if err != nil {
 		e.counters.HandshakeFail.Add(1)
 		return err
+	}
+	// Seal our confirmation before sending the reply: a synchronous peer can
+	// answer the reply with its own confirmation, which installs and retires
+	// this handshake before we get a chance to prepare ours.
+	var confirm []byte
+	if _, err := e.sessions.Confirmation(h.From, attempt); err == nil {
+		confirm, err = e.confirmPayload(h.From, attempt)
+		if err != nil {
+			e.counters.HandshakeFail.Add(1)
+			return err
+		}
 	}
 	if reply != nil {
 		if err := e.sendHandshakeReply(h.From, attempt, reply, src); err != nil {
@@ -435,14 +450,14 @@ func (e *Engine) handleHandshake(src netip.AddrPort, h wire.Header, payload []by
 			return err
 		}
 	}
-	if p, ok := e.peers.Get(h.From); ok && !p.ActiveEndpoint.IsValid() {
+	if p, ok := e.peers.Get(h.From); ok && !p.ActiveEndpoint.IsValid() && e.directSource(h.From, src) {
 		// The source that completed a handshake is a usable direct endpoint.
+		// A relayed handshake arrives from the relay, which is not a candidate
+		// for the target peer.
 		e.peers.AddCandidate(h.From, src, peer.SourceProbe)
 	}
-	if _, err := e.sessions.Confirmation(h.From, attempt); err == nil {
-		// Record the path first so the confirmation can be routed.
-		e.established(h.From, src)
-		if err := e.sendConfirm(h.From, attempt, src); err != nil {
+	if confirm != nil {
+		if err := e.sendConfirmBody(h.From, confirm, src); err != nil {
 			e.counters.HandshakeFail.Add(1)
 			return err
 		}
@@ -456,7 +471,8 @@ func (e *Engine) handleConfirm(src netip.AddrPort, h wire.Header, payload []byte
 		e.counters.InvalidPacket.Add(1)
 		return err
 	}
-	ad := associatedData(wire.Confirm, h.ToFinal, h.From, epoch)
+	adArr := associatedData(wire.Confirm, h.ToFinal, h.From, epoch)
+	ad := adArr[:]
 	if err := e.sessions.HandleConfirm(h.From, epoch, counter, ad, ct); err != nil {
 		e.counters.AuthFailure.Add(1)
 		return err
@@ -471,7 +487,8 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 		e.counters.InvalidPacket.Add(1)
 		return err
 	}
-	ad := associatedData(h.Type, h.ToFinal, h.From, epoch)
+	adArr := associatedData(h.Type, h.ToFinal, h.From, epoch)
+	ad := adArr[:]
 	plaintext, err := e.sessions.Open(h.From, epoch, counter, ad, ct)
 	if err != nil {
 		e.counters.AuthFailure.Add(1)
@@ -502,7 +519,7 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 			return e.SendControl(h.From, wire.Pong, reply)
 		}
 		return nil
-	case wire.Pong, wire.State, wire.Challenge, wire.ChallengeReply:
+	case wire.Pong, wire.State, wire.Challenge, wire.ChallengeReply, wire.Punch:
 		e.handlerMu.RLock()
 		fn := e.onControl
 		e.handlerMu.RUnlock()
@@ -518,25 +535,37 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 
 // deliver validates the inner packet source and writes it to the TUN.
 func (e *Engine) deliver(from uint64, pkt []byte) error {
-	p, ok := e.peers.Get(from)
+	if len(pkt) < 20 {
+		e.counters.InvalidPacket.Add(1)
+		return ErrBadPacket
+	}
+	peerV4, peerV6, ok := e.peers.Overlay(from)
 	if !ok {
 		e.counters.InvalidPacket.Add(1)
 		return ErrUnknownPeer
 	}
-	var src netip.Addr
 	switch version := pkt[0] >> 4; {
-	case version == 4 && len(pkt) >= 20:
-		src = netip.AddrFrom4([4]byte(pkt[12:16]))
-		if !p.OverlayV4.IsValid() || src != p.OverlayV4 {
+	case version == 4:
+		total := int(binary.BigEndian.Uint16(pkt[2:4]))
+		src := netip.AddrFrom4([4]byte(pkt[12:16]))
+		dst := netip.AddrFrom4([4]byte(pkt[16:20]))
+		if total < 20 || total > len(pkt) || !peerV4.IsValid() || src != peerV4 ||
+			!e.cfg.OverlayV4.IsValid() || dst != e.cfg.OverlayV4 {
 			e.counters.InvalidPacket.Add(1)
 			return ErrBadPacket
 		}
+		pkt = pkt[:total]
 	case version == 6 && len(pkt) >= 40:
-		src = netip.AddrFrom16([16]byte(pkt[8:24]))
-		if !p.OverlayV6.IsValid() || src != p.OverlayV6 {
+		payloadLen := int(binary.BigEndian.Uint16(pkt[4:6]))
+		total := 40 + payloadLen
+		src := netip.AddrFrom16([16]byte(pkt[8:24]))
+		dst := netip.AddrFrom16([16]byte(pkt[24:40]))
+		if payloadLen == 0 || total > len(pkt) || !peerV6.IsValid() || src != peerV6 ||
+			!e.cfg.OverlayV6.IsValid() || dst != e.cfg.OverlayV6 {
 			e.counters.InvalidPacket.Add(1)
 			return ErrBadPacket
 		}
+		pkt = pkt[:total]
 	default:
 		e.counters.InvalidPacket.Add(1)
 		return ErrBadPacket
@@ -556,10 +585,16 @@ func (e *Engine) deliver(from uint64, pkt []byte) error {
 	return nil
 }
 
-func (e *Engine) forward(frame []byte, h wire.Header) error {
+func (e *Engine) forward(frame []byte, h wire.Header, src netip.AddrPort) error {
 	if h.TTL <= 1 {
 		e.counters.TTLExhausted.Add(1)
 		return ErrTTL
+	}
+	if _, ok := e.peerForAddr(src); !ok {
+		// Only a known neighbour may use this node as a relay; otherwise the
+		// daemon is an unauthenticated open relay and amplifier.
+		e.counters.InvalidPacket.Add(1)
+		return ErrNotForUs
 	}
 	r, ok := e.routes.Lookup(h.ToFinal)
 	if !ok {
@@ -598,7 +633,8 @@ func (e *Engine) SendControl(peerID uint64, typ wire.MessageType, payload []byte
 	if !ok {
 		return ErrNoSession
 	}
-	ad := associatedData(typ, peerID, e.cfg.LocalID, epoch)
+	adArr := associatedData(typ, peerID, e.cfg.LocalID, epoch)
+	ad := adArr[:]
 	_, counter, ct, err := e.sessions.Seal(peerID, ad, payload)
 	if err != nil {
 		return err
@@ -618,6 +654,7 @@ func (e *Engine) Punch(peerID uint64, addr netip.AddrPort) error {
 	if !addr.IsValid() || addr.Port() == 0 {
 		return ErrNoRoute
 	}
+	e.markStarted(peerID)
 	attempt, msg, err := e.sessions.Begin(peerID)
 	if err != nil {
 		e.counters.ProbeFail.Add(1)
@@ -644,7 +681,7 @@ func (e *Engine) Punch(peerID uint64, addr netip.AddrPort) error {
 // DropSession forgets the session and any handshake state for a peer so the
 // next attempt starts from scratch.
 func (e *Engine) DropSession(peerID uint64) {
-	e.sessions.RemovePeer(peerID)
+	e.sessions.ResetPeer(peerID)
 	e.mu.Lock()
 	delete(e.inflight, peerID)
 	delete(e.started, peerID)
@@ -670,6 +707,7 @@ func (e *Engine) Rekey(peerID uint64) error {
 	if !ok {
 		return ErrUnknownPeer
 	}
+	e.markStarted(peerID)
 	attempt, msg, err := e.sessions.Begin(peerID)
 	if err != nil {
 		e.counters.RekeyFail.Add(1)
@@ -692,7 +730,8 @@ func (e *Engine) SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.Mess
 	if !ok {
 		return ErrNoSession
 	}
-	ad := associatedData(typ, peerID, e.cfg.LocalID, epoch)
+	adArr := associatedData(typ, peerID, e.cfg.LocalID, epoch)
+	ad := adArr[:]
 	_, counter, ct, err := e.sessions.Seal(peerID, ad, payload)
 	if err != nil {
 		return err
@@ -742,15 +781,13 @@ func (e *Engine) sendToPeer(finalID uint64, typ wire.MessageType, payload []byte
 // relay would drop it: the source address is matched to a known peer first, and
 // the route table is only a fallback.
 func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]byte, payload []byte, src netip.AddrPort) error {
-	toNext := uint64(0)
+	toNext := peerID
 	if id, ok := e.peerForAddr(src); ok {
 		toNext = id
 	} else if r, ok := e.routes.Lookup(peerID); ok {
-		toNext = r.NextHop
-	} else {
-		// First contact from a peer we do not know yet: answer the source
-		// directly. A relayed handshake always matches peerForAddr above.
-		toNext = peerID
+		if ep, ok := e.endpointFor(r.NextHop); ok && ep == src {
+			toNext = r.NextHop
+		}
 	}
 	h := wire.Header{
 		Type:    wire.Handshake,
@@ -766,48 +803,50 @@ func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]
 	return e.link.Send(src, frame)
 }
 
+// directSource reports whether src can be a direct endpoint for peerID: it
+// either belongs to that peer or to no known peer (first contact).
+func (e *Engine) directSource(peerID uint64, src netip.AddrPort) bool {
+	id, ok := e.peerForAddr(src)
+	return !ok || id == peerID
+}
+
 // peerForAddr maps a datagram source address to a known peer, matching active
 // endpoints and candidates. It is how a relayed frame identifies its last hop.
 func (e *Engine) peerForAddr(addr netip.AddrPort) (uint64, bool) {
-	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
-	for _, p := range e.peers.List() {
-		if p.ActiveEndpoint.IsValid() && p.ActiveEndpoint == addr {
-			return p.ID, true
-		}
-		for _, c := range p.Candidates {
-			if c.Addr == addr {
-				return p.ID, true
-			}
-		}
-	}
-	return 0, false
+	return e.peers.ByAddr(addr)
 }
 
-// sendConfirm proves the new session to the peer and asks it to install it.
-// A peer that is not in the table yet (first contact through an invite) is
-// answered directly at the address its handshake came from.
-func (e *Engine) sendConfirm(peerID uint64, attempt [session.AttemptSize]byte, src netip.AddrPort) error {
+// confirmPayload builds the encrypted confirmation for a completed handshake.
+func (e *Engine) confirmPayload(peerID uint64, attempt [session.AttemptSize]byte) ([]byte, error) {
 	payload, err := e.sessions.Confirmation(peerID, attempt)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	epoch, ok := e.sessions.ReadyEpoch(peerID, attempt)
 	if !ok {
-		return session.ErrNotConfirmed
+		return nil, session.ErrNotConfirmed
 	}
-	ad := associatedData(wire.Confirm, peerID, e.cfg.LocalID, epoch)
+	adArr := associatedData(wire.Confirm, peerID, e.cfg.LocalID, epoch)
+	ad := adArr[:]
 	sealedEpoch, counter, ct, err := e.sessions.SealReady(peerID, attempt, ad, payload)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	body := wire.AppendNonce(nil, sealedEpoch, counter)
-	body = append(body, ct...)
-	if err := e.sendToPeer(peerID, wire.Confirm, body); err == nil {
-		return nil
+	return append(body, ct...), nil
+}
+
+// sendConfirmBody routes a prepared confirmation. A peer that is not in the
+// table yet (first contact through an invite) is answered directly at the
+// address its handshake came from.
+func (e *Engine) sendConfirmBody(peerID uint64, body []byte, src netip.AddrPort) error {
+	toNext := peerID
+	if id, ok := e.peerForAddr(src); ok {
+		toNext = id
 	}
 	h := wire.Header{
 		Type:    wire.Confirm,
-		ToNext:  peerID,
+		ToNext:  toNext,
 		ToFinal: peerID,
 		From:    e.cfg.LocalID,
 		TTL:     wire.MaxTTL,
@@ -816,7 +855,10 @@ func (e *Engine) sendConfirm(peerID uint64, attempt [session.AttemptSize]byte, s
 	if err != nil {
 		return err
 	}
-	return e.link.Send(src, frame)
+	if err := e.link.Send(src, frame); err == nil {
+		return nil
+	}
+	return e.sendToPeer(peerID, wire.Confirm, body)
 }
 
 // ensureSession starts a handshake when this node is the configured dialer.
@@ -869,6 +911,7 @@ func (e *Engine) ensureSession(peerID uint64) error {
 		}
 	}
 
+	e.markStarted(peerID)
 	attempt, msg, err := e.sessions.Begin(peerID)
 	if err != nil {
 		e.counters.HandshakeFail.Add(1)
@@ -905,6 +948,7 @@ func (e *Engine) sendHandshake(p peer.Peer, attempt [session.AttemptSize]byte, p
 			return e.link.Send(ep, frame)
 		}
 	}
+	h.ToNext = p.ID
 	frame, err := wire.Marshal(h, payload)
 	if err != nil {
 		return err
@@ -923,6 +967,22 @@ func (e *Engine) sendHandshake(p peer.Peer, attempt [session.AttemptSize]byte, p
 
 // established records a proven path. A handshake that arrived through a relay
 // only refreshes the session; it must not create a direct link.
+// markStarted records when an outbound handshake began so the confirmed RTT
+// covers the whole exchange, not just the inbound half.
+func (e *Engine) markStarted(peerID uint64) {
+	now := e.now()
+	e.mu.Lock()
+	e.started[peerID] = now
+	if len(e.started) > 1024 {
+		for id, at := range e.started {
+			if now.Sub(at) > time.Minute {
+				delete(e.started, id)
+			}
+		}
+	}
+	e.mu.Unlock()
+}
+
 func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 	now := e.now()
 
@@ -939,19 +999,21 @@ func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 	delete(e.started, peerID)
 	e.mu.Unlock()
 
-	if r, ok := e.routes.Lookup(peerID); ok && r.NextHop != peerID {
-		return
+	// A relayed handshake arrives from the relay's address; a direct one
+	// arrives from the peer itself (or an unknown address on first contact).
+	relayed := !e.directSource(peerID, src)
+	if !relayed {
+		transport := "udp"
+		if reporter, ok := e.link.(interface{ TransportFor(netip.AddrPort) string }); ok {
+			transport = reporter.TransportFor(src)
+		}
+		if _, ok := e.peers.Get(peerID); ok {
+			// The confirmation proved the PSK, so the source is authentic.
+			e.peers.SetActive(peerID, src, rtt, transport, now)
+			e.peers.AddCandidate(peerID, src, peer.SourceProbe)
+			_ = e.routes.UpdateDirect(route.DirectLink{PeerID: peerID, RTT: rtt})
+		}
 	}
-	transport := "udp"
-	if reporter, ok := e.link.(interface{ TransportFor(netip.AddrPort) string }); ok {
-		transport = reporter.TransportFor(src)
-	}
-	p, ok := e.peers.Get(peerID)
-	if ok && e.acceptEndpoint(p, src) {
-		e.peers.SetActive(peerID, src, rtt, transport, now)
-		e.peers.AddCandidate(peerID, src, peer.SourceProbe)
-	}
-	_ = e.routes.UpdateDirect(route.DirectLink{PeerID: peerID, RTT: rtt})
 
 	e.handlerMu.RLock()
 	fn := e.onSession
@@ -959,19 +1021,6 @@ func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 	if fn != nil {
 		fn(peerID)
 	}
-}
-
-// acceptEndpoint decides whether a handshake source may become the active path.
-func (e *Engine) acceptEndpoint(p peer.Peer, src netip.AddrPort) bool {
-	if !p.ActiveEndpoint.IsValid() {
-		return true
-	}
-	for _, c := range p.Candidates {
-		if c.Addr == src {
-			return true
-		}
-	}
-	return false
 }
 
 func (e *Engine) endpointFor(peerID uint64) (netip.AddrPort, bool) {
@@ -983,15 +1032,23 @@ func (e *Engine) endpointFor(peerID uint64) (netip.AddrPort, bool) {
 }
 
 // debugFrames reports whether per-frame diagnostics are enabled.
-func debugFrames() bool { return os.Getenv("SKEIN_DEBUG") != "" }
+var (
+	debugOnce    sync.Once
+	debugEnabled bool
+)
+
+func debugFrames() bool {
+	debugOnce.Do(func() { debugEnabled = os.Getenv("SKEIN_DEBUG") != "" })
+	return debugEnabled
+}
 
 // associatedData binds the authenticated frame fields. Relay-mutable to_next
 // and ttl are deliberately excluded.
-func associatedData(typ wire.MessageType, toFinal, from uint64, epoch uint32) []byte {
-	ad := make([]byte, 0, 21)
-	ad = append(ad, byte(typ))
-	ad = binary.BigEndian.AppendUint64(ad, toFinal)
-	ad = binary.BigEndian.AppendUint64(ad, from)
-	ad = binary.BigEndian.AppendUint32(ad, epoch)
+func associatedData(typ wire.MessageType, toFinal, from uint64, epoch uint32) [21]byte {
+	var ad [21]byte
+	ad[0] = byte(typ)
+	binary.BigEndian.PutUint64(ad[1:9], toFinal)
+	binary.BigEndian.PutUint64(ad[9:17], from)
+	binary.BigEndian.PutUint32(ad[17:21], epoch)
 	return ad
 }

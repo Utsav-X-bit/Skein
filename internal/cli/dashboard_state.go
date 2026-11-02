@@ -28,7 +28,6 @@ const (
 
 type dashboardState struct {
 	focus         dashboardFocus
-	prevFocus     dashboardFocus
 	selected      string // peer ID
 	routeSel      string // route destination
 	activitySel   string // origin|destination|path
@@ -180,12 +179,6 @@ func (d *dashboard) closeOverlay() {
 	d.ui.expanded, d.ui.help = false, false
 	d.ui.expandedAt = time.Time{}
 	d.ui.expandedFocus = focusOverview
-	for _, f := range d.focusOrder() {
-		if f == d.ui.prevFocus {
-			d.ui.focus = f
-			return
-		}
-	}
 }
 
 // expandFocused opens the focused panel at full content width, or closes it.
@@ -260,15 +253,15 @@ func (d *dashboard) moveRoute(delta int) {
 }
 
 func (d *dashboard) moveActivity(delta int) {
-	items := freshActivitiesFrom(d.activities, time.Now().UnixMilli())
-	if len(items) == 0 {
+	rows := activityRows(d.st.ID, localNameOf(d.st), d.peers, d.activities, time.Now().UnixMilli())
+	if len(rows) == 0 {
 		d.ui.activitySel = ""
 		return
 	}
 	i := 0
 	found := false
-	for n, a := range items {
-		if activityKey(a) == d.ui.activitySel {
+	for n, row := range rows {
+		if row.key == d.ui.activitySel {
 			i, found = n, true
 			break
 		}
@@ -276,13 +269,12 @@ func (d *dashboard) moveActivity(delta int) {
 	if !found && delta > 0 {
 		i = -1
 	}
-	d.ui.activitySel = activityKey(items[(i+delta+len(items))%len(items)])
+	d.ui.activitySel = rows[(i+delta+len(rows))%len(rows)].key
 }
 
 type dashboardRect struct{ x, y, w, h int }
 
-func (r dashboardRect) right() int  { return r.x + r.w }
-func (r dashboardRect) bottom() int { return r.y + r.h }
+func (r dashboardRect) right() int { return r.x + r.w }
 
 type dashboardLayout struct {
 	mode                       dashboardMode

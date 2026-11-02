@@ -152,6 +152,9 @@ func DecodeTXT(txt []string, fingerprint string) (identity.Invite, error) {
 		case "net":
 			netTag = value
 		case "a":
+			if len(addrs) >= identity.MaxEndpoints {
+				continue
+			}
 			addr, err := netip.ParseAddrPort(value)
 			if err != nil {
 				return identity.Invite{}, fmt.Errorf("discovery: invalid mDNS endpoint %q", value)

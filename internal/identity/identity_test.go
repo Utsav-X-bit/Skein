@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -68,12 +69,14 @@ func TestSaveIsExclusiveAndRoundTrips(t *testing.T) {
 	if err := Save(path, id); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("mode = %o, want 600", perm)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("mode = %o, want 600", perm)
+		}
 	}
 	loaded, err := Load(path)
 	if err != nil {

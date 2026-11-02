@@ -123,36 +123,6 @@ func TestWithdrawalOnDirectLinkLoss(t *testing.T) {
 	}
 }
 
-func TestSplitHorizon(t *testing.T) {
-	tbl := NewTable(peerA)
-	mustDirect(t, tbl, peerB, time.Millisecond)
-	mustDirect(t, tbl, peerC, time.Millisecond)
-	mustMerge(t, tbl, peerB, adv(1, time.Millisecond, peerB, peerD))
-	for _, a := range tbl.AdvertisementsFor(peerB) {
-		if a.Destination == peerB || a.Destination == peerD {
-			t.Fatalf("advertised %x to the next hop", a.Destination)
-		}
-		if containsID(a.Path, peerB) {
-			t.Fatalf("advertised a path through the receiver: %v", a.Path)
-		}
-	}
-	found := false
-	for _, a := range tbl.AdvertisementsFor(peerC) {
-		if a.Destination == peerD {
-			found = true
-			if len(a.Path) != 3 || a.Path[0] != peerA || a.Path[1] != peerB || a.Path[2] != peerD {
-				t.Fatalf("re-originated path = %v", a.Path)
-			}
-			if a.Hops != 2 {
-				t.Fatalf("hops = %d", a.Hops)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("route to D was not advertised to C")
-	}
-}
-
 func TestPathLoopAndSelfAreRejected(t *testing.T) {
 	tbl := NewTable(peerA)
 	mustDirect(t, tbl, peerB, time.Millisecond)

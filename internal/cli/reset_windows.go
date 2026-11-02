@@ -14,6 +14,11 @@ func daemonRunning() bool {
 			return true
 		}
 	}
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq skeind.exe", "/NH").Output()
-	return err == nil && strings.Contains(strings.ToLower(string(out)), "skeind.exe")
+	for _, image := range []string{"skeind.exe", "skein.exe"} {
+		out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+image, "/NH").Output()
+		if err == nil && strings.Contains(strings.ToLower(string(out)), image) {
+			return true
+		}
+	}
+	return false
 }

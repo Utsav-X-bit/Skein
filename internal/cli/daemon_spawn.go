@@ -39,13 +39,17 @@ func spawnDaemon(configPath string) (*exec.Cmd, error) {
 		f.Close()
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}
+	// The child holds its own descriptor; the parent must not keep this one.
+	_ = f.Close()
 	return cmd, nil
 }
 
 // ensureDaemon attaches to a running daemon or starts one. The caller owns the
 // child and must call closeChild.
 func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
+	d.mu.Lock()
 	d.configPath = configPath
+	d.mu.Unlock()
 	probe, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	ok := d.client.reachable(probe)
 	cancel()
@@ -66,11 +70,18 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 		return nil
 	}
 
-	if d.child != nil {
+	d.mu.Lock()
+	child, childDone := d.child, d.childDone
+	d.mu.Unlock()
+	if child != nil {
 		select {
-		case <-d.childDone:
+		case <-childDone:
 			// The child we started has exited; fall through and start another.
-			d.child = nil
+			d.mu.Lock()
+			if d.child == child {
+				d.child, d.childDone = nil, nil
+			}
+			d.mu.Unlock()
 		default:
 			return nil
 		}
@@ -80,15 +91,26 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
-	d.child = cmd
-	d.childDone = make(chan error, 1)
-	go func() { d.childDone <- cmd.Wait() }()
+	done := make(chan error, 1)
+	d.mu.Lock()
+	if d.stopping {
+		d.mu.Unlock()
+		terminate(cmd)
+		return nil
+	}
+	d.child, d.childDone = cmd, done
+	d.mu.Unlock()
+	go func() { done <- cmd.Wait() }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case err := <-d.childDone:
-			d.child = nil
+		case err := <-done:
+			d.mu.Lock()
+			if d.child == cmd {
+				d.child, d.childDone = nil, nil
+			}
+			d.mu.Unlock()
 			if err != nil {
 				return fmt.Errorf("daemon exited during startup (%v); see %s", err, daemonLogPath(configPath))
 			}
@@ -103,7 +125,12 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	d.closeChild()
+	d.mu.Lock()
+	if d.child == cmd {
+		d.child, d.childDone = nil, nil
+	}
+	d.mu.Unlock()
+	terminate(cmd)
 	return fmt.Errorf("daemon did not become ready; see %s", daemonLogPath(configPath))
 }
 
@@ -112,15 +139,20 @@ func (d *dashboard) ensureDaemon(ctx context.Context, configPath string) error {
 func (d *dashboard) closeChild() {
 	d.mu.Lock()
 	d.stopping = true
+	child, done := d.child, d.childDone
 	d.mu.Unlock()
-	if d.child == nil || d.child.Process == nil {
+	if child == nil || child.Process == nil {
 		return
 	}
-	terminate(d.child)
+	terminate(child)
 	select {
-	case <-d.childDone:
+	case <-done:
 	case <-time.After(3 * time.Second):
-		_ = d.child.Process.Kill()
+		_ = child.Process.Kill()
 	}
-	d.child = nil
+	d.mu.Lock()
+	if d.child == child {
+		d.child, d.childDone = nil, nil
+	}
+	d.mu.Unlock()
 }

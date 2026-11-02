@@ -2,6 +2,7 @@ package stun
 
 import (
 	"context"
+	"encoding/binary"
 	"net/netip"
 	"os"
 	"testing"
@@ -83,5 +84,19 @@ func TestLiveSTUN(t *testing.T) {
 	t.Logf("public address: %s", ip)
 	if !ip.IsValid() {
 		t.Fatal("invalid address")
+	}
+}
+
+func TestParseRejectsAttributeOverrun(t *testing.T) {
+	var txID [12]byte
+	msg := make([]byte, headerSize+4)
+	binary.BigEndian.PutUint16(msg[0:2], bindingResponse)
+	binary.BigEndian.PutUint16(msg[2:4], 4)
+	binary.BigEndian.PutUint32(msg[4:8], magicCookie)
+	copy(msg[8:20], txID[:])
+	binary.BigEndian.PutUint16(msg[headerSize:headerSize+2], attrXorMapped)
+	binary.BigEndian.PutUint16(msg[headerSize+2:headerSize+4], 0xffff)
+	if _, err := parse(msg, txID); err == nil {
+		t.Fatal("attribute overrun was accepted")
 	}
 }

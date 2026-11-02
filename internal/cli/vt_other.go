@@ -2,4 +2,4 @@
 
 package cli
 
-func enableVT() {}
+func enableVT() func() { return func() {} }

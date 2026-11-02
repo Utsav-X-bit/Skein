@@ -56,13 +56,12 @@ var cipherSuite = noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, no
 type Session struct {
 	Epoch uint32
 
-	mu       sync.Mutex
-	send     *noise.CipherState
-	sendSeq  uint64
-	recv     *noise.CipherState
-	recvWin  replayWindow
-	created  time.Time
-	installs uint64
+	mu      sync.Mutex
+	send    *noise.CipherState
+	sendSeq uint64
+	recv    *noise.CipherState
+	recvWin replayWindow
+	created time.Time
 }
 
 func newSession(epoch uint32, send, recv *noise.CipherState) *Session {
@@ -356,7 +355,7 @@ func ParseConfirmation(payload []byte) ([AttemptSize]byte, error) {
 const maxPending = 4
 
 // maxPeers bounds the peer table, including peers learned but not confirmed.
-const maxPeers = 32
+const maxPeers = 256
 
 // handshakeTimeout bounds how long an incomplete handshake may linger.
 const handshakeTimeout = 30 * time.Second
@@ -366,6 +365,7 @@ type peerState struct {
 
 	public   []byte
 	verified bool
+	created  time.Time
 	pending  map[[AttemptSize]byte]*Handshake
 	ready    map[[AttemptSize]byte]*Session
 
@@ -383,6 +383,7 @@ type Manager struct {
 	mu            sync.Mutex
 	peers         map[uint64]*peerState
 	acceptUnknown bool
+	baseEpoch     uint32
 	onLearned     func(id uint64, publicKey []byte)
 }
 
@@ -391,7 +392,12 @@ func NewManager(local identity.Identity, psk []byte) (*Manager, error) {
 	if len(psk) != identity.KeySize {
 		return nil, fmt.Errorf("network secret must be %d bytes", identity.KeySize)
 	}
-	return &Manager{local: local, psk: append([]byte(nil), psk...), peers: make(map[uint64]*peerState)}, nil
+	return &Manager{
+		local:     local,
+		psk:       append([]byte(nil), psk...),
+		peers:     make(map[uint64]*peerState),
+		baseEpoch: uint32(time.Now().Unix()),
+	}, nil
 }
 
 // SetAcceptUnknown allows a responder to accept a handshake from a peer that is
@@ -444,16 +450,51 @@ func (m *Manager) setPeer(id uint64, publicKey []byte, verified bool) error {
 		return nil
 	}
 	if len(m.peers) >= maxPeers {
-		return fmt.Errorf("peer table is full (%d entries)", maxPeers)
+		// Unverified entries are unauthenticated message-one state. Evict the
+		// oldest instead of letting a stranger fill the table.
+		var evict uint64
+		var oldest time.Time
+		for pid, ps := range m.peers {
+			ps.mu.Lock()
+			unverified, created := !ps.verified, ps.created
+			ps.mu.Unlock()
+			if unverified && (evict == 0 || created.Before(oldest)) {
+				evict, oldest = pid, created
+			}
+		}
+		if evict == 0 {
+			return fmt.Errorf("peer table is full (%d entries)", maxPeers)
+		}
+		delete(m.peers, evict)
 	}
 	m.peers[id] = &peerState{
 		public:   append([]byte(nil), publicKey...),
 		verified: verified,
+		created:  time.Now(),
 		pending:  make(map[[AttemptSize]byte]*Handshake),
 		ready:    make(map[[AttemptSize]byte]*Session),
 		recv:     make(map[uint32]*Session),
 	}
 	return nil
+}
+
+// ResetPeer drops sessions and handshakes but keeps the registered key, so a
+// timed-out peer can reconnect without being re-added.
+func (m *Manager) ResetPeer(id uint64) {
+	m.mu.Lock()
+	ps, ok := m.peers[id]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	ps.mu.Lock()
+	ps.pending = make(map[[AttemptSize]byte]*Handshake)
+	ps.ready = make(map[[AttemptSize]byte]*Session)
+	ps.recv = make(map[uint32]*Session)
+	ps.send = nil
+	ps.sendAttempt = [AttemptSize]byte{}
+	ps.lastInstalled = time.Time{}
+	ps.mu.Unlock()
 }
 
 // RemovePeer forgets all handshake and session state for a peer.
@@ -476,13 +517,20 @@ func (m *Manager) Begin(peerID uint64) (attempt [AttemptSize]byte, payload []byt
 	}
 
 	ps.mu.Lock()
+	ps.pruneLocked()
 	if len(ps.pending) >= maxPending {
 		ps.mu.Unlock()
 		return attempt, nil, fmt.Errorf("%w: too many handshake attempts in flight", ErrBadHandshake)
 	}
-	epoch := uint32(1)
-	if ps.send != nil {
+	epoch := m.baseEpoch
+	if epoch == 0 || epoch == ^uint32(0) {
+		epoch = 1
+	}
+	if ps.send != nil && ps.send.Epoch >= epoch {
 		epoch = ps.send.Epoch + 1
+		if epoch == 0 {
+			epoch = 1
+		}
 	}
 	ps.mu.Unlock()
 
@@ -538,6 +586,9 @@ func (m *Manager) HandleHandshake(peerID uint64, payload []byte) (reply []byte, 
 	}
 	copy(attempt[:], payload[:AttemptSize])
 	epoch := binary.BigEndian.Uint32(payload[AttemptSize:HandshakePrefixSize])
+	if epoch == 0 || epoch == ^uint32(0) {
+		return nil, attempt, fmt.Errorf("%w: invalid epoch %d", ErrBadHandshake, epoch)
+	}
 
 	m.mu.Lock()
 	ps, ok := m.peers[peerID]
@@ -583,6 +634,7 @@ func (m *Manager) HandleHandshake(peerID uint64, payload []byte) (reply []byte, 
 	}
 
 	ps.mu.Lock()
+	ps.pruneLockedExcept(attempt)
 	hs, ok := ps.pending[attempt]
 	full := len(ps.pending) >= maxPending
 	ps.mu.Unlock()
@@ -601,9 +653,12 @@ func (m *Manager) HandleHandshake(peerID uint64, payload []byte) (reply []byte, 
 	}
 	done, err := hs.Read(payload)
 	if err != nil {
-		ps.mu.Lock()
-		delete(ps.pending, attempt)
-		ps.mu.Unlock()
+		if !hs.initiator {
+			// Never let a forged message-one delete our own outbound attempt.
+			ps.mu.Lock()
+			delete(ps.pending, attempt)
+			ps.mu.Unlock()
+		}
 		return nil, attempt, err
 	}
 	if !done {
@@ -713,11 +768,18 @@ func (m *Manager) HandleConfirm(peerID uint64, epoch uint32, counter uint64, ad,
 
 // consider reports whether candidate should replace the active send session.
 func (ps *peerState) consider(candidate *Session, attempt [AttemptSize]byte) bool {
+	if candidate.Epoch == 0 {
+		return false
+	}
 	if ps.send == nil {
 		return true
 	}
 	if candidate.Epoch != ps.send.Epoch {
-		return candidate.Epoch > ps.send.Epoch
+		if candidate.Epoch > ps.send.Epoch {
+			return true
+		}
+		// A lower epoch is only acceptable once the current key has expired.
+		return ps.send.Expired(time.Now())
 	}
 	return bytes.Compare(attempt[:], ps.sendAttempt[:]) < 0
 }
@@ -732,45 +794,39 @@ func (ps *peerState) install(sess *Session, attempt [AttemptSize]byte) {
 			delete(ps.recv, epoch)
 		}
 	}
-	// The completed handshake stays available briefly so a peer that installed
-	// first can still send its own confirmation. pruneLocked bounds the map.
+	// The confirmation has arrived, so this attempt is no longer in flight.
+	delete(ps.pending, attempt)
+	delete(ps.ready, attempt)
 	ps.pruneLocked()
 }
 
 // pruneLocked drops completed handshakes once the pending map is over budget,
 // and expires handshakes that never completed.
 func (ps *peerState) pruneLocked() {
+	ps.pruneLockedExcept([AttemptSize]byte{})
+}
+
+// pruneLockedExcept expires stale attempts, keeping the attempt currently
+// being processed so a late but valid message is not discarded first.
+func (ps *peerState) pruneLockedExcept(keep [AttemptSize]byte) {
 	now := time.Now()
 	for attempt, hs := range ps.pending {
-		if !hs.done && now.Sub(hs.started) > handshakeTimeout {
+		if attempt == keep {
+			continue
+		}
+		age := now.Sub(hs.started)
+		if hs.done {
+			age = now.Sub(hs.doneAt)
+		}
+		if age > handshakeTimeout {
 			delete(ps.pending, attempt)
 			delete(ps.ready, attempt)
 		}
 	}
-	if len(ps.pending) <= maxPending {
-		return
-	}
-	// Drop the oldest completed handshakes first.
-	for len(ps.pending) > maxPending {
-		var (
-			oldest    [AttemptSize]byte
-			oldestAge time.Duration
-			found     bool
-		)
-		for attempt, hs := range ps.pending {
-			if !hs.done {
-				continue
-			}
-			age := now.Sub(hs.doneAt)
-			if !found || age > oldestAge {
-				oldest, oldestAge, found = attempt, age, true
-			}
+	for attempt, sess := range ps.ready {
+		if attempt != keep && now.Sub(sess.created) > 2*handshakeTimeout {
+			delete(ps.ready, attempt)
 		}
-		if !found {
-			return
-		}
-		delete(ps.pending, oldest)
-		delete(ps.ready, oldest)
 	}
 }
 

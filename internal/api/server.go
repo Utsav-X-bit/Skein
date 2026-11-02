@@ -249,7 +249,9 @@ func (s *Server) getEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// allowMutation applies a one-per-second token bucket to state-changing calls.
+// allowMutation applies a one-per-second token bucket with a small burst, so
+// a single dashboard action (name + peer) is not rejected while still bounding
+// abuse.
 func (s *Server) allowMutation() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

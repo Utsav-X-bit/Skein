@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,6 +62,11 @@ func (t *TCP) acceptLoop() {
 				return
 			default:
 			}
+			// Descriptor pressure is transient; keep accepting.
+			if strings.Contains(strings.ToLower(err.Error()), "too many open files") {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 			return
 		}
 		addr, ok := addrOf(conn.RemoteAddr())
@@ -84,8 +90,20 @@ func addrOf(a net.Addr) (netip.AddrPort, bool) {
 	return netip.AddrPortFrom(addr.Unmap(), uint16(tcp.Port)), true
 }
 
-func (t *TCP) track(addr netip.AddrPort, conn net.Conn) {
+func (t *TCP) track(addr netip.AddrPort, conn net.Conn) bool {
 	t.mu.Lock()
+	select {
+	case <-t.closed:
+		t.mu.Unlock()
+		conn.Close()
+		return false
+	default:
+	}
+	if _, exists := t.conns[addr]; !exists && len(t.conns) >= maxTCPConns {
+		t.mu.Unlock()
+		conn.Close()
+		return false
+	}
 	if old, ok := t.conns[addr]; ok {
 		old.conn.Close()
 	}
@@ -95,10 +113,11 @@ func (t *TCP) track(addr netip.AddrPort, conn net.Conn) {
 		_ = tc.SetNoDelay(true)
 	}
 	t.conns[addr] = &tcpConn{conn: conn, addr: addr}
+	t.wg.Add(1)
 	t.mu.Unlock()
 
-	t.wg.Add(1)
 	go t.readLoop(addr, conn)
+	return true
 }
 
 // Dial connects to addr if no connection exists yet.
@@ -114,7 +133,9 @@ func (t *TCP) Dial(addr netip.AddrPort) error {
 	if err != nil {
 		return err
 	}
-	t.track(addr, conn)
+	if !t.track(addr, conn) {
+		return errTCPDisabled
+	}
 	return nil
 }
 
@@ -145,6 +166,7 @@ func (t *TCP) Send(addr netip.AddrPort, payload []byte) error {
 	// One writev for header and payload: two writes let Nagle hold the
 	// payload until the header is acknowledged.
 	c.mu.Lock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(tcpWriteTimeout))
 	bufs := net.Buffers{hdr[:], payload}
 	_, err := bufs.WriteTo(c.conn)
 	c.mu.Unlock()
@@ -160,6 +182,7 @@ func (t *TCP) readLoop(addr netip.AddrPort, conn net.Conn) {
 	var hdr [4]byte
 	buf := make([]byte, MaxDatagram)
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(tcpIdleTimeout))
 		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
 			t.drop(addr, &tcpConn{conn: conn, addr: addr})
 			return
@@ -169,6 +192,7 @@ func (t *TCP) readLoop(addr netip.AddrPort, conn net.Conn) {
 			t.drop(addr, &tcpConn{conn: conn, addr: addr})
 			return
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(tcpIdleTimeout))
 		if _, err := io.ReadFull(conn, buf[:n]); err != nil {
 			t.drop(addr, &tcpConn{conn: conn, addr: addr})
 			return
@@ -234,5 +258,11 @@ func (t *TCP) Close() error {
 
 // wireHeaderSize is the smallest plausible frame, used to reject garbage.
 const wireHeaderSize = 26
+
+const (
+	maxTCPConns     = 128
+	tcpIdleTimeout  = 2 * time.Minute
+	tcpWriteTimeout = 10 * time.Second
+)
 
 var errTCPDisabled = errors.New("link: TCP transport is not listening")

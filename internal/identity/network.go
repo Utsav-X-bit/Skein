@@ -96,7 +96,7 @@ func EncodeNetworkInvite(inv NetworkInvite) (string, error) {
 // DecodeNetworkInvite parses and validates a skein:2: invite.
 func DecodeNetworkInvite(s string) (NetworkInvite, error) {
 	if len(s) < len(NetworkInvitePrefix) || s[:len(NetworkInvitePrefix)] != NetworkInvitePrefix {
-		return NetworkInvite{}, errors.New("network invite must start with skein:2:")
+		return NetworkInvite{}, fmt.Errorf("network invite must start with %q", NetworkInvitePrefix)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(s[len(NetworkInvitePrefix):])
 	if err != nil {

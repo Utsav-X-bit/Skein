@@ -106,7 +106,7 @@ func (d *dashboard) statusLine(v view, width int) string {
 	}
 	up, down := 0, 0
 	for _, p := range v.peers {
-		if p.State == "up" {
+		if p.State == "up" || p.State == "degraded" {
 			up++
 		} else {
 			down++
@@ -201,6 +201,12 @@ func (d *dashboard) footer(v view, width int, wide bool) string {
 		hint = " · ENTER expand"
 	}
 	lead := sparkline(v.spark)
+	if width < 144 {
+		lead = truncateCells(lead, 24)
+	}
+	if width < 120 {
+		lead = truncateCells(lead, 12)
+	}
 	if e := recentEvent(v); e != "" {
 		lead = d.paint(ansiBrand, "● ") + e
 	}
@@ -219,13 +225,15 @@ func (d *dashboard) position(v view) string {
 		if len(v.routes) == 0 {
 			return "route 0/0"
 		}
+		routes := append([]routeDTO(nil), v.routes...)
+		sort.Slice(routes, func(i, j int) bool { return routes[i].Destination < routes[j].Destination })
 		index := 0
-		for n, r := range v.routes {
+		for n, r := range routes {
 			if r.Destination == v.ui.routeSel {
 				index = n
 			}
 		}
-		return fmt.Sprintf("route %d/%d", index+1, len(v.routes))
+		return fmt.Sprintf("route %d/%d", index+1, len(routes))
 	case focusActivity:
 		rows := activityRows(v.st.ID, localNameOf(v.st), v.peers, v.activities, time.Now().UnixMilli())
 		if len(rows) == 0 {
@@ -242,13 +250,15 @@ func (d *dashboard) position(v view) string {
 		if len(v.peers) == 0 {
 			return "peer 0/0"
 		}
+		peers := append([]peerDTO(nil), v.peers...)
+		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		index := 0
-		for n, p := range v.peers {
+		for n, p := range peers {
 			if p.ID == v.ui.selected {
 				index = n
 			}
 		}
-		return fmt.Sprintf("peer %d/%d", index+1, len(v.peers))
+		return fmt.Sprintf("peer %d/%d", index+1, len(peers))
 	}
 }
 
@@ -289,13 +299,6 @@ func joinColumns(columns [][]string, widths []int, height int) []string {
 	return lines
 }
 
-func (d *dashboard) bar(title string, width int) string {
-	plain := "─ " + title + " "
-	if n := width - len([]rune(plain)); n > 0 {
-		plain += strings.Repeat("─", n)
-	}
-	return d.paint(ansiCyan, fit(plain, width))
-}
 func (d *dashboard) line(s string, width int) string { return fit(s, width) }
 func max(a, b int) int {
 	if a > b {
@@ -369,10 +372,14 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 		rows = 2
 	}
 	selectedIndex := 0
+	found := false
 	for i, p := range peers {
 		if p.ID == v.ui.selected {
-			selectedIndex = i
+			selectedIndex, found = i, true
 		}
+	}
+	if !found {
+		selectedIndex = 0
 	}
 	visible := max(1, limit/rows)
 	start := 0
@@ -386,7 +393,7 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 			break
 		}
 		mark := " "
-		if p.ID == v.ui.selected || (v.ui.selected == "" && i == 0) {
+		if i == selectedIndex {
 			mark = d.paint(ansiBrand, ">")
 		}
 		active := peerActive(v, p.ID)
@@ -410,6 +417,9 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 		state := d.paint(stateColor(p.State), p.State)
 		transport := dash(p.Transport)
 		if width < 64 {
+			if limit-len(lines) < 2 {
+				break
+			}
 			// The overlay identifies the peer; the full endpoint stays in
 			// the inspector when the card is too narrow for both.
 			nameText := name
@@ -529,19 +539,25 @@ func (d *dashboard) renderRoutes(v view, width, limit int) []string {
 	if len(v.routes) == 0 {
 		return []string{d.line(" no resolved routes", width)}
 	}
+	routes := append([]routeDTO(nil), v.routes...)
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Destination < routes[j].Destination })
 	selectedIndex := 0
-	for i, r := range v.routes {
+	found := false
+	for i, r := range routes {
 		if r.Destination == v.ui.routeSel {
-			selectedIndex = i
+			selectedIndex, found = i, true
 		}
+	}
+	if !found {
+		selectedIndex = 0
 	}
 	start := 0
 	if selectedIndex >= limit {
 		start = selectedIndex - limit + 1
 	}
-	lines := make([]string, 0, min(limit, len(v.routes)))
-	for i := start; i < len(v.routes); i++ {
-		r := v.routes[i]
+	lines := make([]string, 0, min(limit, len(routes)))
+	for i := start; i < len(routes); i++ {
+		r := routes[i]
 		if len(lines) >= limit {
 			break
 		}
@@ -561,7 +577,7 @@ func (d *dashboard) renderRoutes(v view, width, limit int) []string {
 			labels = append(labels, label)
 		}
 		mark := " "
-		if r.Destination == v.ui.routeSel || (v.ui.routeSel == "" && len(lines) == 0) {
+		if i == selectedIndex {
 			mark = d.paint(ansiBrand, ">")
 		}
 		line := fmt.Sprintf("%s %s  %s · %s", mark,
@@ -571,17 +587,6 @@ func (d *dashboard) renderRoutes(v view, width, limit int) []string {
 		lines = append(lines, d.line(line, width))
 	}
 	return lines
-}
-func shortPath(path []string) []string {
-	out := make([]string, len(path))
-	for i, s := range path {
-		if s == "me" {
-			out[i] = s
-		} else {
-			out[i] = shortID(s)
-		}
-	}
-	return out
 }
 
 // activityRow is one directional row derived from an aggregate sample. A
@@ -649,18 +654,6 @@ func activityRows(localID, localName string, peers []peerDTO, items []activityDT
 
 func (d *dashboard) activityRowsFor(v view) []activityRow {
 	return activityRows(v.st.ID, localNameOf(v.st), v.peers, v.activities, time.Now().UnixMilli())
-}
-
-func selectedActivityRow(rows []activityRow, key string) (activityRow, bool) {
-	if len(rows) == 0 {
-		return activityRow{}, false
-	}
-	for _, row := range rows {
-		if row.key == key {
-			return row, true
-		}
-	}
-	return rows[0], true
 }
 
 func (d *dashboard) renderActivity(v view, width, limit int) []string {
@@ -787,8 +780,10 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 			color = ansiBrand
 		}
 		c.line(a.x, a.y, b.x, b.y, glyph, color)
-		for _, pulse := range d.edgePulses(v, e.from, e.to) {
-			d.drawPulse(c, a.x, a.y, b.x, b.y, e.from+e.to+pulse.color, pulse.color, pulse.reverse, v.phase)
+		if v.motion && !v.ui.paused {
+			for _, pulse := range d.edgePulses(v, e.from, e.to) {
+				d.drawPulse(c, a.x, a.y, b.x, b.y, e.from+e.to+pulse.color, pulse.color, pulse.reverse, v.phase)
+			}
 		}
 	}
 	for e := range routes {
@@ -808,6 +803,24 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		if id == "me" {
 			glyph, col = "◆", ansiCyan
 		} else {
+			switch states[id] {
+			case "up":
+				glyph = "●"
+			case "degraded":
+				glyph = "◐"
+			default:
+				glyph = "○"
+			}
+			if !d.unicode {
+				switch states[id] {
+				case "up":
+					glyph = "O"
+				case "degraded":
+					glyph = "o"
+				default:
+					glyph = "."
+				}
+			}
 			col = stateColor(states[id])
 			if states[id] != "up" && relayed(v, id) {
 				// Reachable through a relay, not directly.
@@ -1051,7 +1064,10 @@ func selectedRouteFrom(routes []routeDTO, sel string) (routeDTO, bool) {
 			return r, true
 		}
 	}
-	return routes[0], true
+	if sel == "" {
+		return routes[0], true
+	}
+	return routeDTO{}, false
 }
 
 func selectedRoute(v view) (routeDTO, bool) {
@@ -1083,19 +1099,6 @@ func easeOut(t float64) float64 {
 // mapEdge is one substantiated link between "me" and a peer, or between two
 // peers reported by the mesh.
 type mapEdge struct{ from, to string }
-
-// connectedPeers are the peers the map may draw: a session is up (or
-// degraded but still present). Configured peers that never connected stay in
-// the peers list for diagnostics but do not clutter the topology.
-func connectedPeers(v view) []peerDTO {
-	out := make([]peerDTO, 0, len(v.peers))
-	for _, p := range v.peers {
-		if p.State == "up" || p.State == "degraded" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
 
 // mapPeers are the peers the topology may draw: directly connected peers plus
 // peers that a route reaches through a relay. Configured peers with neither a

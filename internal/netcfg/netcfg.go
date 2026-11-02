@@ -54,12 +54,27 @@ func Remove(name string, addresses, routes []netip.Prefix) error {
 	var firstErr error
 	for _, s := range removalSteps(name, addresses, routes) {
 		for _, args := range s {
-			if _, err := runner(args[0], args[1:]...); err != nil && firstErr == nil {
+			if _, err := runner(args[0], args[1:]...); err != nil && !missingState(err) && firstErr == nil {
 				firstErr = err
 			}
 		}
 	}
 	return firstErr
+}
+
+// missingState reports the errors ip/netsh return when the object is already
+// gone, which Remove deliberately ignores.
+func missingState(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"cannot find device", "no such process", "cannot assign requested address",
+		"not found", "the system cannot find the file specified",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func undo(steps []step) {
@@ -119,7 +134,7 @@ func Reconcile(name string, overlay []netip.Prefix, desired []netip.Prefix) erro
 			continue
 		}
 		for _, args := range deleteRouteArgs(have.prefix, name) {
-			if _, err := runner(args[0], args[1:]...); err != nil && firstErr == nil {
+			if _, err := runner(args[0], args[1:]...); err != nil && !missingState(err) && firstErr == nil {
 				firstErr = err
 			}
 		}

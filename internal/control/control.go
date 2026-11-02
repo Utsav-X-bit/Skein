@@ -263,10 +263,13 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 // activityRecords produces aggregate direct-link deltas only. It never
 // observes packet contents or individual flows.
 func (c *Controller) activityRecords(now time.Time) []activity.Record {
+	// Copy the peer list before taking c.mu: HandleControl takes the peer
+	// lock and then c.mu, so the reverse order here would deadlock.
+	peers := c.peers.List()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var out []activity.Record
-	for _, p := range c.peers.List() {
+	for _, p := range peers {
 		if p.State != peer.StateUp || !p.Direct {
 			continue
 		}

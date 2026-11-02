@@ -12,6 +12,9 @@ import (
 // MaxHops is the longest supported route in links.
 const MaxHops = 4
 
+// maxAdvertisementsPerOrigin bounds per-neighbour advertisement memory.
+const maxAdvertisementsPerOrigin = 64
+
 // AdvertisementTTL is how long a received advertisement stays valid.
 const AdvertisementTTL = 90 * time.Second
 
@@ -51,7 +54,6 @@ type Table struct {
 	direct map[uint64]time.Duration
 	advert map[uint64]map[uint64]Advertisement
 	routes map[uint64]Route
-	seq    uint64
 	now    func() time.Time
 }
 
@@ -167,12 +169,26 @@ func (t *Table) MergeAdvertisement(from uint64, adv Advertisement) error {
 	if old, ok := dest[adv.Destination]; ok && adv.Seq <= old.Seq {
 		return fmt.Errorf("route: stale advertisement sequence %d from %016x", adv.Seq, from)
 	}
+	if _, exists := dest[adv.Destination]; !exists && len(dest) >= maxAdvertisementsPerOrigin {
+		// Bound what one neighbour can make us remember; drop the entry that
+		// expires first.
+		var oldestDest uint64
+		var oldestExpiry time.Time
+		for d, a := range dest {
+			if oldestDest == 0 || a.Expires.Before(oldestExpiry) {
+				oldestDest, oldestExpiry = d, a.Expires
+			}
+		}
+		delete(dest, oldestDest)
+	}
 	dest[adv.Destination] = cloneAdv(adv)
 	t.recompute()
 	return nil
 }
 
 // Lookup returns the resolved route to destination.
+// Lookup returns the current route. The Path slice aliases table state and
+// must not be modified by the caller.
 func (t *Table) Lookup(destination uint64) (Route, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -180,7 +196,7 @@ func (t *Table) Lookup(destination uint64) (Route, bool) {
 	if !ok || t.expired(r) {
 		return Route{}, false
 	}
-	return cloneRoute(r), true
+	return r, true
 }
 
 // Routes returns every resolved route sorted by destination.
@@ -196,45 +212,6 @@ func (t *Table) Routes() []Route {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Destination < out[j].Destination })
 	return out
-}
-
-// AdvertisementsFor returns the routes to offer to peerID, applying split
-// horizon and loop suppression.
-func (t *Table) AdvertisementsFor(peerID uint64) []Advertisement {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	now := t.now()
-	out := make([]Advertisement, 0, len(t.routes))
-	for _, r := range t.routes {
-		if r.NextHop == peerID || r.Destination == peerID {
-			continue
-		}
-		if containsID(r.Path, peerID) {
-			continue
-		}
-		path := make([]uint64, 0, len(r.Path)+1)
-		path = append(path, t.self)
-		path = append(path, r.Path...)
-		if len(path) > MaxHops {
-			continue
-		}
-		out = append(out, Advertisement{
-			Destination: r.Destination,
-			Cost:        r.Cost,
-			Hops:        uint8(len(path) - 1),
-			Path:        path,
-			Seq:         t.nextSeqLocked(),
-			Expires:     now.Add(AdvertisementTTL),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Destination < out[j].Destination })
-	return out
-}
-
-// nextSeqLocked returns a strictly increasing sequence number.
-func (t *Table) nextSeqLocked() uint64 {
-	t.seq++
-	return t.seq
 }
 
 // recompute rebuilds the route table. Advertisements already describe a
@@ -258,6 +235,7 @@ func (t *Table) recompute() {
 		}
 		for dest, adv := range advs {
 			if adv.Expires.Before(now) {
+				delete(advs, dest)
 				continue
 			}
 			if len(adv.Path) > MaxHops || containsID(adv.Path, t.self) {

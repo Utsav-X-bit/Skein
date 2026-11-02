@@ -49,7 +49,7 @@ func (d *dashboard) renderMetricStrip(v view, r dashboardRect) []string {
 	up, down := 0, 0
 	var rtt, jitter float64
 	for _, p := range v.peers {
-		if p.State == "up" {
+		if p.State == "up" || p.State == "degraded" {
 			up++
 		} else {
 			down++
@@ -60,7 +60,7 @@ func (d *dashboard) renderMetricStrip(v view, r dashboardRect) []string {
 		rtt, jitter = m.rtt, m.jitter
 	}
 	body := []string{
-		" MESH " + d.paint(ansiHealthy, fmt.Sprintf("%d up", up)) + " / " + d.paint(ansiError, fmt.Sprintf("%d down", down)) + "   " + d.paint(ansiTraffic, fmt.Sprintf("↓ %s  ↑ %s", humanRate(totalRate(v.rates)), humanRate(totalRate(v.rates)))),
+		" MESH " + d.paint(ansiHealthy, fmt.Sprintf("%d up", up)) + " / " + d.paint(ansiError, fmt.Sprintf("%d down", down)) + "   " + d.paint(ansiTraffic, fmt.Sprintf("↓ %s  ↑ %s", humanRate(totalRx(v.rates)), humanRate(totalTx(v.rates)))),
 		" RTT " + d.paint(ansiBrand, fmtRTT(rtt)) + fmt.Sprintf("   JITTER %.1f ms", jitter),
 	}
 	if v.err != nil {

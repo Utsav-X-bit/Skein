@@ -25,9 +25,7 @@ func (p *framePresenter) render(lines []string, width, height int) string {
 		var b strings.Builder
 		b.WriteString("\x1b[2J\x1b[H")
 		for i, line := range lines {
-			if i > 0 {
-				b.WriteString("\r\n")
-			}
+			fmt.Fprintf(&b, "\x1b[%d;1H", i+1)
 			b.WriteString(line)
 			b.WriteString("\x1b[K")
 		}
@@ -48,10 +46,4 @@ func (p *framePresenter) render(lines []string, width, height int) string {
 	}
 	p.last = append(p.last[:0], lines...)
 	return b.String()
-}
-
-// reset forgets the previous frame, forcing the next render to repaint.
-func (p *framePresenter) reset() {
-	p.started = false
-	p.last = p.last[:0]
 }

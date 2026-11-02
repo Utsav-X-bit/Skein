@@ -14,10 +14,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/wire"
 )
 
 const (
@@ -27,8 +29,8 @@ const (
 	DefaultMTU = 1280
 	// MinMTU is the smallest inner MTU accepted.
 	MinMTU = 576
-	// MaxMTU bounds the inner MTU well below the UDP datagram limit.
-	MaxMTU = 9000
+	// MaxMTU is the largest inner packet that fits one encrypted frame.
+	MaxMTU = wire.MaxPayload - wire.NonceSize - wire.TagSize
 	// DefaultAPIBind is the only allowed API listen address family and port.
 	DefaultAPIBind = "127.0.0.1:11011"
 
@@ -148,7 +150,7 @@ const DefaultSTUNServer = "stun.l.google.com:19302"
 // NextFreeOverlay returns the lowest usable host address in prefix that is not
 // already taken.
 func NextFreeOverlay(prefix netip.Prefix, used []netip.Addr) (netip.Addr, error) {
-	if !prefix.IsValid() || prefix.Bits() == 0 {
+	if !prefix.IsValid() || prefix.Bits() == 0 || !prefix.Addr().Is4() {
 		return netip.Addr{}, errors.New("conf: invalid overlay prefix")
 	}
 	taken := make(map[netip.Addr]struct{}, len(used))
@@ -177,7 +179,7 @@ func NextFreeOverlay(prefix netip.Prefix, used []netip.Addr) (netip.Addr, error)
 // nodes joining from the same stale invite therefore rarely choose the same
 // address, unlike the sequential allocator.
 func NextFreeOverlayHashed(prefix netip.Prefix, used []netip.Addr, seed uint64) (netip.Addr, error) {
-	if !prefix.IsValid() || prefix.Bits() == 0 {
+	if !prefix.IsValid() || prefix.Bits() == 0 || !prefix.Addr().Is4() {
 		return netip.Addr{}, errors.New("conf: invalid overlay prefix")
 	}
 	taken := make(map[netip.Addr]struct{}, len(used))
@@ -629,6 +631,10 @@ func Validate(cfg Config) error {
 			if !a.IsValid() || a.Port() == 0 || a.Addr().IsUnspecified() || a.Addr().IsMulticast() {
 				return fmt.Errorf("peer %016x has invalid endpoint %s", p.ID, a)
 			}
+			if cfg.Node.OverlayIPv4Prefix.Contains(a.Addr()) ||
+				(cfg.Node.OverlayIPv6Prefix.IsValid() && cfg.Node.OverlayIPv6Prefix.Contains(a.Addr())) {
+				return fmt.Errorf("peer %016x endpoint %s is inside the overlay prefixes", p.ID, a)
+			}
 		}
 	}
 	return nil
@@ -649,6 +655,9 @@ func validatePrefix(field string, p netip.Prefix, want4 bool) error {
 	}
 	if p.Addr().IsUnspecified() {
 		return fmt.Errorf("%s must not start at the unspecified address", field)
+	}
+	if p.Addr().IsLoopback() {
+		return fmt.Errorf("%s must not be a loopback prefix", field)
 	}
 	return nil
 }
@@ -697,8 +706,8 @@ func validateName(name string) error {
 		return fmt.Errorf("node.name must be at most 32 characters, got %d", len([]rune(name)))
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("node.name contains a control character")
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return fmt.Errorf("node.name contains a control or formatting character")
 		}
 	}
 	return nil
@@ -707,6 +716,9 @@ func validateName(name string) error {
 func validateInterface(name string) error {
 	if name == "" || len(name) > 15 {
 		return fmt.Errorf("node.interface must be 1-15 characters, got %q", name)
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("node.interface must not start with '-'")
 	}
 	if name == "." || name == ".." {
 		return fmt.Errorf("node.interface must not be %q", name)

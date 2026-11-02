@@ -272,7 +272,7 @@ addrs  = ["udp://[2406:b400:72:4f1e::1]:11010"]
 ```
 
 Validation: canonical non-default prefixes, unicast host addresses inside their
-prefix, unique node addresses, 1–65535 listen port, MTU 576–9000 (≥1280 when
+prefix, unique node addresses, 1–65535 listen port, MTU 576–1346 (≥1280 when
 the IPv6 overlay is enabled), 32-byte secrets, a loopback API bind, peer keys
 matching their IDs, numeric `udp://` endpoints, and at least one peer when
 mDNS is disabled.

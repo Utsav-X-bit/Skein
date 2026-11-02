@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/identity"
@@ -125,8 +127,16 @@ func Encode(s State) ([]byte, error) {
 			buf = append(buf, encoded...)
 		}
 		name := p.Name
-		if len([]rune(name)) > 32 {
-			name = string([]rune(name)[:32])
+		if len(name) > 32 {
+			// The wire length is bytes; cut on a rune boundary.
+			cut := 32
+			for cut > 0 && !utf8.RuneStart(name[cut]) {
+				cut--
+			}
+			name = name[:cut]
+		}
+		if err := validateName(name); err != nil {
+			return nil, err
 		}
 		buf = append(buf, byte(len(name)))
 		buf = append(buf, name...)
@@ -191,10 +201,15 @@ func Decode(payload []byte) (State, error) {
 		return State{}, fmt.Errorf("discovery: unsupported state version %d", version)
 	}
 	off := 1
+	ttl := time.Duration(binary.BigEndian.Uint32(payload[off+16:off+20])) * time.Second
+	if ttl > TTLFor {
+		// A member cannot keep stale routes alive indefinitely.
+		ttl = TTLFor
+	}
 	s := State{
 		Origin:  binary.BigEndian.Uint64(payload[off : off+8]),
 		Seq:     binary.BigEndian.Uint64(payload[off+8 : off+16]),
-		Expires: time.Now().Add(time.Duration(binary.BigEndian.Uint32(payload[off+16:off+20])) * time.Second),
+		Expires: time.Now().Add(ttl),
 	}
 	off += 20
 	if s.Origin == 0 {
@@ -375,17 +390,22 @@ func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, 
 		Activity: append([]activity.Record(nil), records...),
 	}
 	sortRoutes(s.Routes)
+	// The peer count is a hard limit; trim it before sacrificing routes so a
+	// large mesh still advertises its paths.
+	if len(s.Peers) > MaxPeers {
+		s.Peers = s.Peers[:MaxPeers]
+	}
 	for {
 		if _, err := Encode(s); err == nil {
 			return s, nil
 		}
-		// Drop the least useful route, then the least useful peer hint.
-		if len(s.Routes) > 0 {
-			s.Routes = s.Routes[:len(s.Routes)-1]
-			continue
-		}
+		// Telemetry is least valuable, then routes, then peer hints.
 		if len(s.Activity) > 0 {
 			s.Activity = s.Activity[:len(s.Activity)-1]
+			continue
+		}
+		if len(s.Routes) > 0 {
+			s.Routes = s.Routes[:len(s.Routes)-1]
 			continue
 		}
 		if len(s.Peers) > 1 {
@@ -432,6 +452,9 @@ type Merger struct {
 	localV4 netip.Addr
 	localV6 netip.Addr
 
+	localV4Prefix netip.Prefix
+	localV6Prefix netip.Prefix
+
 	mu  sync.Mutex
 	seq map[uint64]uint64
 }
@@ -442,6 +465,13 @@ func (m *Merger) SetLocalOverlay(v4, v6 netip.Addr) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.localV4, m.localV6 = v4, v6
+}
+
+// SetLocalPrefixes bounds which overlay addresses a peer record may claim.
+func (m *Merger) SetLocalPrefixes(v4, v6 netip.Prefix) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.localV4Prefix, m.localV6Prefix = v4, v6
 }
 
 // NewMerger creates a merger.
@@ -472,6 +502,18 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		if rec.ID == m.LocalID {
 			continue
 		}
+		if rec.OverlayV4.IsValid() && m.localV4Prefix.IsValid() && !m.localV4Prefix.Contains(rec.OverlayV4) {
+			rec.OverlayV4 = netip.Addr{}
+		}
+		if rec.OverlayV6.IsValid() && m.localV6Prefix.IsValid() && !m.localV6Prefix.Contains(rec.OverlayV6) {
+			rec.OverlayV6 = netip.Addr{}
+		}
+		if rec.OverlayV4.IsValid() && !usableOverlay(rec.OverlayV4) {
+			rec.OverlayV4 = netip.Addr{}
+		}
+		if rec.OverlayV6.IsValid() && !usableOverlay(rec.OverlayV6) {
+			rec.OverlayV6 = netip.Addr{}
+		}
 		if (m.localV4.IsValid() && rec.OverlayV4 == m.localV4) || (m.localV6.IsValid() && rec.OverlayV6 == m.localV6) {
 			// A stale identity from an earlier mesh can carry this node's
 			// overlay address; never let it shadow the local node.
@@ -495,6 +537,12 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		}
 		m.Peers.SetName(rec.ID, rec.Name)
 		for _, cand := range rec.Candidates {
+			if (m.localV4Prefix.IsValid() && m.localV4Prefix.Contains(cand.Addr())) ||
+				(m.localV6Prefix.IsValid() && m.localV6Prefix.Contains(cand.Addr())) {
+				// An underlay endpoint inside the overlay would loop the
+				// datagram back through the tunnel.
+				continue
+			}
 			m.Peers.AddCandidate(rec.ID, cand, peer.SourceState)
 		}
 	}
@@ -548,11 +596,16 @@ func validateName(name string) error {
 		return fmt.Errorf("discovery: peer name is %d characters, maximum is 32", len([]rune(name)))
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("discovery: peer name contains a control character")
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return errors.New("discovery: peer name contains a control or formatting character")
 		}
 	}
 	return nil
+}
+
+// usableOverlay rejects addresses that cannot identify a unicast host.
+func usableOverlay(a netip.Addr) bool {
+	return !a.IsUnspecified() && !a.IsMulticast() && !a.IsLoopback() && !a.IsLinkLocalUnicast()
 }
 
 func (m *Merger) now() time.Time {

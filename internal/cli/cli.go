@@ -150,12 +150,16 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
 		d := newDashboard(cfg, stdout, !opts.noColor, motion)
 		d.configPath = path
-		if err := d.ensureDaemon(ctx, path); err != nil {
+		dashCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := d.ensureDaemon(dashCtx, path); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
+		runCtx, cancel := context.WithCancel(dashCtx)
 		defer d.closeChild()
-		if err := d.run(ctx); err != nil {
+		defer cancel()
+		if err := d.run(runCtx); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -356,13 +360,19 @@ mdns = true
 	wanCfg := conf.Default()
 	cands = wan.Merge(cands, wan.Candidates(context.Background(), wanCfg))
 	inv := identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands}
-	invite, _ := identity.EncodeInvite(inv)
+	invite, err := identity.EncodeInvite(inv)
+	if err != nil {
+		return err
+	}
 
 	joinCfg := conf.Default()
 	joinCfg.Node.NetworkSecret = psk
 	joinCfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
 	joinCfg.API.Token = token
-	join, _ := encodeJoin(joinCfg, id, cands)
+	join, err := encodeJoin(joinCfg, id, cands)
+	if err != nil {
+		return err
+	}
 
 	fmt.Fprintf(stdout, "config:     %s\n", configPath)
 	fmt.Fprintf(stdout, "identity:   %s\n", keyPath)
@@ -405,6 +415,8 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 	if err := c.setName(context.Background(), name); err == nil {
 		fmt.Fprintf(stdout, "name set to %q; advertised immediately\n", name)
 		return nil
+	} else if !errors.Is(err, errDaemonUnreachable) {
+		return err
 	}
 
 	cfg.Node.Name = name
@@ -415,13 +427,9 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, text, 0o600); err != nil {
+	if err := writeConfigAtomic(configPath, text); err != nil {
 		return err
 	}
-	if err := fileperm.Restrict(configPath); err != nil {
-		return err
-	}
-	_ = fileperm.ChownToSudoUser(configPath)
 	fmt.Fprintf(stdout, "name set to %q; start or restart the daemon to advertise it\n", name)
 	return nil
 }
@@ -558,6 +566,9 @@ func dedupeOverlays(addrs []netip.Addr, prefix netip.Prefix) []netip.Addr {
 // cmdJoin configures this node from a network invite: secret, overlay address,
 // and the inviter as a dialer peer.
 func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
+	if daemonActive() {
+		return errors.New("the daemon is running and owns the config; stop it first (systemctl stop skein / Stop-Service skein)")
+	}
 	inv, err := identity.DecodeNetworkInvite(inviteText)
 	if err != nil {
 		return err
@@ -645,17 +656,16 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(configPath, text, 0o600); err != nil {
+	if err := writeConfigAtomic(configPath, text); err != nil {
 		return err
 	}
-	if err := fileperm.Restrict(configPath); err != nil {
-		return err
-	}
-	_ = fileperm.ChownToSudoUser(configPath)
 	_ = fileperm.ChownToSudoUser(keyPath)
 
 	cands, _ := allCandidates(cfg)
-	own, _ := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
+	own, err := identity.EncodeInvite(identity.Invite{ID: id.ID, PublicKey: id.PublicKey, Addrs: cands})
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "joined network\n")
 	fmt.Fprintf(stdout, "  config:  %s\n", configPath)
 	fmt.Fprintf(stdout, "  node id: %016x\n", id.ID)
@@ -819,13 +829,16 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 	return nil
 }
 
+// errDaemonUnreachable marks transport failures, as opposed to an API error.
+var errDaemonUnreachable = errors.New("daemon unreachable")
+
 // daemonContactError adds a start hint when the local API is not listening.
 func daemonContactError(err error) error {
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "actively refused") {
-		return fmt.Errorf("contact the daemon: %w\n  the daemon is not running; start it with: sudo systemctl start skein (Linux) or Start-Service skein (Windows), or run `skein dashboard`", err)
+		return fmt.Errorf("%w: contact the daemon: %w\n  the daemon is not running; start it with: sudo systemctl start skein (Linux) or Start-Service skein (Windows), or run `skein dashboard`", errDaemonUnreachable, err)
 	}
-	return fmt.Errorf("contact the daemon: %w", err)
+	return fmt.Errorf("%w: contact the daemon: %w", errDaemonUnreachable, err)
 }
 
 func (c *client) get(ctx context.Context, path string, out any) error {
@@ -843,7 +856,7 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
 }
 
 func (c *client) print(ctx context.Context, path string, jsonOut bool, w io.Writer, render func(any, io.Writer) error) error {
@@ -1143,4 +1156,35 @@ func printRouteTable(routes []routeDTO, peers []peerDTO, w io.Writer) error {
 		fmt.Fprintf(w, "%-26s  %-34s  %-8s  %d\n", clip(dest, 26), clip(strings.Join(path, " → "), 34), fmt.Sprintf("%.1fms", r.CostMs), r.Hops)
 	}
 	return nil
+}
+
+// writeConfigAtomic writes text beside path and renames it into place, so an
+// interrupted write never leaves a truncated config.
+func writeConfigAtomic(path string, text []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(text); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := fileperm.Restrict(name); err != nil {
+		return err
+	}
+	_ = fileperm.ChownToSudoUser(name)
+	return os.Rename(name, path)
 }

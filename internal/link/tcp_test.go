@@ -219,3 +219,47 @@ func TestTCPConcurrentSendsStayFramed(t *testing.T) {
 		}
 	}
 }
+
+func TestSwitchSurvivesTruncatedDatagram(t *testing.T) {
+	a, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	addr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), b.Port())
+	raw, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Write(make([]byte, 2000)); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := frameBytes(40)
+	if err := a.Send(addr, payload); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var got int
+	var recvErr error
+	go func() {
+		buf := make([]byte, 64)
+		got, _, _, recvErr = b.RecvTagged(buf)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("receive loop stopped after a truncated datagram")
+	}
+	if recvErr != nil || got != len(payload) {
+		t.Fatalf("recv = %d, %v; want %d, nil", got, recvErr, len(payload))
+	}
+}

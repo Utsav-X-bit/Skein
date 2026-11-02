@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"runtime"
 
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
@@ -90,6 +91,9 @@ func PeerID(publicKey []byte) (uint64, error) {
 
 // Load reads a raw 32-byte private key from path.
 func Load(path string) (Identity, error) {
+	if info, err := os.Stat(path); err == nil && runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return Identity{}, fmt.Errorf("identity file %s is accessible by group or others (mode %o); run: chmod 600 %s", path, info.Mode().Perm(), path)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Identity{}, err
@@ -164,7 +168,7 @@ func EncodeInvite(inv Invite) (string, error) {
 // DecodeInvite parses and validates a skein:1: invite string.
 func DecodeInvite(s string) (Invite, error) {
 	if len(s) < len(invitePrefix) || s[:len(invitePrefix)] != invitePrefix {
-		return Invite{}, errors.New("invite must start with skein:1:")
+		return Invite{}, fmt.Errorf("invite must start with %q", invitePrefix)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(s[len(invitePrefix):])
 	if err != nil {

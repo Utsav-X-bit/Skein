@@ -9,11 +9,12 @@ import (
 )
 
 // enableVT turns on ANSI escape processing for the Windows console.
-func enableVT() {
+func enableVT() func() {
 	handle := windows.Handle(os.Stdout.Fd())
 	var mode uint32
 	if err := windows.GetConsoleMode(handle, &mode); err != nil {
-		return
+		return func() {}
 	}
 	_ = windows.SetConsoleMode(handle, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+	return func() { _ = windows.SetConsoleMode(handle, mode) }
 }

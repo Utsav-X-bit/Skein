@@ -288,7 +288,8 @@ func TestRelayForwardsOpaqueCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ad := associatedData(wire.Data, c.id, a.id, epoch)
+	adArr := associatedData(wire.Data, c.id, a.id, epoch)
+	ad := adArr[:]
 	if _, err := b.eng.sessions.Open(a.id, epoch, counter, ad, ct); err == nil {
 		t.Fatal("relay decrypted the end-to-end payload")
 	}
@@ -410,10 +411,228 @@ func BenchmarkEngineThroughput(b *testing.B) {
 		b.Fatalf("send: %v", err)
 	}
 	b.SetBytes(int64(len(pkt)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := a.eng.SendOverlayPacket(pkt); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestDeliverRejectsShortAndSpoofedPackets(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "127.0.0.1:10001")
+	b := n.addNode(t, "10.144.144.2", "127.0.0.1:10002")
+	n.know(t, a, b, true)
+
+	if err := a.eng.deliver(b.id, nil); !errors.Is(err, ErrBadPacket) {
+		t.Fatalf("empty packet: got %v, want ErrBadPacket", err)
+	}
+	if err := a.eng.deliver(b.id, []byte{0x45}); !errors.Is(err, ErrBadPacket) {
+		t.Fatalf("short packet: got %v, want ErrBadPacket", err)
+	}
+
+	toOther := ipv4Packet(b.overlay, netip.MustParseAddr("10.144.144.99"), []byte("x"))
+	if err := a.eng.deliver(b.id, toOther); !errors.Is(err, ErrBadPacket) {
+		t.Fatalf("packet for another overlay: got %v, want ErrBadPacket", err)
+	}
+	if a.tun.writes != 0 {
+		t.Fatalf("deliver wrote %d packets, want 0", a.tun.writes)
+	}
+}
+
+func TestRelayedSessionStillNotifiesAndKeepsRoute(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "127.0.0.1:10001")
+	b := n.addNode(t, "10.144.144.2", "127.0.0.1:10002")
+	relay := n.addNode(t, "10.144.144.3", "127.0.0.1:10003")
+
+	if err := a.eng.peers.Upsert(peer.Peer{ID: b.id, PublicKey: b.ident.PublicKey, OverlayV4: b.overlay}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.eng.peers.Upsert(peer.Peer{
+		ID: relay.id, PublicKey: relay.ident.PublicKey, OverlayV4: relay.overlay,
+		Candidates: []peer.Candidate{{Addr: relay.addr, Source: peer.SourceConfig}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.eng.routes.UpdateDirect(route.DirectLink{PeerID: relay.id, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.eng.routes.MergeAdvertisement(relay.id, route.Advertisement{
+		Destination: b.id,
+		Cost:        2 * time.Millisecond,
+		Path:        []uint64{relay.id, b.id},
+		Expires:     time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	notified := false
+	a.eng.SetSessionHandler(func(uint64) { notified = true })
+	a.eng.established(b.id, relay.addr)
+
+	if !notified {
+		t.Fatal("relayed session did not notify the session handler")
+	}
+	r, ok := a.eng.routes.Lookup(b.id)
+	if !ok || r.NextHop != relay.id {
+		t.Fatalf("route = %+v, want next hop %016x", r, relay.id)
+	}
+	if p, _ := a.eng.peers.Get(b.id); p.ActiveEndpoint.IsValid() {
+		t.Fatalf("relayed session set a direct endpoint %s", p.ActiveEndpoint)
+	}
+}
+
+func TestDirectSourceRejectsRelayAddress(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "127.0.0.1:10001")
+	b := n.addNode(t, "10.144.144.2", "127.0.0.1:10002")
+	relay := n.addNode(t, "10.144.144.3", "127.0.0.1:10003")
+
+	for _, p := range []*node{b, relay} {
+		if err := a.eng.peers.Upsert(peer.Peer{
+			ID: p.id, PublicKey: p.ident.PublicKey, OverlayV4: p.overlay,
+			Candidates: []peer.Candidate{{Addr: p.addr, Source: peer.SourceConfig}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !a.eng.directSource(b.id, b.addr) {
+		t.Fatal("peer's own address should be a direct source")
+	}
+	if a.eng.directSource(b.id, relay.addr) {
+		t.Fatal("relay address must not be treated as the peer's direct source")
+	}
+	if !a.eng.directSource(b.id, netip.MustParseAddrPort("127.0.0.1:19999")) {
+		t.Fatal("unknown address should be accepted as first contact")
+	}
+}
+
+func TestPunchFrameReachesTheControlHandler(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, b, true)
+	if err := a.eng.SendOverlayPacket(ipv4Packet(a.overlay, b.overlay, []byte("x"))); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	var mu sync.Mutex
+	var got wire.MessageType
+	b.eng.SetControlHandler(func(_ uint64, _ netip.AddrPort, typ wire.MessageType, _ []byte) {
+		mu.Lock()
+		got = typ
+		mu.Unlock()
+	})
+	if err := a.eng.SendControl(b.id, wire.Punch, []byte("punch")); err != nil {
+		t.Fatalf("send punch: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got != wire.Punch {
+		t.Fatalf("control handler got %d, want Punch", got)
+	}
+}
+
+func TestDirectHandshakeUpgradesARelayedRoute(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	relay := n.addNode(t, "10.144.144.3", "192.0.2.3:11010")
+
+	for _, p := range []*node{b, relay} {
+		if err := a.eng.peers.Upsert(peer.Peer{
+			ID: p.id, PublicKey: p.ident.PublicKey, OverlayV4: p.overlay,
+			Candidates: []peer.Candidate{{Addr: p.addr, Source: peer.SourceConfig}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.eng.routes.UpdateDirect(route.DirectLink{PeerID: relay.id, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.eng.routes.MergeAdvertisement(relay.id, route.Advertisement{
+		Destination: b.id, Cost: 2 * time.Millisecond,
+		Path: []uint64{relay.id, b.id}, Expires: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.eng.established(b.id, b.addr)
+	r, ok := a.eng.routes.Lookup(b.id)
+	if !ok || r.NextHop != b.id {
+		t.Fatalf("route = %+v, want direct to %016x", r, b.id)
+	}
+	p, _ := a.eng.peers.Get(b.id)
+	if p.ActiveEndpoint != b.addr {
+		t.Fatalf("active endpoint = %s, want %s", p.ActiveEndpoint, b.addr)
+	}
+}
+
+func ipv6Packet(src, dst netip.Addr, payload []byte) []byte {
+	pkt := make([]byte, 40+len(payload))
+	pkt[0] = 0x60
+	binary.BigEndian.PutUint16(pkt[4:6], uint16(len(payload)))
+	src16, dst16 := src.As16(), dst.As16()
+	copy(pkt[8:24], src16[:])
+	copy(pkt[24:40], dst16[:])
+	copy(pkt[40:], payload)
+	return pkt
+}
+
+func TestIPv6PayloadLength(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	src := netip.MustParseAddr("fd00:6d65:7368::1")
+	dst := netip.MustParseAddr("fd00:6d65:7368::2")
+	a.eng.cfg.OverlayV6 = src
+	a.eng.cfg.PrefixV6 = netip.MustParsePrefix("fd00:6d65:7368::/64")
+	if err := a.eng.peers.Upsert(peer.Peer{ID: b.id, PublicKey: b.ident.PublicKey, OverlayV6: dst}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A 20-byte payload (a bare TCP ACK) is valid, not "shorter than 40".
+	pkt := ipv6Packet(src, dst, make([]byte, 20))
+	if _, err := a.eng.validateOutbound(pkt); err != nil {
+		t.Fatalf("60-byte IPv6 packet rejected: %v", err)
+	}
+	in := ipv6Packet(dst, src, make([]byte, 20))
+	if err := a.eng.deliver(b.id, in); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if got := a.tun.last(); len(got) != len(in) {
+		t.Fatalf("delivered %d bytes, want %d", len(got), len(in))
+	}
+}
+
+func TestDropSessionKeepsThePeerRegistered(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, b, true)
+	if err := a.eng.SendOverlayPacket(ipv4Packet(a.overlay, b.overlay, []byte("x"))); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("handshake: %v", err)
+	}
+	a.eng.DropSession(b.id)
+	if err := a.eng.EnsureSession(b.id); err != nil {
+		t.Fatalf("reconnect after drop: %v", err)
+	}
+	if !a.eng.sessions.HasSession(b.id) {
+		t.Fatal("reconnect did not establish a session")
+	}
+}
+
+func TestNewRejectsMTUAboveFrameLimit(t *testing.T) {
+	ident, _ := identity.Generate()
+	_, err := New(Config{
+		LocalID: ident.ID, Identity: ident, MTU: 1500,
+		OverlayV4: netip.MustParseAddr("10.144.144.1"),
+		PrefixV4:  netip.MustParsePrefix("10.144.144.0/24"),
+	}, Deps{})
+	if err == nil {
+		t.Fatal("MTU above the frame limit was accepted")
 	}
 }

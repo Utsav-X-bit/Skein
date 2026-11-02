@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,8 +57,10 @@ func TestInitCreatesOwnerOnlyFilesAndRefusesOverwrite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", file, err)
 		}
-		if perm := info.Mode().Perm(); perm != 0o600 {
-			t.Fatalf("%s mode = %o, want 600", file, perm)
+		if runtime.GOOS != "windows" {
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Fatalf("%s mode = %o, want 600", file, perm)
+			}
 		}
 	}
 	if code, _, _ := runCLI(t, "-c", path, "init"); code != 1 {
@@ -406,8 +409,11 @@ func TestInviteNetworkCarriesTheSecret(t *testing.T) {
 // TestLoadConfigExplainsOwnership guards the hint shown when the root daemon
 // or an elevated init left the config unreadable to the normal user.
 func TestLoadConfigExplainsOwnership(t *testing.T) {
-	if os.Geteuid() == 0 {
+	if isRoot() {
 		t.Skip("root can read a 0000 file")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not deny reads on Windows")
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skein.toml")

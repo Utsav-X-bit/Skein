@@ -69,7 +69,9 @@ func TestListIsStableAndSorted(t *testing.T) {
 	tbl := NewTable()
 	for range 5 {
 		id, _ := identity.Generate()
-		if err := tbl.Upsert(testPeer(t, id)); err != nil {
+		p := testPeer(t, id)
+		p.OverlayV4 = netip.Addr{}
+		if err := tbl.Upsert(p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,4 +163,43 @@ func TestConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestOverlayAddressCannotBeStolen(t *testing.T) {
+	identA, _ := identity.Generate()
+	identB, _ := identity.Generate()
+	tbl := NewTable()
+	if err := tbl.Upsert(Peer{ID: identA.ID, PublicKey: identA.PublicKey, OverlayV4: netip.MustParseAddr("10.0.0.2")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Upsert(Peer{ID: identB.ID, PublicKey: identB.PublicKey}); err != nil {
+		t.Fatal(err)
+	}
+	tbl.SetOverlay(identB.ID, netip.MustParseAddr("10.0.0.2"), netip.Addr{})
+	if id, ok := tbl.LookupOverlay(netip.MustParseAddr("10.0.0.2")); !ok || id != identA.ID {
+		t.Fatalf("overlay lookup = %016x,%v; want %016x,true", id, ok, identA.ID)
+	}
+}
+
+func TestUpsertPreservesLearnedFields(t *testing.T) {
+	ident, _ := identity.Generate()
+	tbl := NewTable()
+	seen := time.Now().Add(-time.Minute)
+	peer := Peer{ID: ident.ID, PublicKey: ident.PublicKey}
+	if err := tbl.Upsert(peer); err != nil {
+		t.Fatal(err)
+	}
+	tbl.SetOverlay(ident.ID, netip.MustParseAddr("10.0.0.2"), netip.Addr{})
+	tbl.SetName(ident.ID, "archlinux")
+	tbl.SetActive(ident.ID, netip.MustParseAddrPort("192.0.2.1:11010"), time.Millisecond, "udp", seen)
+	tbl.AddTraffic(ident.ID, 11, 22)
+
+	if err := tbl.Upsert(peer); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := tbl.Get(ident.ID)
+	if got.OverlayV4 != netip.MustParseAddr("10.0.0.2") || got.Name != "archlinux" ||
+		got.LastSeen.IsZero() || got.RxBytes != 11 || got.TxBytes != 22 || !got.Direct {
+		t.Fatalf("upsert dropped learned state: %+v", got)
+	}
 }

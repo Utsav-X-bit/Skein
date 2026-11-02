@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -177,6 +178,9 @@ func TestValidateConfigDirRejectsDoubledAppData(t *testing.T) {
 }
 
 func TestCheckPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not enforced on Windows")
+	}
 	path := filepath.Join(t.TempDir(), "skein.toml")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -364,5 +368,37 @@ func TestPublicAddrRoundTripsAndValidates(t *testing.T) {
 	cfg.Node.PublicAddr = netip.MustParseAddrPort("10.144.144.9:11010")
 	if err := Validate(cfg); err == nil {
 		t.Fatal("expected an overlay address to be rejected")
+	}
+}
+
+func TestValidateRejectsOverlayEndpoint(t *testing.T) {
+	cfg := Default()
+	ident, _ := identity.Generate()
+	cfg.Peers = []Peer{{ID: ident.ID, PublicKey: ident.PublicKey, Addrs: []netip.AddrPort{netip.MustParseAddrPort("10.144.144.9:11010")}}}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("endpoint inside the overlay prefix was accepted")
+	}
+}
+
+func TestValidateRejectsLoopbackPrefix(t *testing.T) {
+	cfg := Default()
+	cfg.Node.OverlayIPv4Prefix = netip.MustParsePrefix("127.0.0.0/8")
+	cfg.Node.OverlayIPv4 = netip.MustParseAddr("127.0.0.2")
+	if err := Validate(cfg); err == nil {
+		t.Fatal("loopback overlay prefix was accepted")
+	}
+}
+
+func TestValidateRejectsOptionLikeInterface(t *testing.T) {
+	cfg := Default()
+	cfg.Node.Interface = "-skein"
+	if err := Validate(cfg); err == nil {
+		t.Fatal("interface starting with '-' was accepted")
+	}
+}
+
+func TestNextFreeOverlayRejectsIPv6(t *testing.T) {
+	if _, err := NextFreeOverlay(netip.MustParsePrefix("fd00::/64"), nil); err == nil {
+		t.Fatal("IPv6 overlay prefix was accepted by the IPv4 allocator")
 	}
 }

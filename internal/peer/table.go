@@ -69,13 +69,14 @@ type Peer struct {
 
 // Table is a concurrency-safe peer store. Every read returns a deep copy.
 type Table struct {
-	mu    sync.RWMutex
-	peers map[uint64]*Peer
+	mu        sync.RWMutex
+	peers     map[uint64]*Peer
+	byOverlay map[netip.Addr]uint64
 }
 
 // NewTable creates an empty peer table.
 func NewTable() *Table {
-	return &Table{peers: make(map[uint64]*Peer)}
+	return &Table{peers: make(map[uint64]*Peer), byOverlay: make(map[netip.Addr]uint64)}
 }
 
 // Upsert inserts or updates a peer. A peer ID bound to a different public key
@@ -114,6 +115,36 @@ func (t *Table) Upsert(p Peer) error {
 		if len(p.Candidates) == 0 {
 			p.Candidates = existing.Candidates
 		}
+		if !p.OverlayV4.IsValid() {
+			p.OverlayV4 = existing.OverlayV4
+		}
+		if !p.OverlayV6.IsValid() {
+			p.OverlayV6 = existing.OverlayV6
+		}
+		if p.Name == "" {
+			p.Name = existing.Name
+		}
+		if p.LastSeen.IsZero() {
+			p.LastSeen = existing.LastSeen
+		}
+		if p.RxBytes == 0 {
+			p.RxBytes = existing.RxBytes
+		}
+		if p.TxBytes == 0 {
+			p.TxBytes = existing.TxBytes
+		}
+		if !p.Direct {
+			p.Direct = existing.Direct
+		}
+		if p.Transport == "" {
+			p.Transport = existing.Transport
+		}
+		if p.RxTransport == "" {
+			p.RxTransport = existing.RxTransport
+		}
+	}
+	if t.overlayConflictLocked(p.ID, p.OverlayV4, p.OverlayV6) {
+		return fmt.Errorf("peer: overlay address is already assigned to another peer")
 	}
 	if p.Added.IsZero() {
 		p.Added = time.Now()
@@ -125,6 +156,7 @@ func (t *Table) Upsert(p Peer) error {
 		clone.State = StateDown
 	}
 	t.peers[p.ID] = &clone
+	t.reindexLocked(p.ID)
 	return nil
 }
 
@@ -132,7 +164,31 @@ func (t *Table) Upsert(p Peer) error {
 func (t *Table) Remove(id uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	for addr, pid := range t.byOverlay {
+		if pid == id {
+			delete(t.byOverlay, addr)
+		}
+	}
 	delete(t.peers, id)
+}
+
+// reindexLocked refreshes the overlay index for one peer.
+func (t *Table) reindexLocked(id uint64) {
+	for addr, pid := range t.byOverlay {
+		if pid == id {
+			delete(t.byOverlay, addr)
+		}
+	}
+	p, ok := t.peers[id]
+	if !ok {
+		return
+	}
+	if p.OverlayV4.IsValid() {
+		t.byOverlay[p.OverlayV4] = id
+	}
+	if p.OverlayV6.IsValid() {
+		t.byOverlay[p.OverlayV6] = id
+	}
 }
 
 // Get returns a copy of one peer.
@@ -158,6 +214,43 @@ func (t *Table) List() []Peer {
 	return out
 }
 
+// Exists reports whether id is a known peer.
+func (t *Table) Exists(id uint64) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.peers[id]
+	return ok
+}
+
+// ByAddr maps an underlay endpoint to a peer without copying the table.
+func (t *Table) ByAddr(addr netip.AddrPort) (uint64, bool) {
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for id, p := range t.peers {
+		if p.ActiveEndpoint == addr {
+			return id, true
+		}
+		for _, c := range p.Candidates {
+			if c.Addr == addr {
+				return id, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// Overlay returns a peer's overlay addresses without copying the full record.
+func (t *Table) Overlay(id uint64) (v4, v6 netip.Addr, ok bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	p, ok := t.peers[id]
+	if !ok {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	return p.OverlayV4, p.OverlayV6, true
+}
+
 // Len reports the number of peers.
 func (t *Table) Len() int {
 	t.mu.RLock()
@@ -165,16 +258,29 @@ func (t *Table) Len() int {
 	return len(t.peers)
 }
 
-// LookupOverlay maps an overlay address to a peer ID.
+// LookupOverlay maps an overlay address to a peer ID. The index is unique by
+// construction, so an address can never resolve to two peers.
 func (t *Table) LookupOverlay(addr netip.Addr) (uint64, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	for id, p := range t.peers {
-		if (p.OverlayV4.IsValid() && p.OverlayV4 == addr) || (p.OverlayV6.IsValid() && p.OverlayV6 == addr) {
-			return id, true
+	id, ok := t.byOverlay[addr]
+	return id, ok
+}
+
+// overlayConflictLocked reports whether v4 or v6 already belongs to another
+// peer. The caller must hold the write lock.
+func (t *Table) overlayConflictLocked(id uint64, v4, v6 netip.Addr) bool {
+	if v4.IsValid() {
+		if pid, ok := t.byOverlay[v4]; ok && pid != id {
+			return true
 		}
 	}
-	return 0, false
+	if v6.IsValid() {
+		if pid, ok := t.byOverlay[v6]; ok && pid != id {
+			return true
+		}
+	}
+	return false
 }
 
 // AddCandidate merges one candidate endpoint, keeping the strongest provenance.
@@ -240,11 +346,13 @@ func (t *Table) SetOverlay(id uint64, v4, v6 netip.Addr) {
 	if !ok {
 		return
 	}
-	if v4.IsValid() && !p.OverlayV4.IsValid() {
+	if v4.IsValid() && !p.OverlayV4.IsValid() && !t.overlayConflictLocked(id, v4, netip.Addr{}) {
 		p.OverlayV4 = v4
+		t.byOverlay[v4] = id
 	}
-	if v6.IsValid() && !p.OverlayV6.IsValid() {
+	if v6.IsValid() && !p.OverlayV6.IsValid() && !t.overlayConflictLocked(id, netip.Addr{}, v6) {
 		p.OverlayV6 = v6
+		t.byOverlay[v6] = id
 	}
 }
 
@@ -257,11 +365,13 @@ func (t *Table) UpdateOverlay(id uint64, v4, v6 netip.Addr) {
 	if !ok {
 		return
 	}
-	if v4.IsValid() {
+	if v4.IsValid() && !t.overlayConflictLocked(id, v4, netip.Addr{}) {
 		p.OverlayV4 = v4
+		t.reindexLocked(id)
 	}
-	if v6.IsValid() {
+	if v6.IsValid() && !t.overlayConflictLocked(id, netip.Addr{}, v6) {
 		p.OverlayV6 = v6
+		t.reindexLocked(id)
 	}
 }
 

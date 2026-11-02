@@ -18,6 +18,14 @@ func install(executable, configPath string) error {
 	if !strings.HasPrefix(configPath, "/") {
 		return fmt.Errorf("service: config path must be absolute, got %q", configPath)
 	}
+	execArg, err := unitArg(executable)
+	if err != nil {
+		return err
+	}
+	cfgArg, err := unitArg(configPath)
+	if err != nil {
+		return err
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Skein mesh VPN
 After=network-online.target
@@ -30,7 +38,7 @@ RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-`, executable, configPath)
+`, execArg, cfgArg)
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return err
 	}
@@ -55,4 +63,14 @@ func uninstall() error {
 		return fmt.Errorf("service: daemon-reload: %w: %s", err, out)
 	}
 	return nil
+}
+
+// unitArg quotes one systemd ExecStart argument and rejects control characters
+// that would inject unit directives.
+func unitArg(s string) (string, error) {
+	if strings.ContainsAny(s, "\r\n\x00") {
+		return "", fmt.Errorf("service: path %q contains a control character", s)
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`).Replace(s)
+	return `"` + escaped + `"`, nil
 }

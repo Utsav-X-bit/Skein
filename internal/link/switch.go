@@ -20,8 +20,9 @@ type Switch struct {
 
 	// forced marks addresses the fallback was explicitly dialed for. UDP
 	// frames from an address clear it: a working UDP path always wins.
-	mu     sync.Mutex
-	forced map[netip.Addr]bool
+	mu      sync.Mutex
+	forced  map[netip.Addr]bool
+	dialing map[netip.Addr]bool
 }
 
 // Listen binds UDP and, when possible, TCP on the same port.
@@ -43,6 +44,7 @@ func Listen(port uint16) (*Switch, error) {
 		packets: make(chan received, 256),
 		closed:  make(chan struct{}),
 		forced:  make(map[netip.Addr]bool),
+		dialing: make(map[netip.Addr]bool),
 	}
 	s.wg.Add(1)
 	go s.readUDP()
@@ -59,6 +61,9 @@ func (s *Switch) readUDP() {
 	for {
 		n, from, err := s.udp.Recv(buf)
 		if err != nil {
+			if errors.Is(err, ErrTruncated) {
+				continue
+			}
 			select {
 			case <-s.closed:
 				return
@@ -88,6 +93,9 @@ func (s *Switch) readTCP() {
 	for {
 		n, from, err := s.tcp.Recv(buf)
 		if err != nil {
+			if errors.Is(err, ErrTruncated) {
+				continue
+			}
 			select {
 			case <-s.closed:
 				return
@@ -123,13 +131,26 @@ func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	if s.tcp == nil {
 		return udpErr
 	}
-	if err := s.tcp.Dial(addr); err != nil {
-		return udpErr
-	}
+	// Never block the packet loop on a 3 s TCP dial: start one in the
+	// background and drop this frame; later frames use the stream.
 	s.mu.Lock()
-	s.forced[addr.Addr()] = true
+	if !s.dialing[addr.Addr()] {
+		s.dialing[addr.Addr()] = true
+		go func() {
+			defer func() {
+				s.mu.Lock()
+				delete(s.dialing, addr.Addr())
+				s.mu.Unlock()
+			}()
+			if err := s.tcp.Dial(addr); err == nil {
+				s.mu.Lock()
+				s.forced[addr.Addr()] = true
+				s.mu.Unlock()
+			}
+		}()
+	}
 	s.mu.Unlock()
-	return s.tcp.Send(addr, payload)
+	return udpErr
 }
 
 // DialTCP opens a fallback connection to addr.
@@ -137,6 +158,7 @@ func (s *Switch) DialTCP(addr netip.AddrPort) error {
 	if s.tcp == nil {
 		return errTCPDisabled
 	}
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 	if err := s.tcp.Dial(addr); err != nil {
 		return err
 	}
@@ -148,7 +170,11 @@ func (s *Switch) DialTCP(addr netip.AddrPort) error {
 
 // TransportFor reports which transport a connection to addr uses.
 func (s *Switch) TransportFor(addr netip.AddrPort) string {
-	if s.tcp != nil && s.tcp.HasConn(addr) {
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	s.mu.Lock()
+	forced := s.forced[addr.Addr()]
+	s.mu.Unlock()
+	if forced && s.tcp != nil && s.tcp.HasConn(addr) {
 		return "tcp"
 	}
 	return "udp"
