@@ -197,3 +197,45 @@ func TestDisplayNameLocalizesKnownIDs(t *testing.T) {
 		t.Fatalf("empty = %q", got)
 	}
 }
+
+func TestLocalNodeUsesTheBrandColor(t *testing.T) {
+	d := coloredDashboard()
+	v := view{
+		st:     statusDTO{ID: "local", Name: "XD_OD", OverlayIPv4: "10.144.144.1"},
+		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up"}},
+		routes: []routeDTO{{Destination: "p", NextHop: "p", Hops: 1}},
+	}
+	lane := strings.Join(d.renderRouteMap(v, 80, 9), "\n")
+	if !strings.Contains(lane, "\x1b["+ansiBrand+"mXD_OD") {
+		t.Fatalf("lane does not brand the local name:\n%q", lane)
+	}
+	routes := strings.Join(d.renderRoutes(v, 80, 2), "\n")
+	if !strings.Contains(routes, "\x1b["+ansiBrand+"mXD_OD") {
+		t.Fatalf("routes do not brand the local name:\n%q", routes)
+	}
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, RxBytes: 10, ExpiresMS: 1 << 62}}
+	activity := strings.Join(d.renderActivity(v, 80, 2), "\n")
+	if !strings.Contains(activity, "\x1b["+ansiBrand+"mXD_OD") {
+		t.Fatalf("activity does not brand the local name:\n%q", activity)
+	}
+}
+
+func TestActivePeersAreHighlighted(t *testing.T) {
+	d := coloredDashboard()
+	v := view{
+		st:    statusDTO{ID: "local", Name: "XD_OD"},
+		peers: []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}},
+		rates: map[string]rate{"a": {rx: 100, tx: 50}},
+	}
+	rows := strings.Join(d.renderPeers(v, 80, 4), "\n")
+	if !strings.Contains(rows, "\x1b["+ansiOut+"m●") {
+		t.Fatalf("active peer has no traffic marker:\n%q", rows)
+	}
+	if strings.Count(rows, "●") != 1 {
+		t.Fatalf("idle peer is marked active:\n%q", rows)
+	}
+	narrow := strings.Join(d.renderPeers(v, 40, 6), "\n")
+	if !strings.Contains(narrow, "\x1b["+ansiOut+"malpha") {
+		t.Fatalf("active peer name is not highlighted in a narrow card:\n%q", narrow)
+	}
+}

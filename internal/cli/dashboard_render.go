@@ -286,6 +286,24 @@ func selectedPeer(v view) (peerDTO, bool) {
 	return peers[0], true
 }
 
+// peerActive reports recent traffic with a peer, from local rates or a fresh
+// remote activity sample.
+func peerActive(v view, id string) bool {
+	if r := v.rates[id]; r.rx+r.tx > 32 {
+		return true
+	}
+	now := time.Now().UnixMilli()
+	for _, a := range v.activities {
+		if a.ExpiresMS <= now || a.RxBytes+a.TxBytes == 0 {
+			continue
+		}
+		if a.Origin == id || a.Destination == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *dashboard) renderPeers(v view, width, limit int) []string {
 	if len(v.peers) == 0 {
 		return []string{d.line(" no peers yet — run `skein join` with a shared invite", width)}
@@ -317,6 +335,11 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 		if p.ID == v.ui.selected || (v.ui.selected == "" && i == 0) {
 			mark = d.paint(ansiBrand, ">")
 		}
+		active := peerActive(v, p.ID)
+		dot := " "
+		if active {
+			dot = d.paint(ansiOut, "●")
+		}
 		m := v.metrics[p.ID]
 		rtt := "—"
 		value := m.rtt
@@ -335,8 +358,12 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 		if width < 64 {
 			// The overlay identifies the peer; the full endpoint stays in
 			// the inspector when the card is too narrow for both.
-			fields := compactFields(name, state, transport, dash(p.OverlayIPv4), fmt.Sprintf("↓%s ↑%s · %s", humanRate(m.rx), humanRate(m.tx), rtt), width)
-			fields[0] = mark + strings.TrimPrefix(fields[0], " ")
+			nameText := name
+			if active {
+				nameText = d.paint(ansiOut, name)
+			}
+			fields := compactFields(nameText, state, transport, dash(p.OverlayIPv4), fmt.Sprintf("↓%s ↑%s · %s", humanRate(m.rx), humanRate(m.tx), rtt), width)
+			fields[0] = mark + dot + strings.TrimPrefix(fields[0], " ")
 			for _, line := range fields {
 				if len(lines) >= limit {
 					break
@@ -346,7 +373,7 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 			continue
 		}
 		overlay := dash(p.OverlayIPv4)
-		lines = append(lines, d.line(fmt.Sprintf("%s %-13s %-15s %-9s %5s ↓%-8s ↑%-8s", mark, clip(name, 13), overlay, state, rtt, humanRate(m.rx), humanRate(m.tx)), width))
+		lines = append(lines, d.line(fmt.Sprintf("%s%s %-13s %-15s %-9s %5s ↓%-8s ↑%-8s", mark, dot, clip(name, 13), overlay, state, rtt, humanRate(m.rx), humanRate(m.tx)), width))
 	}
 	return lines
 }
@@ -465,7 +492,11 @@ func (d *dashboard) renderRoutes(v view, width, limit int) []string {
 		}
 		labels := make([]string, 0, len(path))
 		for _, id := range path {
-			labels = append(labels, d.displayName(v, id))
+			label := d.displayName(v, id)
+			if id == v.st.ID {
+				label = d.paint(ansiBrand, label)
+			}
+			labels = append(labels, label)
 		}
 		mark := " "
 		if r.Destination == v.ui.routeSel || (v.ui.routeSel == "" && len(lines) == 0) {
@@ -608,7 +639,14 @@ func (d *dashboard) renderActivity(v view, width, limit int) []string {
 		case row.tx > 0:
 			rate = "↑" + d.paint(ansiOut, humanRate(row.tx))
 		}
-		line := fmt.Sprintf("%s %s %s %s  %s  %s", mark, row.from, d.paint(arrow, "→"), row.to, rate, d.paint(rttColorFor(row.rtt), fmt.Sprintf("%.1f ms", row.rtt)))
+		from, to := row.from, row.to
+		if from == localNameOf(v.st) {
+			from = d.paint(ansiBrand, from)
+		}
+		if to == localNameOf(v.st) {
+			to = d.paint(ansiBrand, to)
+		}
+		line := fmt.Sprintf("%s %s %s %s  %s  %s", mark, from, d.paint(arrow, "→"), to, rate, d.paint(rttColorFor(row.rtt), fmt.Sprintf("%.1f ms", row.rtt)))
 		lines = append(lines, d.line(line, width))
 	}
 	if len(lines) == 0 {
@@ -713,12 +751,19 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 				glyph = "O"
 			}
 		}
+		if id != "me" && peerActive(v, id) && id != v.ui.selected {
+			col = ansiOut
+		}
 		c.text(p.x, p.y, glyph, col)
 		labelX := p.x + 2
 		if labelX+visibleWidth(p.name) > width {
 			labelX = p.x - visibleWidth(p.name) - 1
 		}
-		c.text(max(0, labelX), p.y, p.name, ansiWhite)
+		labelColor := ansiWhite
+		if id == "me" {
+			labelColor = ansiBrand
+		}
+		c.text(max(0, labelX), p.y, p.name, labelColor)
 	}
 	if len(edges) == 0 {
 		c.text(max(0, cx-10), cy+1, "waiting for routes", ansiDim)
@@ -763,9 +808,15 @@ func (d *dashboard) renderLinkLane(v view, p peerDTO, width, height int) []strin
 	}
 	c.line(laneStart, cy, laneEnd, cy, lineGlyph, lineColor)
 	c.text(left, cy, "◆", ansiCyan)
-	c.text(left+2, cy, local, ansiWhite)
-	c.text(labelX, cy, nodeGlyph, stateColor(p.State))
-	c.text(labelX+2, cy, name, ansiWhite)
+	c.text(left+2, cy, local, ansiBrand)
+	nodeColor := stateColor(p.State)
+	nameColor := ansiWhite
+	if peerActive(v, p.ID) {
+		nodeColor = ansiOut
+		nameColor = ansiOut
+	}
+	c.text(labelX, cy, nodeGlyph, nodeColor)
+	c.text(labelX+2, cy, name, nameColor)
 
 	rtt := p.RTTMs
 	if m, ok := v.metrics[p.ID]; ok && m.rtt > 0 {
