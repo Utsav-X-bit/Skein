@@ -489,3 +489,15 @@ func TestSetupReportsAMissingInterfaceAsPartialSuccess(t *testing.T) {
 		t.Fatal("a real failure should be returned")
 	}
 }
+
+func TestLoadConfigMissingExplainsBothPaths(t *testing.T) {
+	_, err := loadConfig(filepath.Join(t.TempDir(), "missing.toml"))
+	if err == nil {
+		t.Fatal("missing config was accepted")
+	}
+	for _, want := range []string{"skein init", "-c", "ExecStart"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q lacks %q", err, want)
+		}
+	}
+}

@@ -242,7 +242,10 @@ func loadConfig(path string) (conf.Config, error) {
 			// cannot read; hand the whole directory back to them.
 			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown -R $(id -u):$(id -g) %s", path, filepath.Dir(path))
 		}
-		return conf.Config{}, fmt.Errorf("load %s (run `skein init` first): %w", path, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return conf.Config{}, fmt.Errorf("load %s: config not found\n  new node: run `skein init`\n  existing daemon: pass its config with -c (find it with: systemctl cat skein | grep ExecStart, or pgrep -af 'skein(d)? run')", path)
+		}
+		return conf.Config{}, fmt.Errorf("load %s: %w", path, err)
 	}
 	return cfg, nil
 }
