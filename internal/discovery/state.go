@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/activity"
@@ -428,6 +429,7 @@ type Merger struct {
 	OnPeer     func(id uint64, publicKey []byte) error
 	OnActivity func(origin, seq uint64, records []activity.Record, expires time.Time)
 
+	mu  sync.Mutex
 	seq map[uint64]uint64
 }
 
@@ -448,6 +450,8 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 	if s.Expires.Before(m.now()) {
 		return errors.New("discovery: state is expired")
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if last, ok := m.seq[from]; ok && s.Seq <= last {
 		return fmt.Errorf("discovery: stale state sequence %d from %016x", s.Seq, from)
 	}
@@ -507,6 +511,16 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		m.OnActivity(s.Origin, s.Seq, records, s.Expires)
 	}
 	return nil
+}
+
+// Reset forgets a peer's STATE sequence after a new authenticated session is
+// established. A restarted daemon begins its controller sequence at one; its
+// state must be accepted on the new session rather than held behind a sequence
+// value from the peer's previous session.
+func (m *Merger) Reset(origin uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.seq, origin)
 }
 
 // validateName mirrors the configuration rule for node names.

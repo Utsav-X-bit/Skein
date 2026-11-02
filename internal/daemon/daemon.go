@@ -275,6 +275,9 @@ func (d *Daemon) persistPeers() {
 }
 
 func (d *Daemon) sessionEstablished(peerID uint64) {
+	// STATE sequence counters are process-local. A newly authenticated session
+	// can therefore belong to a restarted peer whose next state starts at one.
+	d.merger.Reset(peerID)
 	d.emit(api.Event{Type: "peer_up", PeerID: fmt.Sprintf("%016x", peerID)})
 }
 

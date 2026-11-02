@@ -253,6 +253,67 @@ func TestMergerRejectsSpoofedAndStaleState(t *testing.T) {
 	}
 }
 
+func TestMergerAcceptsFreshStateAfterOriginSessionRestart(t *testing.T) {
+	local := testIdentity(t)
+	origin := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	if err := peers.Upsert(peer.Peer{
+		ID:        origin.ID,
+		PublicKey: origin.PublicKey,
+		OverlayV4: netip.MustParseAddr("10.144.144.2"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := routes.UpdateDirect(route.DirectLink{PeerID: origin.ID, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	m := NewMerger(local.ID, peers, routes)
+
+	oldState, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     42,
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{
+			ID: origin.ID, PublicKey: origin.PublicKey,
+			OverlayV4: netip.MustParseAddr("10.144.144.2"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Merge(origin.ID, oldState); err != nil {
+		t.Fatalf("initial Merge: %v", err)
+	}
+
+	restartedState, err := Encode(State{
+		Origin:  origin.ID,
+		Seq:     1, // A daemon restart resets its controller sequence.
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{
+			ID: origin.ID, PublicKey: origin.PublicKey,
+			OverlayV4: netip.MustParseAddr("10.144.144.241"),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Merge(origin.ID, restartedState); err == nil {
+		t.Fatal("expected lower state sequence to be rejected before a new session")
+	}
+
+	// A fresh authenticated session proves the peer has restarted, so its new
+	// state sequence is authoritative rather than a replay from the old session.
+	m.Reset(origin.ID)
+	if err := m.Merge(origin.ID, restartedState); err != nil {
+		t.Fatalf("Merge after session restart: %v", err)
+	}
+	p, ok := peers.Get(origin.ID)
+	if !ok || p.OverlayV4 != netip.MustParseAddr("10.144.144.241") {
+		t.Fatalf("origin overlay was not corrected after restart: %+v", p)
+	}
+}
+
 func TestMDNSTXTRoundTrip(t *testing.T) {
 	id := testIdentity(t)
 	inv := identity.Invite{
