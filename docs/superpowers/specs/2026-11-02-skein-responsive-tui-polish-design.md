@@ -1,7 +1,7 @@
 # Skein Responsive TUI Polish Design
 
 **Date:** 2026-11-02  
-**Status:** Approved for specification; implementation pending review  
+**Status:** Implemented 2026-11-02.  
 **Scope:** `skein dashboard` rendering, input state, responsive composition,
 and local presentation of authenticated activity data.
 

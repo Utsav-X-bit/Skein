@@ -137,7 +137,7 @@ func TestMeshRendersNodesLinksAndPulses(t *testing.T) {
 		frame:  4,
 	}
 	out := strings.Join(d.build(v, 110), "\n")
-	for _, want := range []string{"MESH", "◆", "me", "yoga", "10.144.144.2"} {
+	for _, want := range []string{"MESH", "◆", "ME", "yoga", "10.144.144.2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("mesh is missing %q:\n%s", want, out)
 		}
@@ -208,8 +208,12 @@ func TestDashboardKeysOnlyChangeDashboardState(t *testing.T) {
 	d := testDashboard()
 	d.peers = []peerDTO{{ID: "a", State: "up"}, {ID: "b", State: "up"}}
 	d.handleKey('j')
+	if d.ui.selected != "a" {
+		t.Fatalf("first j selected = %q", d.ui.selected)
+	}
+	d.handleKey('j')
 	if d.ui.selected != "b" {
-		t.Fatalf("j selected = %q", d.ui.selected)
+		t.Fatalf("second j selected = %q", d.ui.selected)
 	}
 	d.handleKey('k')
 	if d.ui.selected != "a" {
@@ -272,7 +276,7 @@ func TestWideLayoutAllocatesARealMapColumn(t *testing.T) {
 	if l.mode != modeWide {
 		t.Fatalf("mode = %v", l.mode)
 	}
-	mesh, peers, inspector := l.rects[focusMesh], l.rects[focusPeers], l.rects[focusOverview]
+	mesh, peers, inspector := l.rects[focusMap], l.rects[focusPeers], l.rects[focusOverview]
 	if mesh.w < 70 || mesh.h < 28 {
 		t.Fatalf("wide mesh is not given the available space: %+v", mesh)
 	}
