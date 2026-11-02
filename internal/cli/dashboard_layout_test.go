@@ -231,11 +231,13 @@ func TestCompactPeerRowKeepsTheOverlayIP(t *testing.T) {
 		st:    statusDTO{ID: "local"},
 		peers: []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", OverlayIPv4: "10.144.144.241"}},
 	}
-	out := strings.Join(d.renderPeers(v, 40, 4), "\n")
-	if !strings.Contains(out, "10.144.144.241") {
-		t.Fatalf("overlay address was clipped:\n%s", out)
-	}
-	if strings.Contains(out, "…") {
-		t.Fatalf("compact row still ellipsizes:\n%s", out)
+	for _, width := range []int{40, 24} {
+		out := strings.Join(d.renderPeers(v, width, 4), "\n")
+		if !strings.Contains(out, "10.144.144.241") {
+			t.Fatalf("%d-col row clipped the overlay address:\n%s", width, out)
+		}
+		if strings.Contains(out, "…") {
+			t.Fatalf("%d-col compact row ellipsizes:\n%s", width, out)
+		}
 	}
 }

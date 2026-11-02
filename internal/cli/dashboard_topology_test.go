@@ -239,3 +239,32 @@ func TestActivePeersAreHighlighted(t *testing.T) {
 		t.Fatalf("active peer name is not highlighted in a narrow card:\n%q", narrow)
 	}
 }
+
+func TestMeshSubstantiatesRemotePeerLinks(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st: statusDTO{ID: "local"},
+		peers: []peerDTO{
+			{ID: "a", Name: "alpha", State: "up"},
+			{ID: "b", Name: "bravo", State: "up"},
+			{ID: "c", Name: "charlie", State: "up"},
+		},
+		activities: []activityDTO{
+			{Origin: "a", Destination: "b", Path: []string{"b"}, TxBytes: 10, ExpiresMS: 1 << 62},
+			{Origin: "b", Destination: "c", Path: []string{"c"}, TxBytes: 10, ExpiresMS: 1 << 62},
+		},
+	}
+	edges := d.topologyEdges(v)
+	if !edges[mapEdge{"a", "b"}] || !edges[mapEdge{"b", "c"}] {
+		t.Fatalf("remote links missing: %+v", edges)
+	}
+	if edges[mapEdge{"a", "c"}] {
+		t.Fatalf("fabricated an a↔c edge: %+v", edges)
+	}
+	out := strings.Join(d.renderRouteMap(v, 120, 20), "\n")
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("mesh is missing %q:\n%s", name, out)
+		}
+	}
+}

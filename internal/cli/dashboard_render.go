@@ -456,30 +456,13 @@ func (d *dashboard) inspectorFields(v view) []string {
 		latency = fmt.Sprintf("%.1f ms (%.1f–%.1f, jitter %.1f)", rtt, minRTT, maxRTT, m.jitter)
 		rttPaint = rttColorFor(rtt)
 	}
-	fields := []string{
+	return []string{
 		fmt.Sprintf("%s · %s %s · %s", name, d.paint(stateColor(p.State), p.State), link, d.paint(ansiSlate, transport)),
 		"endpoint " + d.paint(ansiWhite, dash(p.Endpoint)),
 		fmt.Sprintf("RX %s  TX %s  peak %s", d.paint(ansiIn, humanRate(maxRate(m.rx, r.rx))), d.paint(ansiOut, humanRate(maxRate(m.tx, r.tx))), humanRate(maxRate(m.peak, r.rx+r.tx))),
 		"RTT " + d.paint(rttPaint, latency),
 		"last seen " + lastSeen(p.LastSeenMS),
 	}
-	if hint := d.expandHint(v); hint != "" {
-		fields = append(fields, hint)
-	}
-	return fields
-}
-
-// expandHint names the current expansion control; compact decks already fill
-// the screen, so they need none.
-func (d *dashboard) expandHint(v view) string {
-	switch d.currentMode() {
-	case modeShort, modeCompact:
-		return ""
-	}
-	if v.ui.expanded {
-		return "ESC back"
-	}
-	return "ENTER expand"
 }
 
 // renderInspector wraps every field, so a narrow card shows the whole
@@ -740,37 +723,15 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		points[p.ID] = point{cx + int(math.Round(float64(rx)*math.Cos(a))), cy + int(math.Round(float64(ry)*math.Sin(a))), p.ID, trunc(d.displayName(v, p.ID), 10)}
 	}
 
-	type edge struct{ from, to string }
-	edges := map[edge]bool{}
-	routeEdges := map[edge]bool{}
+	edges := d.topologyEdges(v)
+	routeEdges := map[mapEdge]bool{}
 	if v.ui.focus == focusRoutes {
 		if r, ok := selectedRoute(v); ok {
 			path := d.routePath(v, r)
 			for i := 1; i < len(path); i++ {
-				routeEdges[edge{path[i-1], path[i]}] = true
+				routeEdges[mapEdge{path[i-1], path[i]}] = true
 			}
 		}
-	}
-	addPath := func(path []string, into map[edge]bool) {
-		for i := 1; i < len(path); i++ {
-			from, to := path[i-1], path[i]
-			if from == to {
-				continue
-			}
-			if _, ok := points[from]; !ok {
-				continue
-			}
-			if _, ok := points[to]; !ok {
-				continue
-			}
-			into[edge{from, to}] = true
-		}
-	}
-	for _, r := range v.routes {
-		addPath(d.routePath(v, r), edges)
-	}
-	for _, a := range freshActivitiesFrom(v.activities, time.Now().UnixMilli()) {
-		addPath(d.activityPath(v, a), edges)
 	}
 
 	for e := range edges {
@@ -1043,4 +1004,35 @@ func easeOut(t float64) float64 {
 		return 1
 	}
 	return 1 - math.Pow(1-t, 3)
+}
+
+// mapEdge is one substantiated link between "me" and a peer, or between two
+// peers reported by the mesh.
+type mapEdge struct{ from, to string }
+
+// topologyEdges returns the node pairs that route paths and fresh activity
+// actually substantiate. Unknown nodes are ignored, so the map never invents
+// an edge.
+func (d *dashboard) topologyEdges(v view) map[mapEdge]bool {
+	known := map[string]bool{"me": true}
+	for _, p := range v.peers {
+		known[p.ID] = true
+	}
+	edges := map[mapEdge]bool{}
+	addPath := func(path []string) {
+		for i := 1; i < len(path); i++ {
+			from, to := path[i-1], path[i]
+			if from == to || !known[from] || !known[to] {
+				continue
+			}
+			edges[mapEdge{from, to}] = true
+		}
+	}
+	for _, r := range v.routes {
+		addPath(d.routePath(v, r))
+	}
+	for _, a := range freshActivitiesFrom(v.activities, time.Now().UnixMilli()) {
+		addPath(d.activityPath(v, a))
+	}
+	return edges
 }

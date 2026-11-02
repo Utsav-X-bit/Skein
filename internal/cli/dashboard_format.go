@@ -112,12 +112,21 @@ func stripANSI(s string) string {
 // compactFields renders a peer as two short lines for narrow cards: identity
 // and link state first, measurements second.
 func compactFields(name, state, transport, endpoint, rateLine string, width int) []string {
-	line1 := " " + name + " · " + state
-	if transport != "" {
-		line1 += " " + transport
+	line1 := " " + name
+	if state != "" {
+		line1 += " · " + state
+		if transport != "" {
+			line1 += " " + transport
+		}
 	}
-	if visibleWidth(line1)+1+visibleWidth(endpoint) <= width {
-		line1 += " " + endpoint
+	if endpoint != "" {
+		if visibleWidth(line1)+1+visibleWidth(endpoint) <= width {
+			line1 += " " + endpoint
+		} else if minimal := " " + name + " " + endpoint; visibleWidth(minimal) <= width {
+			// The address identifies the peer; drop state and transport
+			// before dropping the address.
+			line1 = minimal
+		}
 	}
 	return []string{fit(line1, width), fit(" "+rateLine, width)}
 }
