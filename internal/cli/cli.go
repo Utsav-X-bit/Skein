@@ -777,6 +777,7 @@ func (c *client) print(ctx context.Context, path string, jsonOut bool, w io.Writ
 
 type statusDTO struct {
 	ID            string `json:"id"`
+	Name          string `json:"name"`
 	OverlayIPv4   string `json:"overlay_ipv4"`
 	OverlayIPv6   string `json:"overlay_ipv6"`
 	UptimeSeconds int64  `json:"uptime_seconds"`

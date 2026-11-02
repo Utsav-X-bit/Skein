@@ -431,6 +431,7 @@ func (d *Daemon) Status() api.Status {
 	snap := d.eng.Counters()
 	st := api.Status{
 		ID:            fmt.Sprintf("%016x", d.id.ID),
+		Name:          d.ctl.LocalName(),
 		OverlayIPv4:   d.cfg.Node.OverlayIPv4.String(),
 		UptimeSeconds: int64(time.Since(d.start).Seconds()),
 		Version:       version.Info(),

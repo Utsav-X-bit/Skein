@@ -104,6 +104,13 @@ func (c *Controller) SetLocalCandidates(cands []netip.AddrPort) {
 	c.local.Candidates = append([]netip.AddrPort(nil), cands...)
 }
 
+// LocalName returns the name currently advertised in STATE.
+func (c *Controller) LocalName() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.local.Name
+}
+
 // SetLocalName changes the name advertised in STATE without a restart.
 func (c *Controller) SetLocalName(name string) {
 	c.mu.Lock()

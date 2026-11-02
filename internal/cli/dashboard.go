@@ -43,9 +43,9 @@ const (
 )
 
 const (
-	// frameInterval is 12.5 fps: enough for smooth motion in a terminal,
-	// cheap enough to leave the CPU alone.
-	frameInterval = 80 * time.Millisecond
+	// frameInterval is 25 fps: a packet crossing a long lane must not jump
+	// several cells per frame.
+	frameInterval = 40 * time.Millisecond
 	pollInterval  = time.Second
 	revealWindow  = 700 * time.Millisecond
 )

@@ -30,6 +30,16 @@ func (d *dashboard) buildSized(v view, width, height int) []string {
 		lines = append(lines, d.renderHelp(width)...)
 		return append(lines, d.footer(v, width, l.mode == modeWide))
 	}
+	if v.ui.inspector {
+		rect := inspectorRect(l, width, height)
+		if l.mode == modeShort {
+			lines = append(lines, d.renderInspector(v, width)...)
+		} else {
+			lines = append(lines, d.focusedCard("SELECTED LINK", d.renderInspector(v, max(1, rect.w-2)), rect, true)...)
+		}
+		lines = append(lines, d.footer(v, width, l.mode == modeWide))
+		return clampLines(lines, height)
+	}
 	if l.mode == modeWide {
 		lines = append(lines, d.renderWide(v, l)...)
 		lines = append(lines, d.footer(v, width, true))
@@ -87,7 +97,11 @@ func (d *dashboard) statusLine(v view, width int) string {
 			down++
 		}
 	}
-	line := fmt.Sprintf(" Skein · %s · %s · %d up", dash(v.st.OverlayIPv4), shortID(v.st.ID), up)
+	line := " Skein"
+	if name := localNameOf(v.st); name != "ME" {
+		line += " · " + name
+	}
+	line += fmt.Sprintf(" · %s · %s · %d up", dash(v.st.OverlayIPv4), shortID(v.st.ID), up)
 	if down > 0 {
 		line += fmt.Sprintf(" · %d down", down)
 	}
@@ -159,17 +173,17 @@ func (d *dashboard) position(v view) string {
 		}
 		return fmt.Sprintf("route %d/%d", index+1, len(v.routes))
 	case focusActivity:
-		items := freshActivitiesFrom(v.activities, time.Now().UnixMilli())
-		if len(items) == 0 {
+		rows := activityRows(v.st.ID, localNameOf(v.st), v.peers, v.activities, time.Now().UnixMilli())
+		if len(rows) == 0 {
 			return "activity 0/0"
 		}
 		index := 0
-		for n, a := range items {
-			if activityKey(a) == v.ui.activitySel {
+		for n, row := range rows {
+			if row.key == v.ui.activitySel {
 				index = n
 			}
 		}
-		return fmt.Sprintf("activity %d/%d", index+1, len(items))
+		return fmt.Sprintf("activity %d/%d", index+1, len(rows))
 	default:
 		if len(v.peers) == 0 {
 			return "peer 0/0"
@@ -337,10 +351,24 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 	return lines
 }
 
-func (d *dashboard) renderInspector(v view, width int) []string {
+func rttColorFor(ms float64) string {
+	switch {
+	case ms <= 0:
+		return ansiSlate
+	case ms < 40:
+		return ansiHealthy
+	case ms < 120:
+		return ansiWarn
+	default:
+		return ansiError
+	}
+}
+
+// inspectorFields returns the selected link's facts without width decisions.
+func (d *dashboard) inspectorFields(v view) []string {
 	p, ok := selectedPeer(v)
 	if !ok {
-		return []string{d.line(" select a peer to inspect speed, latency, and path health", width)}
+		return []string{"select a peer to inspect speed, latency, and path health"}
 	}
 	m := v.metrics[p.ID]
 	r := v.rates[p.ID]
@@ -352,11 +380,9 @@ func (d *dashboard) renderInspector(v view, width int) []string {
 	if transport == "" {
 		transport = "—"
 	}
-	state := p.State
-	if p.Direct {
-		state += " direct"
-	} else {
-		state += " relayed"
+	link := "direct"
+	if !p.Direct {
+		link = "relayed"
 	}
 	rtt := m.rtt
 	if rtt == 0 {
@@ -370,14 +396,30 @@ func (d *dashboard) renderInspector(v view, width int) []string {
 		maxRTT = rtt
 	}
 	latency := "unavailable"
+	rttPaint := ansiSlate
 	if rtt > 0 {
 		latency = fmt.Sprintf("%.1f ms (%.1f–%.1f, jitter %.1f)", rtt, minRTT, maxRTT, m.jitter)
+		rttPaint = rttColorFor(rtt)
 	}
 	return []string{
-		d.line(fmt.Sprintf(" %s · %s · %s · %s", name, state, transport, dash(p.Endpoint)), width),
-		d.line(fmt.Sprintf(" RX %s  TX %s  peak %s  RTT %s", humanRate(maxRate(m.rx, r.rx)), humanRate(maxRate(m.tx, r.tx)), humanRate(maxRate(m.peak, r.rx+r.tx)), latency), width),
-		d.line(" last seen "+lastSeen(p.LastSeenMS)+" · ENTER select · ESC return", width),
+		fmt.Sprintf("%s · %s %s · %s", name, d.paint(stateColor(p.State), p.State), link, d.paint(ansiSlate, transport)),
+		"endpoint " + d.paint(ansiWhite, dash(p.Endpoint)),
+		fmt.Sprintf("RX %s  TX %s  peak %s", d.paint(ansiIn, humanRate(maxRate(m.rx, r.rx))), d.paint(ansiOut, humanRate(maxRate(m.tx, r.tx))), humanRate(maxRate(m.peak, r.rx+r.tx))),
+		"RTT " + d.paint(rttPaint, latency),
+		"last seen " + lastSeen(p.LastSeenMS) + " · ENTER expand · ESC return",
 	}
+}
+
+// renderInspector wraps every field, so a narrow card shows the whole
+// endpoint instead of an ellipsis.
+func (d *dashboard) renderInspector(v view, width int) []string {
+	lines := make([]string, 0, 8)
+	for _, field := range d.inspectorFields(v) {
+		for _, line := range wrapVisible(field, max(1, width-1)) {
+			lines = append(lines, d.line(" "+line, width))
+		}
+	}
+	return lines
 }
 
 func maxRate(a, b float64) float64 {
@@ -414,11 +456,26 @@ func (d *dashboard) renderRoutes(v view, width, limit int) []string {
 		if len(lines) >= limit {
 			break
 		}
-		path := append([]string{"me"}, r.Path...)
+		path := append([]string{v.st.ID}, r.Path...)
 		if len(r.Path) == 0 {
-			path = []string{"me", shortID(r.NextHop), shortID(r.Destination)}
+			path = []string{v.st.ID, r.NextHop, r.Destination}
 		}
-		lines = append(lines, d.line(fmt.Sprintf(" %s  %d hop · %.1f ms", strings.Join(shortPath(path), " → "), r.Hops, r.CostMs), width))
+		if len(path) == 0 || path[len(path)-1] != r.Destination {
+			path = append(path, r.Destination)
+		}
+		labels := make([]string, 0, len(path))
+		for _, id := range path {
+			labels = append(labels, d.displayName(v, id))
+		}
+		mark := " "
+		if r.Destination == v.ui.routeSel || (v.ui.routeSel == "" && len(lines) == 0) {
+			mark = d.paint(ansiBrand, ">")
+		}
+		line := fmt.Sprintf("%s %s  %s · %s", mark,
+			d.paint(ansiWhite, strings.Join(labels, " → ")),
+			d.paint(ansiSlate, fmt.Sprintf("%d hop", r.Hops)),
+			d.paint(rttColorFor(r.CostMs), fmt.Sprintf("%.1f ms", r.CostMs)))
+		lines = append(lines, d.line(line, width))
 	}
 	return lines
 }
@@ -434,56 +491,34 @@ func shortPath(path []string) []string {
 	return out
 }
 
-func (d *dashboard) renderActivity(v view, width, limit int) []string {
-	items := freshActivitiesFrom(v.activities, time.Now().UnixMilli())
-	selectedIndex := 0
-	for i, a := range items {
-		if activityKey(a) == v.ui.activitySel {
-			selectedIndex = i
-		}
-	}
-	start := 0
-	if selectedIndex >= limit {
-		start = selectedIndex - limit + 1
-	}
-	lines := make([]string, 0, limit)
-	for i := start; i < len(items); i++ {
-		a := items[i]
-		if len(lines) >= limit {
-			break
-		}
-		origin := d.displayName(v, a.Origin)
-		dest := d.displayName(v, a.Destination)
-		arrow := ansiSlate
-		switch {
-		case origin == "ME":
-			arrow = ansiOut
-		case dest == "ME":
-			arrow = ansiIn
-		}
-		mark := " "
-		if activityKey(a) == v.ui.activitySel || (v.ui.activitySel == "" && len(lines) == 0) {
-			mark = d.paint(ansiBrand, ">")
-		}
-		line := fmt.Sprintf("%s %s %s %s  ↓%s ↑%s  %.1fms", mark, origin, d.paint(arrow, "→"), dest, humanRate(float64(a.RxBytes)), humanRate(float64(a.TxBytes)), a.RTTMs)
-		lines = append(lines, d.line(line, width))
-	}
-	if len(lines) == 0 {
-		lines = append(lines, d.line(" quiet — no fresh aggregate mesh activity", width))
-	}
-	return lines
+// activityRow is one directional row derived from an aggregate sample. A
+// remote sample about this node yields two rows: what we sent and what we
+// received, so a local ping reads ME → peer.
+type activityRow struct {
+	key    string
+	peerID string
+	from   string
+	to     string
+	rx, tx float64
+	rtt    float64
+	dir    int // +1 outbound, -1 inbound, 0 remote link
 }
 
-// displayName localizes a node ID for display: this node is ME, known peers
-// use their name, and everything else falls back to a short ID.
-func (d *dashboard) displayName(v view, id string) string {
+func localNameOf(st statusDTO) string {
+	if st.Name != "" {
+		return st.Name
+	}
+	return "ME"
+}
+
+func nodeLabel(id, localID, localName string, peers []peerDTO) string {
 	if id == "" {
 		return "—"
 	}
-	if id == v.st.ID {
-		return "ME"
+	if id == localID {
+		return localName
 	}
-	for _, p := range v.peers {
+	for _, p := range peers {
 		if p.ID == id {
 			if p.Name != "" {
 				return p.Name
@@ -492,6 +527,100 @@ func (d *dashboard) displayName(v view, id string) string {
 		}
 	}
 	return shortID(id)
+}
+
+// activityRows localizes samples and splits links involving this node into
+// their outbound and inbound directions.
+func activityRows(localID, localName string, peers []peerDTO, items []activityDTO, nowMS int64) []activityRow {
+	out := make([]activityRow, 0, len(items))
+	for _, a := range freshActivitiesFrom(items, nowMS) {
+		base := activityKey(a)
+		switch {
+		case a.Destination == localID && a.Origin != localID:
+			// The remote peer reported its link to us: RxBytes is what it
+			// received from us (our outbound), TxBytes what it sent.
+			if a.RxBytes > 0 {
+				out = append(out, activityRow{key: base + "|out", peerID: a.Origin, from: localName, to: nodeLabel(a.Origin, localID, localName, peers), tx: float64(a.RxBytes), rtt: a.RTTMs, dir: 1})
+			}
+			if a.TxBytes > 0 {
+				out = append(out, activityRow{key: base + "|in", peerID: a.Origin, from: nodeLabel(a.Origin, localID, localName, peers), to: localName, rx: float64(a.TxBytes), rtt: a.RTTMs, dir: -1})
+			}
+		case a.Origin == localID:
+			out = append(out, activityRow{key: base + "|out", peerID: a.Destination, from: localName, to: nodeLabel(a.Destination, localID, localName, peers), tx: float64(a.TxBytes), rtt: a.RTTMs, dir: 1})
+		default:
+			out = append(out, activityRow{key: base, peerID: a.Destination, from: nodeLabel(a.Origin, localID, localName, peers), to: nodeLabel(a.Destination, localID, localName, peers), rx: float64(a.RxBytes), tx: float64(a.TxBytes), rtt: a.RTTMs})
+		}
+	}
+	return out
+}
+
+func (d *dashboard) activityRowsFor(v view) []activityRow {
+	return activityRows(v.st.ID, localNameOf(v.st), v.peers, v.activities, time.Now().UnixMilli())
+}
+
+func selectedActivityRow(rows []activityRow, key string) (activityRow, bool) {
+	if len(rows) == 0 {
+		return activityRow{}, false
+	}
+	for _, row := range rows {
+		if row.key == key {
+			return row, true
+		}
+	}
+	return rows[0], true
+}
+
+func (d *dashboard) renderActivity(v view, width, limit int) []string {
+	rows := d.activityRowsFor(v)
+	selectedIndex := 0
+	for i, row := range rows {
+		if row.key == v.ui.activitySel {
+			selectedIndex = i
+		}
+	}
+	start := 0
+	if selectedIndex >= limit {
+		start = selectedIndex - limit + 1
+	}
+	lines := make([]string, 0, limit)
+	for i := start; i < len(rows); i++ {
+		if len(lines) >= limit {
+			break
+		}
+		row := rows[i]
+		mark := " "
+		if row.key == v.ui.activitySel || (v.ui.activitySel == "" && len(lines) == 0) {
+			mark = d.paint(ansiBrand, ">")
+		}
+		arrow := ansiSlate
+		switch row.dir {
+		case 1:
+			arrow = ansiOut
+		case -1:
+			arrow = ansiIn
+		}
+		rate := "—"
+		switch {
+		case row.rx > 0 && row.tx > 0:
+			rate = "↓" + d.paint(ansiIn, humanRate(row.rx)) + " ↑" + d.paint(ansiOut, humanRate(row.tx))
+		case row.rx > 0:
+			rate = "↓" + d.paint(ansiIn, humanRate(row.rx))
+		case row.tx > 0:
+			rate = "↑" + d.paint(ansiOut, humanRate(row.tx))
+		}
+		line := fmt.Sprintf("%s %s %s %s  %s  %s", mark, row.from, d.paint(arrow, "→"), row.to, rate, d.paint(rttColorFor(row.rtt), fmt.Sprintf("%.1f ms", row.rtt)))
+		lines = append(lines, d.line(line, width))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, d.line(" quiet — no fresh aggregate mesh activity", width))
+	}
+	return lines
+}
+
+// displayName localizes a node ID for display: this node uses its configured
+// name, known peers use theirs, and everything else falls back to a short ID.
+func (d *dashboard) displayName(v view, id string) string {
+	return nodeLabel(id, v.st.ID, localNameOf(v.st), v.peers)
 }
 
 func stateColor(state string) string {
@@ -521,7 +650,7 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		id   string
 		name string
 	}
-	points := map[string]point{"me": {cx, cy, "me", "ME"}}
+	points := map[string]point{"me": {cx, cy, "me", localNameOf(v.st)}}
 	rx, ry := max(8, min(width/2-10, 32)), max(2, min(height/2-1, 4))
 	for i, p := range peers {
 		a := -math.Pi/2 + 2*math.Pi*float64(i)/float64(max(1, len(peers)))
@@ -627,9 +756,14 @@ func (d *dashboard) renderLinkLane(v view, p peerDTO, width, height int) []strin
 	if laneEnd < left+3 {
 		laneEnd = left + 3
 	}
-	c.line(left+3, cy, laneEnd, cy, lineGlyph, lineColor)
+	local := localNameOf(v.st)
+	laneStart := left + 2 + visibleWidth(local) + 1
+	if laneStart > laneEnd {
+		laneStart = laneEnd
+	}
+	c.line(laneStart, cy, laneEnd, cy, lineGlyph, lineColor)
 	c.text(left, cy, "◆", ansiCyan)
-	c.text(left+2, cy, "ME", ansiWhite)
+	c.text(left+2, cy, local, ansiWhite)
 	c.text(labelX, cy, nodeGlyph, stateColor(p.State))
 	c.text(labelX+2, cy, name, ansiWhite)
 
@@ -655,10 +789,10 @@ func (d *dashboard) renderLinkLane(v view, p peerDTO, width, height int) []strin
 	if v.motion && !v.ui.paused {
 		r := v.rates[p.ID]
 		if r.tx > 1 {
-			d.drawPulse(c, left+3, cy, laneEnd, cy, p.ID+"tx", ansiOut, false, v.phase)
+			d.drawPulse(c, laneStart, cy, laneEnd, cy, p.ID+"tx", ansiOut, false, v.phase)
 		}
 		if r.rx > 1 {
-			d.drawPulse(c, laneEnd, cy, left+3, cy, p.ID+"rx", ansiIn, false, v.phase)
+			d.drawPulse(c, laneEnd, cy, laneStart, cy, p.ID+"rx", ansiIn, false, v.phase)
 		}
 	}
 	return c.lines(d.color)
@@ -719,7 +853,9 @@ func (d *dashboard) edgePulses(v view, a, b string) []edgePulse {
 }
 
 func (d *dashboard) drawPulse(c *canvas, x0, y0, x1, y1 int, id, color string, reverse bool, phase float64) {
-	p := math.Mod(phase*(0.8+float64(hashID(id)%3)/3)+float64(hashID(id)%100)/100, 1)
+	// About two seconds per traverse, so each 40 ms frame advances a couple
+	// of cells instead of a visible jump.
+	p := math.Mod(phase*(0.4+float64(hashID(id)%3)*0.1)+float64(hashID(id)%100)/100, 1)
 	if reverse {
 		p = 1 - p
 	}
@@ -775,18 +911,6 @@ func freshActivitiesFrom(items []activityDTO, nowMS int64) []activityDTO {
 	return out
 }
 
-func selectedActivityFrom(items []activityDTO, key string) (activityDTO, bool) {
-	if len(items) == 0 {
-		return activityDTO{}, false
-	}
-	for _, a := range items {
-		if activityKey(a) == key {
-			return a, true
-		}
-	}
-	return items[0], true
-}
-
 func selectedRouteFrom(routes []routeDTO, sel string) (routeDTO, bool) {
 	if len(routes) == 0 {
 		return routeDTO{}, false
@@ -799,10 +923,17 @@ func selectedRouteFrom(routes []routeDTO, sel string) (routeDTO, bool) {
 	return routes[0], true
 }
 
-func selectedActivity(v view) (activityDTO, bool) {
-	return selectedActivityFrom(freshActivitiesFrom(v.activities, time.Now().UnixMilli()), v.ui.activitySel)
-}
-
 func selectedRoute(v view) (routeDTO, bool) {
 	return selectedRouteFrom(v.routes, v.ui.routeSel)
+}
+
+// inspectorRect is the content area the expanded inspector may use.
+func inspectorRect(l dashboardLayout, width, height int) dashboardRect {
+	switch l.mode {
+	case modeShort, modeCompact:
+		return l.body
+	default:
+		y := l.brand.h + l.metrics.h
+		return dashboardRect{y: y, w: width, h: max(0, height-y-l.footer.h)}
+	}
 }

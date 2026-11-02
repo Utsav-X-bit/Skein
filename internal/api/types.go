@@ -4,6 +4,7 @@ package api
 // Status is the node status response.
 type Status struct {
 	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
 	OverlayIPv4   string `json:"overlay_ipv4"`
 	OverlayIPv6   string `json:"overlay_ipv6,omitempty"`
 	UptimeSeconds int64  `json:"uptime_seconds"`

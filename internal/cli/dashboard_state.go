@@ -182,18 +182,19 @@ func (d *dashboard) closeOverlay() {
 // openInspector opens the selected peer's inspector from any peer-oriented
 // panel and remembers where to return with ESC.
 func (d *dashboard) openInspector() {
+	if d.ui.inspector && d.ui.focus == focusOverview {
+		d.ui.inspector = false
+		return
+	}
 	if d.ui.focus == focusRoutes {
 		if r, ok := selectedRouteFrom(d.routes, d.ui.routeSel); ok {
 			d.ui.selected = r.Destination
 		}
 	}
 	if d.ui.focus == focusActivity {
-		if a, ok := selectedActivityFrom(freshActivitiesFrom(d.activities, time.Now().UnixMilli()), d.ui.activitySel); ok {
-			if a.Origin != d.st.ID {
-				d.ui.selected = a.Origin
-			} else {
-				d.ui.selected = a.Destination
-			}
+		rows := activityRows(d.st.ID, localNameOf(d.st), d.peers, d.activities, time.Now().UnixMilli())
+		if row, ok := selectedActivityRow(rows, d.ui.activitySel); ok && row.peerID != "" {
+			d.ui.selected = row.peerID
 		}
 	}
 	if d.ui.selected == "" {
@@ -203,6 +204,7 @@ func (d *dashboard) openInspector() {
 		d.ui.prevFocus = d.ui.focus
 	}
 	d.ui.focus = focusOverview
+	d.ui.help = false
 	d.ui.inspector = true
 }
 
@@ -332,7 +334,11 @@ func resolveLayout(width, height int) dashboardLayout {
 		l.footer = dashboardRect{y: max(0, height-1), w: width, h: 1}
 		contentY := l.brand.h + l.metrics.h
 		contentH := max(0, height-contentY-l.footer.h)
-		left, right, gap := 30, 36, 2
+		// Columns scale with the terminal so a wider window gives the map
+		// the extra room instead of leaving fixed rails.
+		left := min(34, max(26, width/6))
+		right := min(46, max(30, width/5))
+		gap := 2
 		center := width - left - right - 2*gap
 		l.rects[focusPeers] = dashboardRect{x: 0, y: contentY, w: left, h: contentH}
 		l.rects[focusMap] = dashboardRect{x: left + gap, y: contentY, w: center, h: contentH}

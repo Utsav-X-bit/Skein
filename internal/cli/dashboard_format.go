@@ -121,3 +121,42 @@ func compactFields(name, state, transport, endpoint, rateLine string, width int)
 	}
 	return []string{fit(line1, width), fit(" "+rateLine, width)}
 }
+
+// wrapVisible word-wraps s to width visible cells. SGR sequences travel with
+// their word, so wrapped lines keep their color.
+func wrapVisible(s string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	var lines []string
+	var cur strings.Builder
+	curWidth := 0
+	flush := func() {
+		if curWidth > 0 {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			curWidth = 0
+		}
+	}
+	for _, word := range strings.Split(s, " ") {
+		if word == "" {
+			continue
+		}
+		w := visibleWidth(word)
+		switch {
+		case curWidth == 0:
+			cur.WriteString(word)
+			curWidth = w
+		case curWidth+1+w <= width:
+			cur.WriteByte(' ')
+			cur.WriteString(word)
+			curWidth += 1 + w
+		default:
+			flush()
+			cur.WriteString(word)
+			curWidth = w
+		}
+	}
+	flush()
+	return lines
+}

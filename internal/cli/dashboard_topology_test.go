@@ -37,15 +37,88 @@ func TestActivityUsesLocalPerspective(t *testing.T) {
 		st:    statusDTO{ID: "local"},
 		peers: []peerDTO{{ID: "p", Name: "yoga", State: "up"}},
 	}
-	v.activities = []activityDTO{{Origin: "local", Destination: "p", Path: []string{"p"}, TxBytes: 100, ExpiresMS: 1 << 62}}
+	// The remote peer reports what it received from us: our outbound.
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, RxBytes: 100, ExpiresMS: 1 << 62}}
 	out := strings.Join(d.renderActivity(v, 80, 4), "\n")
-	if !strings.Contains(out, "ME → yoga") {
+	if !strings.Contains(out, "ME → yoga") || !strings.Contains(out, "↑") {
 		t.Fatalf("outbound activity is not localized:\n%s", out)
 	}
-	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, RxBytes: 100, ExpiresMS: 1 << 62}}
+	// What it sent to us is inbound.
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, TxBytes: 100, ExpiresMS: 1 << 62}}
 	out = strings.Join(d.renderActivity(v, 80, 4), "\n")
-	if !strings.Contains(out, "yoga → ME") {
+	if !strings.Contains(out, "yoga → ME") || !strings.Contains(out, "↓") {
 		t.Fatalf("inbound activity is not localized:\n%s", out)
+	}
+	// A ping produces both directions.
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, RxBytes: 100, TxBytes: 100, ExpiresMS: 1 << 62}}
+	out = strings.Join(d.renderActivity(v, 80, 4), "\n")
+	if !strings.Contains(out, "ME → yoga") || !strings.Contains(out, "yoga → ME") {
+		t.Fatalf("bidirectional activity missing a direction:\n%s", out)
+	}
+}
+
+func TestLocalNameReplacesME(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st:     statusDTO{ID: "local", Name: "XD_OD", OverlayIPv4: "10.144.144.1"},
+		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up"}},
+		routes: []routeDTO{{Destination: "p", NextHop: "p", Hops: 1}},
+	}
+	out := strings.Join(d.renderRouteMap(v, 80, 9), "\n")
+	if !strings.Contains(out, "XD_OD") || strings.Contains(out, "ME") {
+		t.Fatalf("lane does not use the configured name:\n%s", out)
+	}
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, RxBytes: 10, ExpiresMS: 1 << 62}}
+	rows := strings.Join(d.renderActivity(v, 80, 2), "\n")
+	if !strings.Contains(rows, "XD_OD → yoga") {
+		t.Fatalf("activity does not use the configured name:\n%s", rows)
+	}
+}
+
+func TestInspectorOverlayShowsTheFullEndpoint(t *testing.T) {
+	d := testDashboard()
+	endpoint := "[2406:b400:72:ff06:4bcb:8b68:20e3:a714]:43921"
+	v := view{
+		st:    statusDTO{ID: "local", Name: "XD_OD"},
+		peers: []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", Endpoint: endpoint, RTTMs: 1.2}},
+		ui:    dashboardState{focus: focusOverview, selected: "p", inspector: true},
+	}
+	lines := d.buildSized(v, 160, 45)
+	out := strings.Join(lines, "\n")
+	if !strings.Contains(out, endpoint) {
+		t.Fatalf("expanded inspector truncated the endpoint:\n%s", out)
+	}
+	for _, line := range lines {
+		if visibleWidth(line) > 160 {
+			t.Fatalf("line overflows: %q", line)
+		}
+	}
+}
+
+func TestPanelsUseSemanticColors(t *testing.T) {
+	d := coloredDashboard()
+	v := view{
+		st:     statusDTO{ID: "local", Name: "XD_OD"},
+		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", Direct: true, Endpoint: "10.0.0.2:11010", RTTMs: 8}},
+		routes: []routeDTO{{Destination: "p", NextHop: "p", Hops: 1, CostMs: 8}},
+		rates:  map[string]rate{"p": {rx: 100, tx: 50}},
+		ui:     dashboardState{selected: "p"},
+	}
+	inspector := strings.Join(d.renderInspector(v, 80), "\n")
+	if !strings.Contains(inspector, "\x1b["+ansiHealthy+"m") {
+		t.Fatalf("inspector state is not colored: %q", inspector)
+	}
+	if !strings.Contains(inspector, "\x1b["+ansiIn+"m") || !strings.Contains(inspector, "\x1b["+ansiOut+"m") {
+		t.Fatalf("inspector traffic is not colored: %q", inspector)
+	}
+	routes := strings.Join(d.renderRoutes(v, 80, 3), "\n")
+	if !strings.Contains(routes, "\x1b["+ansiHealthy+"m") {
+		t.Fatalf("route cost is not colored: %q", routes)
+	}
+	v.activities = []activityDTO{{Origin: "p", Destination: "local", Path: []string{"local"}, TxBytes: 100, ExpiresMS: 1 << 62}}
+	activity := strings.Join(d.renderActivity(v, 80, 2), "\n")
+	if !strings.Contains(activity, "\x1b["+ansiIn+"m") {
+		t.Fatalf("activity rate is not colored: %q", activity)
 	}
 }
 
