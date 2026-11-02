@@ -76,6 +76,16 @@ func (t *Table) SetClock(now func() time.Time) {
 	t.now = now
 }
 
+// ResetOrigin forgets advertisements received from a peer. A restarted peer
+// begins its STATE sequence at one, so the old per-destination sequences must
+// not reject the new advertisements.
+func (t *Table) ResetOrigin(from uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.advert, from)
+	t.recompute()
+}
+
 // UpdateDirect records or refreshes a direct neighbour and recomputes routes.
 func (t *Table) UpdateDirect(link DirectLink) error {
 	if link.PeerID == 0 {

@@ -140,3 +140,15 @@ func (c *Cache) Snapshot(now time.Time) []Sample {
 }
 
 func (c *Cache) Prune(now time.Time) { _ = c.Snapshot(now) }
+
+// ResetOrigin drops samples reported by a peer whose process restarted, so
+// its sequence counter starts over without being treated as stale.
+func (c *Cache) ResetOrigin(origin uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.samples {
+		if key.origin == origin {
+			delete(c.samples, key)
+		}
+	}
+}

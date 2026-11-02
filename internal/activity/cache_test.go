@@ -30,3 +30,17 @@ func TestCacheBoundsEntries(t *testing.T) {
 		t.Fatalf("snapshot = %+v", got)
 	}
 }
+
+func TestResetOriginAcceptsARestartedPeer(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := NewCache(4)
+	c.Put(1, 9, Record{Destination: 2, ObservedAt: now, Path: []uint64{2}}, now.Add(time.Minute))
+	c.ResetOrigin(1)
+	if got := c.Snapshot(now); len(got) != 0 {
+		t.Fatalf("samples survived the reset: %+v", got)
+	}
+	c.Put(1, 1, Record{Destination: 2, ObservedAt: now, Path: []uint64{2}}, now.Add(time.Minute))
+	if got := c.Snapshot(now); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("restarted peer was treated as stale: %+v", got)
+	}
+}

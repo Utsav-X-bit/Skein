@@ -200,3 +200,19 @@ func TestStaleAndExpiredAdvertisementsRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestResetOriginAcceptsRestartedPeer(t *testing.T) {
+	tbl := NewTable(peerA)
+	mustDirect(t, tbl, peerB, time.Millisecond)
+	mustMerge(t, tbl, peerB, adv(5, time.Millisecond, peerB, peerC))
+	if err := tbl.MergeAdvertisement(peerB, adv(1, time.Millisecond, peerB, peerC)); err == nil {
+		t.Fatal("expected a stale sequence before the reset")
+	}
+	tbl.ResetOrigin(peerB)
+	if err := tbl.MergeAdvertisement(peerB, adv(1, time.Millisecond, peerB, peerC)); err != nil {
+		t.Fatalf("restarted peer was rejected after reset: %v", err)
+	}
+	if _, ok := tbl.Lookup(peerC); !ok {
+		t.Fatal("route missing after the reset")
+	}
+}
