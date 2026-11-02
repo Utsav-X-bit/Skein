@@ -774,7 +774,7 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("contact the daemon: %w", err)
+		return daemonContactError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
@@ -782,6 +782,15 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 	return nil
+}
+
+// daemonContactError adds a start hint when the local API is not listening.
+func daemonContactError(err error) error {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "actively refused") {
+		return fmt.Errorf("contact the daemon: %w\n  the daemon is not running; start it with: sudo systemctl start skein (Linux) or Start-Service skein (Windows), or run `skein dashboard`", err)
+	}
+	return fmt.Errorf("contact the daemon: %w", err)
 }
 
 func (c *client) get(ctx context.Context, path string, out any) error {
@@ -792,7 +801,7 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("contact the daemon: %w", err)
+		return daemonContactError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

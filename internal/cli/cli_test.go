@@ -599,3 +599,16 @@ func TestResetWithNothingToRemove(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+
+func TestDaemonContactErrorSuggestsStartingIt(t *testing.T) {
+	err := daemonContactError(errors.New("dial tcp 127.0.0.1:11011: connect: connection refused"))
+	for _, want := range []string{"not running", "systemctl", "dashboard"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q lacks %q", err, want)
+		}
+	}
+	other := daemonContactError(errors.New("i/o timeout"))
+	if strings.Contains(other.Error(), "not running") {
+		t.Fatal("a timeout was reported as a stopped daemon")
+	}
+}
