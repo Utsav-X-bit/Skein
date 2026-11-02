@@ -722,8 +722,16 @@ func stateColor(state string) string {
 // renderRouteMap draws only edges substantiated by route paths. A single peer
 // gets a horizontal lane instead of a sparse radial diagram.
 func (d *dashboard) renderRouteMap(v view, width, height int) []string {
-	peers := append([]peerDTO(nil), v.peers...)
+	peers := connectedPeers(v)
 	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
+	if len(peers) == 0 {
+		c := newCanvas(width, height)
+		c.text(max(0, width/2-9), max(0, height/2), "no connected peers", ansiDim)
+		if height >= 6 && width >= 34 {
+			c.text(1, height-1, "● up  ─ route  · reported", ansiSlate)
+		}
+		return c.lines(d.color)
+	}
 	if len(peers) == 1 {
 		return d.renderLinkLane(v, peers[0], width, height)
 	}
@@ -799,8 +807,15 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		}
 		c.text(p.x, p.y, glyph, col)
 		labelX := p.x + 2
+		if id != "me" && p.x < cx {
+			// Left of the hub: keep the label on the outside of the link.
+			labelX = p.x - visibleWidth(p.name) - 1
+		}
 		if labelX+visibleWidth(p.name) > width {
 			labelX = p.x - visibleWidth(p.name) - 1
+		}
+		if labelX < 0 {
+			labelX = p.x + 2
 		}
 		labelColor := ansiWhite
 		if id == "me" {
@@ -812,7 +827,7 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 		c.text(max(0, cx-10), cy+1, "waiting for routes", ansiDim)
 	}
 	if height >= 6 && width >= 34 {
-		c.text(1, height-1, "● up  ● down  ─ route  · reported", ansiSlate)
+		c.text(1, height-1, "● up  ─ route  · reported", ansiSlate)
 	}
 	return c.lines(d.color)
 }
@@ -1050,10 +1065,23 @@ func easeOut(t float64) float64 {
 // peers reported by the mesh.
 type mapEdge struct{ from, to string }
 
-// knownNodes is "me" plus every peer the dashboard can name.
+// connectedPeers are the peers the map may draw: a session is up (or
+// degraded but still present). Configured peers that never connected stay in
+// the peers list for diagnostics but do not clutter the topology.
+func connectedPeers(v view) []peerDTO {
+	out := make([]peerDTO, 0, len(v.peers))
+	for _, p := range v.peers {
+		if p.State == "up" || p.State == "degraded" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// knownNodes is "me" plus every connected peer the dashboard can name.
 func knownNodes(v view) map[string]bool {
 	known := map[string]bool{"me": true}
-	for _, p := range v.peers {
+	for _, p := range connectedPeers(v) {
 		known[p.ID] = true
 	}
 	return known

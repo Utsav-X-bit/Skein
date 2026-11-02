@@ -147,7 +147,7 @@ func TestPulseDirectionsFollowLocalTraffic(t *testing.T) {
 
 func TestMapDoesNotFabricateEdges(t *testing.T) {
 	d := testDashboard()
-	v := view{st: statusDTO{ID: "local"}, peers: []peerDTO{{ID: "a", Name: "alpha"}, {ID: "b", Name: "bravo"}}}
+	v := view{st: statusDTO{ID: "local"}, peers: []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}}}
 	out := strings.Join(d.renderRouteMap(v, 80, 10), "\n")
 	if !strings.Contains(out, "waiting for routes") {
 		t.Fatalf("empty map should wait, not invent edges:\n%s", out)
@@ -158,7 +158,7 @@ func TestSelectedPeerIsMarkedOnTheMap(t *testing.T) {
 	d := coloredDashboard()
 	v := view{
 		st:    statusDTO{ID: "local"},
-		peers: []peerDTO{{ID: "a", Name: "alpha"}, {ID: "b", Name: "bravo"}},
+		peers: []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}},
 		ui:    dashboardState{selected: "b"},
 	}
 	out := stripANSI(strings.Join(d.renderRouteMap(v, 80, 12), "\n"))
@@ -171,7 +171,7 @@ func TestSelectedRouteIsEmphasizedOnTheMap(t *testing.T) {
 	d := coloredDashboard()
 	v := view{
 		st:     statusDTO{ID: "local"},
-		peers:  []peerDTO{{ID: "a", Name: "alpha"}, {ID: "b", Name: "bravo"}},
+		peers:  []peerDTO{{ID: "a", Name: "alpha", State: "up"}, {ID: "b", Name: "bravo", State: "up"}},
 		routes: []routeDTO{{Destination: "a", NextHop: "a", Hops: 1}, {Destination: "b", NextHop: "b", Hops: 1}},
 		ui:     dashboardState{focus: focusRoutes, routeSel: "b"},
 	}
@@ -288,18 +288,36 @@ func TestMapDistinguishesRoutesFromReportedLinks(t *testing.T) {
 	}
 }
 
-func TestMapNodeColorFollowsPeerState(t *testing.T) {
+func TestMapHidesDisconnectedPeers(t *testing.T) {
 	d := coloredDashboard()
 	v := view{
 		st:    statusDTO{ID: "local"},
 		peers: []peerDTO{{ID: "a", Name: "alpha", State: "down"}, {ID: "b", Name: "bravo", State: "up"}},
 	}
 	out := strings.Join(d.renderRouteMap(v, 100, 20), "\n")
-	if !strings.Contains(out, "\x1b["+ansiError+"m●") {
-		t.Fatalf("down peer is not red:\n%q", out)
+	if strings.Contains(out, "alpha") {
+		t.Fatalf("disconnected peer is still drawn:\n%s", out)
 	}
-	if !strings.Contains(out, "\x1b["+ansiHealthy+"m●") {
-		t.Fatalf("up peer is not green:\n%q", out)
+	if !strings.Contains(out, "bravo") {
+		t.Fatalf("connected peer is missing:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b["+ansiError+"m●") {
+		t.Fatalf("a down node was drawn:\n%q", out)
+	}
+}
+
+func TestMapUsesLaneWhenOnlyOnePeerIsConnected(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st:    statusDTO{ID: "local"},
+		peers: []peerDTO{{ID: "a", Name: "alpha", State: "down"}, {ID: "b", Name: "bravo", State: "up"}},
+	}
+	out := strings.Join(d.renderRouteMap(v, 100, 12), "\n")
+	if !strings.Contains(out, "━") {
+		t.Fatalf("single connected peer did not use the lane:\n%s", out)
+	}
+	if strings.Contains(out, "alpha") {
+		t.Fatalf("disconnected peer is still drawn:\n%s", out)
 	}
 }
 
