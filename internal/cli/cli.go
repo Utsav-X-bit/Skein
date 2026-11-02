@@ -681,7 +681,16 @@ func runOnline(ctx context.Context, cfg conf.Config, args []string, jsonOut bool
 	case "status":
 		return c.print(ctx, "/api/v1/status", jsonOut, stdout, printStatus)
 	case "routes":
-		return c.print(ctx, "/api/v1/routes", jsonOut, stdout, printRoutes)
+		if jsonOut {
+			return c.print(ctx, "/api/v1/routes", true, stdout, printRoutes)
+		}
+		var routes []routeDTO
+		if err := c.get(ctx, "/api/v1/routes", &routes); err != nil {
+			return err
+		}
+		var peers []peerDTO
+		_ = c.get(ctx, "/api/v1/peers", &peers)
+		return printRouteTable(routes, peers, stdout)
 	case "peers":
 		return cmdPeers(ctx, c, args[1:], jsonOut, stdout)
 	case "probe":
@@ -1093,5 +1102,45 @@ func cmdReset(configPath string, purge, keepIdentity, force bool, stdout io.Writ
 		fmt.Fprintf(stdout, "reset: moved the local mesh configuration to %s\n", backup)
 	}
 	fmt.Fprintln(stdout, "next: run `skein init` or `skein join <invite>`; the service stays registered")
+	return nil
+}
+
+// printRouteTable resolves peer names so a relayed destination is not mistaken
+// for the next hop.
+func printRouteTable(routes []routeDTO, peers []peerDTO, w io.Writer) error {
+	if len(routes) == 0 {
+		fmt.Fprintln(w, "no routes")
+		return nil
+	}
+	names := make(map[string]string, len(peers))
+	for _, p := range peers {
+		if p.Name != "" {
+			names[p.ID] = p.Name
+		}
+	}
+	label := func(id string) string {
+		if name := names[id]; name != "" {
+			return name
+		}
+		return shortID(id)
+	}
+	fmt.Fprintf(w, "%-26s  %-34s  %-8s  %s\n", "DESTINATION", "PATH", "COST", "HOPS")
+	for _, r := range routes {
+		path := []string{"me"}
+		for _, id := range r.Path {
+			path = append(path, label(id))
+		}
+		if len(r.Path) == 0 {
+			path = append(path, label(r.NextHop))
+			if r.NextHop != r.Destination {
+				path = append(path, label(r.Destination))
+			}
+		}
+		if path[len(path)-1] != label(r.Destination) {
+			path = append(path, label(r.Destination))
+		}
+		dest := fmt.Sprintf("%s (%s)", label(r.Destination), shortID(r.Destination))
+		fmt.Fprintf(w, "%-26s  %-34s  %-8s  %d\n", clip(dest, 26), clip(strings.Join(path, " → "), 34), fmt.Sprintf("%.1fms", r.CostMs), r.Hops)
+	}
 	return nil
 }

@@ -114,7 +114,7 @@ func TestOnlineCommandsUseTheAPI(t *testing.T) {
 			w.Write([]byte(`{"id":"0123456789abcdef","overlay_ipv4":"10.144.144.1","peers":2,"uptime_seconds":5,"version":"test","listen_port":11010}`))
 		case "/api/v1/peers":
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[{"id":"0123456789abcdef","state":"up","path":"v4","rtt_ms":3.5,"direct":true,"endpoint":"10.0.0.2:11010","transport":"udp"}]`))
+			w.Write([]byte(`[{"id":"0123456789abcdef","name":"yoga","state":"up","path":"v4","rtt_ms":3.5,"direct":true,"endpoint":"10.0.0.2:11010","transport":"udp"}]`))
 		case "/api/v1/routes":
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`[{"destination":"0123456789abcdef","next_hop":"0123456789abcdef","cost_ms":3.5,"hops":1}]`))
@@ -148,6 +148,10 @@ func TestOnlineCommandsUseTheAPI(t *testing.T) {
 	code, stdout, _ = runCLI(t, "-c", path, "routes", "--json")
 	if code != 0 || !strings.Contains(stdout, "destination") {
 		t.Fatalf("routes output = %q", stdout)
+	}
+	code, stdout, _ = runCLI(t, "-c", path, "routes")
+	if code != 0 || !strings.Contains(stdout, "PATH") || !strings.Contains(stdout, "me → yoga") {
+		t.Fatalf("named routes output = %q", stdout)
 	}
 	code, stdout, _ = runCLI(t, "-c", path, "probe", "0123456789abcdef")
 	if code != 0 {
