@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	underlayRule = "Skein underlay"
-	overlayRule  = "Skein overlay"
+	underlayRule   = "Skein underlay"
+	overlayRule    = "Skein overlay"
+	overlayOutRule = "Skein overlay out"
 )
 
 func ensure(cfg Config) error {
@@ -32,22 +33,37 @@ func ensurePort(cfg Config) error {
 	return nil
 }
 
-// ensureInterface allows every protocol on the overlay interface.
+// ensureInterface allows every protocol on the overlay interface in both
+// directions.
 func ensureInterface(cfg Config) error {
-	if ruleExists(overlayRule) {
-		return nil
+	if !ruleExists(overlayRule) {
+		script := fmt.Sprintf(
+			`New-NetFirewallRule -DisplayName "%s" -Direction Inbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
+			overlayRule, cfg.Interface)
+		if _, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
+			return err
+		}
 	}
-	script := fmt.Sprintf(
-		`New-NetFirewallRule -DisplayName "%s" -Direction Inbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
-		overlayRule, cfg.Interface)
-	_, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	return err
+	if !ruleExists(overlayOutRule) {
+		script := fmt.Sprintf(
+			`New-NetFirewallRule -DisplayName "%s" -Direction Outbound -InterfaceAlias "%s" -Action Allow -Profile Any -ErrorAction Stop | Out-Null`,
+			overlayOutRule, cfg.Interface)
+		if _, err := runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
+// Manager reports the Windows Firewall backend.
+func Manager() string { return "windows firewall" }
 
 func remove(cfg Config) error {
 	_, _ = runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+underlayRule)
-	script := fmt.Sprintf(`Remove-NetFirewallRule -DisplayName "%s" -ErrorAction SilentlyContinue | Out-Null`, overlayRule)
-	_, _ = runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	for _, name := range []string{overlayRule, overlayOutRule} {
+		script := fmt.Sprintf(`Remove-NetFirewallRule -DisplayName "%s" -ErrorAction SilentlyContinue | Out-Null`, name)
+		_, _ = runner("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	}
 	return nil
 }
 

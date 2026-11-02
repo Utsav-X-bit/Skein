@@ -25,6 +25,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/app"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
+	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/path"
 	"github.com/Utsav-X-bit/skein/internal/service"
@@ -46,6 +47,7 @@ Usage:
   skein [-c <config>] genkey                print the public key and node ID
   skein [-c <config>] invite [--network]    print a peer invite or a network join string
   skein [-c <config>] run                   run the daemon (root / Administrator)
+  skein [-c <config>] setup [--remove]      allow the firewall for the underlay and overlay
   skein [-c <config>] install-service       register the system service
   skein [-c <config>] uninstall-service     remove the system service
   skein [-c <config>] dashboard             live mesh status; starts the daemon if needed
@@ -152,6 +154,22 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		defer d.closeChild()
 		if err := d.run(ctx); err != nil {
+			fmt.Fprintf(stderr, "skein: %v\n", err)
+			return 1
+		}
+		return 0
+	case "setup":
+		remove := false
+		for _, arg := range rest[1:] {
+			switch arg {
+			case "--remove":
+				remove = true
+			default:
+				fmt.Fprintf(stderr, "skein: unknown setup flag %q\n", arg)
+				return 2
+			}
+		}
+		if err := cmdSetup(path, remove, stdout); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -907,4 +925,34 @@ func pingOverlay(ctx context.Context, ipText string, w io.Writer) error {
 	cmd.Stdout = w
 	cmd.Stderr = w
 	return cmd.Run()
+}
+
+// cmdSetup opens the firewall for the underlay port and the overlay interface.
+func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	fw := firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}
+	manager := firewall.Manager()
+	name := manager
+	if name == "" {
+		name = "none"
+	}
+	if remove {
+		if err := firewall.Remove(fw); err != nil {
+			return fmt.Errorf("firewall: %w", err)
+		}
+		fmt.Fprintf(stdout, "firewall: removed Skein rules on %s (manager: %s)\n", cfg.Node.Interface, name)
+		return nil
+	}
+	if err := firewall.Ensure(fw); err != nil {
+		return fmt.Errorf("firewall: %w\n  run as root (sudo skein setup) or as Administrator; on Windows the interface exists after the daemon starts once", err)
+	}
+	if manager == "" {
+		fmt.Fprintln(stdout, "firewall: no supported manager (ufw, firewalld, iptables); nothing changed")
+		return nil
+	}
+	fmt.Fprintf(stdout, "firewall: allowed UDP %d and all traffic on %s (manager: %s)\n", cfg.Node.ListenPort, cfg.Node.Interface, manager)
+	return nil
 }

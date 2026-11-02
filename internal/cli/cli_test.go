@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/version"
 )
@@ -424,5 +425,50 @@ func TestVersionFlagsWorkWithoutAConfig(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("%s output = %q, want %q", arg, out.String(), want)
 		}
+	}
+}
+
+type setupRunner struct{ calls []string }
+
+func (f *setupRunner) run(name string, args ...string) (string, error) {
+	line := name + " " + strings.Join(args, " ")
+	f.calls = append(f.calls, line)
+	if line == "ufw status" {
+		return "Status: active", nil
+	}
+	return "", nil
+}
+
+func TestSetupConfiguresTheFirewall(t *testing.T) {
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32))
+	path := writeConfig(t, "127.0.0.1:1", token)
+	f := &setupRunner{}
+	old := firewall.SetRunner(f.run)
+	t.Cleanup(func() { firewall.SetRunner(old) })
+
+	code, out, errOut := runCLI(t, "-c", path, "setup")
+	if code != 0 {
+		t.Fatalf("setup exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.Contains(out, "allowed UDP 11010") || !strings.Contains(out, "skein0") || !strings.Contains(out, "ufw") {
+		t.Fatalf("setup output = %q", out)
+	}
+	calls := strings.Join(f.calls, "\n")
+	for _, want := range []string{"ufw allow 11010/udp", "ufw allow in on skein0", "ufw allow out on skein0"} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing %q in:\n%s", want, calls)
+		}
+	}
+
+	f.calls = nil
+	code, out, errOut = runCLI(t, "-c", path, "setup", "--remove")
+	if code != 0 {
+		t.Fatalf("setup --remove exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.Contains(out, "removed") {
+		t.Fatalf("remove output = %q", out)
+	}
+	if !strings.Contains(strings.Join(f.calls, "\n"), "ufw delete allow in on skein0") {
+		t.Fatalf("remove calls = %v", f.calls)
 	}
 }

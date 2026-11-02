@@ -365,6 +365,7 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 |---|---|
 | `skein init` | Create identity, config, network secret, API token |
 | `skein run` | Run the daemon (root / Administrator) |
+| `skein setup [--remove]` | Allow UDP `listen_port` and all traffic on the overlay interface (ufw, firewalld, iptables, Windows Firewall) |
 | `skein install-service` | Register the system service |
 | `skein uninstall-service` | Remove the service and its firewall rules |
 | `skein genkey` | Print the public key and node ID |
@@ -378,7 +379,7 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein routes [--json]` | Reachability table |
 | `skein probe <peer-id>` | Re-probe candidate endpoints |
 | `skein ping <overlay-ip>` | Ping through the overlay |
-| `skein version` | Version |
+| `skein version`, `skein -v` | Version plus the commit the binary was built from |
 
 ### Global flags
 

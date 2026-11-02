@@ -25,8 +25,13 @@ var runner Runner = func(name string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// SetRunner replaces the command runner. Tests use it.
-func SetRunner(r Runner) { runner = r }
+// SetRunner replaces the command runner and returns the previous one, so
+// tests can restore it.
+func SetRunner(r Runner) Runner {
+	old := runner
+	runner = r
+	return old
+}
 
 // Ensure opens the underlay UDP port and trusts the overlay interface.
 func Ensure(cfg Config) error { return ensure(cfg) }
