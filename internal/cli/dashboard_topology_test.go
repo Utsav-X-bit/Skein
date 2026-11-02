@@ -326,3 +326,29 @@ func TestLastSeenNever(t *testing.T) {
 		t.Fatalf("lastSeen(0) = %q", got)
 	}
 }
+
+func TestMapShowsRelayedDestinationsButNotStalePeers(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st: statusDTO{ID: "local"},
+		peers: []peerDTO{
+			{ID: "relay", Name: "yoga", State: "up"},
+			{ID: "far", Name: "archlinux", State: "down"},
+			{ID: "stale", Name: "old", State: "down"},
+		},
+		routes: []routeDTO{
+			{Destination: "relay", NextHop: "relay", Hops: 1, Path: []string{"relay"}},
+			{Destination: "far", NextHop: "relay", Hops: 2, Path: []string{"relay", "far"}},
+		},
+	}
+	out := strings.Join(d.renderRouteMap(v, 110, 24), "\n")
+	if !strings.Contains(out, "archlinux") {
+		t.Fatalf("relayed destination is missing:\n%s", out)
+	}
+	if strings.Contains(out, "old") {
+		t.Fatalf("stale peer with no route was drawn:\n%s", out)
+	}
+	if !strings.Contains(out, "─") {
+		t.Fatalf("relay path has no solid route edge:\n%s", out)
+	}
+}

@@ -722,7 +722,7 @@ func stateColor(state string) string {
 // renderRouteMap draws only edges substantiated by route paths. A single peer
 // gets a horizontal lane instead of a sparse radial diagram.
 func (d *dashboard) renderRouteMap(v view, width, height int) []string {
-	peers := connectedPeers(v)
+	peers := mapPeers(v)
 	sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 	if len(peers) == 0 {
 		c := newCanvas(width, height)
@@ -794,6 +794,10 @@ func (d *dashboard) renderRouteMap(v view, width, height int) []string {
 			glyph, col = "◆", ansiCyan
 		} else {
 			col = stateColor(states[id])
+			if states[id] != "up" && relayed(v, id) {
+				// Reachable through a relay, not directly.
+				col = ansiWarn
+			}
 			if peerActive(v, id) {
 				col = ansiOut
 			}
@@ -1078,10 +1082,48 @@ func connectedPeers(v view) []peerDTO {
 	return out
 }
 
-// knownNodes is "me" plus every connected peer the dashboard can name.
+// mapPeers are the peers the topology may draw: directly connected peers plus
+// peers that a route reaches through a relay. Configured peers with neither a
+// session nor a route stay in the peers list but are not drawn.
+func mapPeers(v view) []peerDTO {
+	byID := map[string]peerDTO{}
+	for _, p := range v.peers {
+		if p.State == "up" || p.State == "degraded" {
+			byID[p.ID] = p
+		}
+	}
+	lookup := make(map[string]peerDTO, len(v.peers))
+	for _, p := range v.peers {
+		lookup[p.ID] = p
+	}
+	for _, r := range v.routes {
+		for _, id := range append([]string{r.Destination}, r.Path...) {
+			if p, ok := lookup[id]; ok {
+				byID[id] = p
+			}
+		}
+	}
+	out := make([]peerDTO, 0, len(byID))
+	for _, p := range byID {
+		out = append(out, p)
+	}
+	return out
+}
+
+// relayed reports a route that reaches id through another node.
+func relayed(v view, id string) bool {
+	for _, r := range v.routes {
+		if r.Destination == id && r.Hops > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// knownNodes is "me" plus every peer the topology can draw.
 func knownNodes(v view) map[string]bool {
 	known := map[string]bool{"me": true}
-	for _, p := range connectedPeers(v) {
+	for _, p := range mapPeers(v) {
 		known[p.ID] = true
 	}
 	return known
