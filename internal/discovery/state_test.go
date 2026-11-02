@@ -530,3 +530,38 @@ func TestMergerSkipsPeersWhenRegistrationFails(t *testing.T) {
 		t.Fatal("peer was registered despite the error")
 	}
 }
+
+func TestMergeIgnoresPeersClaimingTheLocalOverlay(t *testing.T) {
+	local := testIdentity(t)
+	remote := testIdentity(t)
+	peers := peer.NewTable()
+	routes := route.NewTable(local.ID)
+	m := NewMerger(local.ID, peers, routes)
+	m.SetLocalOverlay(netip.MustParseAddr("10.144.144.1"), netip.Addr{})
+
+	stale := testIdentity(t)
+	m.OnPeer = func(id uint64, key []byte) error {
+		return peers.Upsert(peer.Peer{ID: id, PublicKey: key})
+	}
+	state := State{
+		Origin:  remote.ID,
+		Seq:     1,
+		Expires: time.Now().Add(time.Minute),
+		Peers: []PeerRecord{{
+			ID:        stale.ID, // a different, stale identity
+			Name:      "yoga",
+			PublicKey: stale.PublicKey,
+			OverlayV4: netip.MustParseAddr("10.144.144.1"), // ours
+		}},
+	}
+	payload, err := Encode(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Merge(remote.ID, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := peers.Get(state.Peers[0].ID); ok {
+		t.Fatal("a peer claiming the local overlay was registered")
+	}
+}

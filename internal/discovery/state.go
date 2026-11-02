@@ -429,8 +429,19 @@ type Merger struct {
 	OnPeer     func(id uint64, publicKey []byte) error
 	OnActivity func(origin, seq uint64, records []activity.Record, expires time.Time)
 
+	localV4 netip.Addr
+	localV6 netip.Addr
+
 	mu  sync.Mutex
 	seq map[uint64]uint64
+}
+
+// SetLocalOverlay tells the merger which overlay addresses belong to this
+// node, so a peer record that claims them is ignored.
+func (m *Merger) SetLocalOverlay(v4, v6 netip.Addr) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.localV4, m.localV6 = v4, v6
 }
 
 // NewMerger creates a merger.
@@ -459,6 +470,11 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 
 	for _, rec := range s.Peers {
 		if rec.ID == m.LocalID {
+			continue
+		}
+		if (m.localV4.IsValid() && rec.OverlayV4 == m.localV4) || (m.localV6.IsValid() && rec.OverlayV6 == m.localV6) {
+			// A stale identity from an earlier mesh can carry this node's
+			// overlay address; never let it shadow the local node.
 			continue
 		}
 		if _, ok := m.Peers.Get(rec.ID); !ok {

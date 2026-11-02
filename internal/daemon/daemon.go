@@ -140,6 +140,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		return nil, err
 	}
 
+	merger.SetLocalOverlay(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv6)
 	merger.OnPeer = func(peerID uint64, publicKey []byte) error {
 		// Learned peers use the same rule as mDNS: the lower ID dials.
 		return d.registerPeer(peerID, publicKey, nil, d.id.ID < peerID, "")
