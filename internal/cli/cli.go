@@ -967,7 +967,8 @@ func pingOverlay(ctx context.Context, ipText string, w io.Writer) error {
 func reportSetupError(err error, cfg conf.Config, stdout io.Writer) error {
 	if errors.Is(err, firewall.ErrInterfaceMissing) {
 		fmt.Fprintf(stdout, "firewall: allowed UDP %d\n", cfg.Node.ListenPort)
-		fmt.Fprintf(stdout, "firewall: overlay interface %q does not exist yet; start the daemon once (it applies this rule at startup) or check the name with Get-NetAdapter, then rerun setup\n", cfg.Node.Interface)
+		fmt.Fprintf(stdout, "firewall: overlay interface %q is not present/up yet (Get-NetAdapter may still list it as Disconnected or Not Present)\n", cfg.Node.Interface)
+		fmt.Fprintln(stdout, "  start the daemon so the tunnel is up (it applies this rule at startup), then rerun setup to confirm")
 		return nil
 	}
 	hint := "run as root: sudo skein setup"

@@ -481,7 +481,7 @@ func TestSetupReportsAMissingInterfaceAsPartialSuccess(t *testing.T) {
 	if err := reportSetupError(firewall.ErrInterfaceMissing, cfg, &out); err != nil {
 		t.Fatalf("missing interface should be a partial success: %v", err)
 	}
-	if !strings.Contains(out.String(), "allowed UDP 11010") || !strings.Contains(out.String(), "does not exist yet") {
+	if !strings.Contains(out.String(), "allowed UDP 11010") || !strings.Contains(out.String(), "not present/up yet") {
 		t.Fatalf("output = %q", out.String())
 	}
 	out.Reset()
