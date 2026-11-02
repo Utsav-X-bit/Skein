@@ -37,6 +37,7 @@ type dashboardState struct {
 	expandedAt    time.Time
 	paused        bool
 	help          bool
+	focusChosen   bool
 	esc, csi      bool
 }
 
@@ -342,4 +343,17 @@ func resolveLayout(width, height int) dashboardLayout {
 		l.rects[focusOverview] = dashboardRect{x: left + gap + center + gap, y: contentY, w: right, h: contentH}
 	}
 	return l
+}
+
+// applyInitialFocus opens the route map on compact and short decks, where
+// only one page is visible; wider layouts keep the inspector first.
+func (d *dashboard) applyInitialFocus(width, height int) {
+	if d.ui.focusChosen {
+		return
+	}
+	d.ui.focusChosen = true
+	switch resolveLayout(width, height).mode {
+	case modeShort, modeCompact:
+		d.ui.focus = focusMap
+	}
 }

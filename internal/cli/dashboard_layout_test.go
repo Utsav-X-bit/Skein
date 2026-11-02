@@ -241,3 +241,42 @@ func TestCompactPeerRowKeepsTheOverlayIP(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactDeckStartsWithTheRouteMap(t *testing.T) {
+	d := testDashboard()
+	d.applyInitialFocus(40, 20)
+	if d.ui.focus != focusMap {
+		t.Fatalf("compact initial page = %v, want map", d.ui.focus)
+	}
+	wide := testDashboard()
+	wide.applyInitialFocus(160, 45)
+	if wide.ui.focus != focusOverview {
+		t.Fatalf("wide initial page = %v, want overview", wide.ui.focus)
+	}
+	wide.applyInitialFocus(40, 20)
+	if wide.ui.focus != focusOverview {
+		t.Fatalf("initial focus changed after the first draw: %v", wide.ui.focus)
+	}
+}
+
+func TestTabStripAndStatusFitNarrowTerminals(t *testing.T) {
+	d := testDashboard()
+	v := layoutFixture()
+	v.ui.focus = focusMap
+	full := strings.Join(d.buildSized(v, 64, 20), "\n")
+	if !strings.Contains(full, "[Map]") || !strings.Contains(full, "Activity") {
+		t.Fatalf("compact tab strip is incomplete:\n%s", full)
+	}
+	if narrow := d.tabStrip(focusMap, 30); !strings.Contains(narrow, "‹ Map ›") {
+		t.Fatalf("narrow tab strip lost the selected page: %q", narrow)
+	}
+	short := strings.Join(d.buildSized(v, 40, 20), "\n")
+	if !strings.Contains(short, "TAB pages") || !strings.Contains(short, "map") {
+		t.Fatalf("short deck lost its page hint:\n%s", short)
+	}
+	for _, width := range []int{30, 40, 60} {
+		if got := visibleWidth(d.statusLine(v, width)); got > width {
+			t.Fatalf("status line is %d cells wide at %d", got, width)
+		}
+	}
+}

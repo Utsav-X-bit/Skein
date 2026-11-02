@@ -376,6 +376,7 @@ func (d *dashboard) draw() {
 
 	d.mu.Lock()
 	d.width, d.height = width, height
+	d.applyInitialFocus(width, height)
 	if d.motion {
 		d.ease()
 	}

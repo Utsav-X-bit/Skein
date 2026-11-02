@@ -112,15 +112,22 @@ func (d *dashboard) statusLine(v view, width int) string {
 			down++
 		}
 	}
-	line := " Skein"
+	parts := []string{}
 	if name := localNameOf(v.st); name != "ME" {
-		line += " · " + name
+		parts = append(parts, name)
 	}
-	line += fmt.Sprintf(" · %s · %s · %d up", dash(v.st.OverlayIPv4), shortID(v.st.ID), up)
+	parts = append(parts, dash(v.st.OverlayIPv4), fmt.Sprintf("%d up", up))
 	if down > 0 {
-		line += fmt.Sprintf(" · %d down", down)
+		parts = append(parts, fmt.Sprintf("%d down", down))
 	}
-	line += " · " + humanRate(totalRate(v.rates))
+	parts = append(parts, humanRate(totalRate(v.rates)), shortID(v.st.ID))
+	line := " Skein"
+	for _, part := range parts {
+		if visibleWidth(line)+3+visibleWidth(part) > width {
+			continue
+		}
+		line += " · " + part
+	}
 	return d.line(line, width)
 }
 
@@ -140,7 +147,18 @@ func (d *dashboard) tabStrip(focus dashboardFocus, width int) string {
 			parts = append(parts, p.name)
 		}
 	}
-	return d.line(" "+strings.Join(parts, "  "), width)
+	line := " " + strings.Join(parts, " ")
+	if visibleWidth(line) <= width {
+		return fit(line, width)
+	}
+	// Narrow terminal: keep the selected page named, the footer carries the
+	// TAB hint.
+	for _, p := range pages {
+		if p.f == focus {
+			return d.line(" ‹ "+p.name+" ›", width)
+		}
+	}
+	return d.line("", width)
 }
 
 // page returns the title and body for the focused panel/page.
@@ -278,7 +296,7 @@ func min(a, b int) int {
 }
 
 func focusName(f dashboardFocus) string {
-	return []string{"overview", "mesh", "peers", "routes", "activity", "help"}[f]
+	return []string{"overview", "map", "peers", "routes", "activity", "help"}[f]
 }
 func age(t time.Time) string {
 	if t.IsZero() {
