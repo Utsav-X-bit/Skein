@@ -140,20 +140,26 @@ func TestPanelCursorsMoveIndependently(t *testing.T) {
 	}
 }
 
-func TestEnterOpensInspectorAndEscapeReturns(t *testing.T) {
+func TestEnterExpandsTheFocusedPanel(t *testing.T) {
 	d := testDashboard()
 	d.width, d.height = 160, 45
 	d.peers = []peerDTO{{ID: "a", Name: "alpha", State: "up"}}
+	d.routes = []routeDTO{{Destination: "a", NextHop: "a", Hops: 1}}
 	d.ui.focus = focusPeers
 	d.ui.selected = "a"
 	d.handleKey('\r')
-	if d.ui.focus != focusOverview || !d.ui.inspector {
-		t.Fatalf("enter: focus=%v inspector=%v", d.ui.focus, d.ui.inspector)
+	if !d.ui.expanded || d.ui.expandedFocus != focusPeers {
+		t.Fatalf("enter: expanded=%v focus=%v", d.ui.expanded, d.ui.expandedFocus)
 	}
 	d.handleKey(27)
 	d.handleKey('x')
-	if d.ui.focus != focusPeers || d.ui.inspector {
-		t.Fatalf("escape: focus=%v inspector=%v", d.ui.focus, d.ui.inspector)
+	if d.ui.expanded {
+		t.Fatal("escape did not close the expanded panel")
+	}
+	d.ui.focus = focusRoutes
+	d.handleKey('\r')
+	if !d.ui.expanded || d.ui.expandedFocus != focusRoutes {
+		t.Fatalf("routes expand: expanded=%v focus=%v", d.ui.expanded, d.ui.expandedFocus)
 	}
 }
 
@@ -162,12 +168,12 @@ func TestInspectorExpandsIntoPlace(t *testing.T) {
 	base := view{
 		st:     statusDTO{ID: "local", Name: "XD_OD"},
 		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up", Endpoint: "[2406:b400:72:ff06:4bcb:8b68:20e3:a714]:43921"}},
-		ui:     dashboardState{focus: focusOverview, selected: "p", inspector: true},
+		ui:     dashboardState{focus: focusOverview, selected: "p", expanded: true, expandedFocus: focusOverview},
 		motion: true,
 	}
-	base.ui.inspectorAt = time.Now()
+	base.ui.expandedAt = time.Now()
 	partial := d.buildSized(base, 160, 45)
-	base.ui.inspectorAt = time.Now().Add(-inspectorReveal)
+	base.ui.expandedAt = time.Now().Add(-inspectorReveal)
 	full := d.buildSized(base, 160, 45)
 	if len(partial) >= len(full) {
 		t.Fatalf("expansion did not animate: %d >= %d lines", len(partial), len(full))
@@ -176,7 +182,7 @@ func TestInspectorExpandsIntoPlace(t *testing.T) {
 		t.Fatal("settled inspector lost the endpoint")
 	}
 	// Reduced motion shows the final panel immediately.
-	base.ui.inspectorAt = time.Now()
+	base.ui.expandedAt = time.Now()
 	base.motion = false
 	if got := len(d.buildSized(base, 160, 45)); got != len(full) {
 		t.Fatalf("motionless inspector = %d lines, want %d", got, len(full))
@@ -189,12 +195,47 @@ func TestEscapeClearsTheInspectorTimestamp(t *testing.T) {
 	d.ui.focus = focusPeers
 	d.ui.selected = "p"
 	d.handleKey('\r')
-	if d.ui.inspectorAt.IsZero() {
+	if d.ui.expandedAt.IsZero() {
 		t.Fatal("opening the inspector did not record a timestamp")
 	}
 	d.handleKey(27)
 	d.handleKey('x')
-	if !d.ui.inspectorAt.IsZero() {
+	if !d.ui.expandedAt.IsZero() {
 		t.Fatal("closing the inspector kept the timestamp")
+	}
+}
+
+func TestExpandedPanelsShowFullContent(t *testing.T) {
+	d := testDashboard()
+	endpoint := "[2406:b400:72:ff06:4bcb:8b68:20e3:a714]:43921"
+	base := view{
+		st:     statusDTO{ID: "local", Name: "XD_OD"},
+		peers:  []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", Endpoint: endpoint, RTTMs: 6.6}},
+		routes: []routeDTO{{Destination: "p", NextHop: "p", Hops: 1, CostMs: 6.6}},
+		ui:     dashboardState{focus: focusPeers, expanded: true, expandedFocus: focusPeers, expandedAt: time.Now().Add(-inspectorReveal)},
+	}
+	peers := strings.Join(d.buildSized(base, 160, 45), "\n")
+	if !strings.Contains(peers, "▸ PEERS") || !strings.Contains(peers, endpoint) {
+		t.Fatalf("expanded peers lost content:\n%s", peers)
+	}
+	base.ui.focus, base.ui.expandedFocus = focusRoutes, focusRoutes
+	routes := strings.Join(d.buildSized(base, 160, 45), "\n")
+	if !strings.Contains(routes, "▸ ROUTES") || !strings.Contains(routes, "XD_OD → yoga") {
+		t.Fatalf("expanded routes lost content:\n%s", routes)
+	}
+}
+
+func TestCompactPeerRowKeepsTheOverlayIP(t *testing.T) {
+	d := testDashboard()
+	v := view{
+		st:    statusDTO{ID: "local"},
+		peers: []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", OverlayIPv4: "10.144.144.241"}},
+	}
+	out := strings.Join(d.renderPeers(v, 40, 4), "\n")
+	if !strings.Contains(out, "10.144.144.241") {
+		t.Fatalf("overlay address was clipped:\n%s", out)
+	}
+	if strings.Contains(out, "…") {
+		t.Fatalf("compact row still ellipsizes:\n%s", out)
 	}
 }

@@ -30,17 +30,20 @@ func (d *dashboard) buildSized(v view, width, height int) []string {
 		lines = append(lines, d.renderHelp(width)...)
 		return append(lines, d.footer(v, width, l.mode == modeWide))
 	}
-	if v.ui.inspector {
+	if v.ui.expanded {
 		rect := inspectorRect(l, width, height)
+		expanded := v
+		expanded.ui.focus = v.ui.expandedFocus
 		var overlay []string
 		if l.mode == modeShort {
-			overlay = d.renderInspector(v, width)
+			_, overlay = d.page(expanded, width, max(0, rect.h))
 		} else {
-			overlay = d.focusedCard("SELECTED LINK", d.renderInspector(v, max(1, rect.w-2)), rect, true)
+			title, body := d.page(expanded, max(1, rect.w-2), max(1, rect.h-2))
+			overlay = d.focusedCard(title, body, rect, true)
 		}
 		// The panel expands into place instead of popping open.
-		if v.motion && !v.ui.paused && !v.ui.inspectorAt.IsZero() {
-			if elapsed := time.Since(v.ui.inspectorAt); elapsed < inspectorReveal {
+		if v.motion && !v.ui.paused && !v.ui.expandedAt.IsZero() {
+			if elapsed := time.Since(v.ui.expandedAt); elapsed < inspectorReveal {
 				shown := int(easeOut(float64(elapsed)/float64(inspectorReveal)) * float64(len(overlay)))
 				if shown < 1 {
 					shown = 1
@@ -162,13 +165,19 @@ func (d *dashboard) footer(v view, width int, wide bool) string {
 		motion = "paused"
 	}
 	pos := d.position(v)
+	hint := ""
+	if v.ui.expanded {
+		hint = " · ESC back"
+	} else if width >= 96 {
+		hint = " · ENTER expand"
+	}
 	if wide {
-		return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion · TAB panels · j/k select · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion), width)
+		return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion · TAB panels · j/k select%s · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion, hint), width)
 	}
 	if width < 96 {
 		return d.line(fmt.Sprintf(" %s · %s · TAB pages · j/k · SPACE %s · ? · q", focusName(v.ui.focus), pos, motion), width)
 	}
-	return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion), width)
+	return d.line(fmt.Sprintf(" %s  focus %s · %s  SPACE %s motion%s · ? help · q quit", sparkline(v.spark), focusName(v.ui.focus), pos, motion, hint), width)
 }
 
 func (d *dashboard) position(v view) string {
@@ -374,7 +383,9 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 			if active {
 				nameText = d.paint(ansiOut, name)
 			}
-			fields := compactFields(nameText, state, transport, dash(p.OverlayIPv4), fmt.Sprintf("↓%s ↑%s · %s", humanRate(m.rx), humanRate(m.tx), rtt), width)
+			// Reserve the selection marker and activity dot before fitting,
+			// so the overlay address is not clipped afterwards.
+			fields := compactFields(nameText, state, transport, dash(p.OverlayIPv4), fmt.Sprintf("↓%s ↑%s · %s", humanRate(m.rx), humanRate(m.tx), rtt), width-2)
 			fields[0] = mark + dot + strings.TrimPrefix(fields[0], " ")
 			for _, line := range fields {
 				if len(lines) >= limit {
@@ -385,7 +396,12 @@ func (d *dashboard) renderPeers(v view, width, limit int) []string {
 			continue
 		}
 		overlay := dash(p.OverlayIPv4)
-		lines = append(lines, d.line(fmt.Sprintf("%s%s %-13s %-15s %-9s %5s ↓%-8s ↑%-8s", mark, dot, clip(name, 13), overlay, state, rtt, humanRate(m.rx), humanRate(m.tx)), width))
+		line := fmt.Sprintf("%s%s %-13s %-9s %-4s %-15s %7s", mark, dot, clip(name, 13), state, transport, overlay, rtt)
+		if endpoint := dash(p.Endpoint); endpoint != "—" && visibleWidth(line)+1+visibleWidth(endpoint) <= width-18 {
+			line += " " + endpoint
+		}
+		line += fmt.Sprintf("  ↓%s ↑%s", humanRate(m.rx), humanRate(m.tx))
+		lines = append(lines, d.line(line, width))
 	}
 	return lines
 }
@@ -440,13 +456,30 @@ func (d *dashboard) inspectorFields(v view) []string {
 		latency = fmt.Sprintf("%.1f ms (%.1f–%.1f, jitter %.1f)", rtt, minRTT, maxRTT, m.jitter)
 		rttPaint = rttColorFor(rtt)
 	}
-	return []string{
+	fields := []string{
 		fmt.Sprintf("%s · %s %s · %s", name, d.paint(stateColor(p.State), p.State), link, d.paint(ansiSlate, transport)),
 		"endpoint " + d.paint(ansiWhite, dash(p.Endpoint)),
 		fmt.Sprintf("RX %s  TX %s  peak %s", d.paint(ansiIn, humanRate(maxRate(m.rx, r.rx))), d.paint(ansiOut, humanRate(maxRate(m.tx, r.tx))), humanRate(maxRate(m.peak, r.rx+r.tx))),
 		"RTT " + d.paint(rttPaint, latency),
-		"last seen " + lastSeen(p.LastSeenMS) + " · ENTER expand · ESC return",
+		"last seen " + lastSeen(p.LastSeenMS),
 	}
+	if hint := d.expandHint(v); hint != "" {
+		fields = append(fields, hint)
+	}
+	return fields
+}
+
+// expandHint names the current expansion control; compact decks already fill
+// the screen, so they need none.
+func (d *dashboard) expandHint(v view) string {
+	switch d.currentMode() {
+	case modeShort, modeCompact:
+		return ""
+	}
+	if v.ui.expanded {
+		return "ESC back"
+	}
+	return "ENTER expand"
 }
 
 // renderInspector wraps every field, so a narrow card shows the whole

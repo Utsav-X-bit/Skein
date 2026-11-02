@@ -27,16 +27,17 @@ const (
 )
 
 type dashboardState struct {
-	focus       dashboardFocus
-	prevFocus   dashboardFocus
-	selected    string // peer ID
-	routeSel    string // route destination
-	activitySel string // origin|destination|path
-	inspector   bool
-	inspectorAt time.Time
-	paused      bool
-	help        bool
-	esc, csi    bool
+	focus         dashboardFocus
+	prevFocus     dashboardFocus
+	selected      string // peer ID
+	routeSel      string // route destination
+	activitySel   string // origin|destination|path
+	expanded      bool
+	expandedFocus dashboardFocus
+	expandedAt    time.Time
+	paused        bool
+	help          bool
+	esc, csi      bool
 }
 
 type metricSample struct {
@@ -124,13 +125,14 @@ func (d *dashboard) handleKey(key byte) (quit bool) {
 	case 'k':
 		d.moveSelection(-1)
 	case '\r', '\n':
-		d.openInspector()
+		d.expandFocused()
 	case ' ':
 		d.ui.paused = !d.ui.paused
 	case '?':
 		d.ui.help = !d.ui.help
-		d.ui.inspector = false
-		d.ui.inspectorAt = time.Time{}
+		d.ui.expanded = false
+		d.ui.expandedAt = time.Time{}
+		d.ui.expandedFocus = focusOverview
 	}
 	return false
 }
@@ -156,8 +158,9 @@ func (d *dashboard) focusOrder() []dashboardFocus {
 }
 
 func (d *dashboard) nextFocus(delta int) {
-	d.ui.help, d.ui.inspector = false, false
-	d.ui.inspectorAt = time.Time{}
+	d.ui.help, d.ui.expanded = false, false
+	d.ui.expandedAt = time.Time{}
+	d.ui.expandedFocus = focusOverview
 	order := d.focusOrder()
 	index := 0
 	for i, f := range order {
@@ -170,11 +173,12 @@ func (d *dashboard) nextFocus(delta int) {
 }
 
 func (d *dashboard) closeOverlay() {
-	if !d.ui.inspector && !d.ui.help {
+	if !d.ui.expanded && !d.ui.help {
 		return
 	}
-	d.ui.inspector, d.ui.help = false, false
-	d.ui.inspectorAt = time.Time{}
+	d.ui.expanded, d.ui.help = false, false
+	d.ui.expandedAt = time.Time{}
+	d.ui.expandedFocus = focusOverview
 	for _, f := range d.focusOrder() {
 		if f == d.ui.prevFocus {
 			d.ui.focus = f
@@ -183,35 +187,22 @@ func (d *dashboard) closeOverlay() {
 	}
 }
 
-// openInspector opens the selected peer's inspector from any peer-oriented
-// panel and remembers where to return with ESC.
-func (d *dashboard) openInspector() {
-	if d.ui.inspector && d.ui.focus == focusOverview {
-		d.ui.inspector = false
-		d.ui.inspectorAt = time.Time{}
+// expandFocused opens the focused panel at full content width, or closes it.
+// Compact and short decks already give the page the whole screen.
+func (d *dashboard) expandFocused() {
+	switch d.currentMode() {
+	case modeShort, modeCompact:
 		return
 	}
-	if d.ui.focus == focusRoutes {
-		if r, ok := selectedRouteFrom(d.routes, d.ui.routeSel); ok {
-			d.ui.selected = r.Destination
-		}
-	}
-	if d.ui.focus == focusActivity {
-		rows := activityRows(d.st.ID, localNameOf(d.st), d.peers, d.activities, time.Now().UnixMilli())
-		if row, ok := selectedActivityRow(rows, d.ui.activitySel); ok && row.peerID != "" {
-			d.ui.selected = row.peerID
-		}
-	}
-	if d.ui.selected == "" {
+	if d.ui.expanded {
+		d.ui.expanded = false
+		d.ui.expandedAt = time.Time{}
 		return
 	}
-	if d.ui.focus != focusOverview {
-		d.ui.prevFocus = d.ui.focus
-	}
-	d.ui.focus = focusOverview
+	d.ui.expanded = true
+	d.ui.expandedFocus = d.ui.focus
+	d.ui.expandedAt = time.Now()
 	d.ui.help = false
-	d.ui.inspector = true
-	d.ui.inspectorAt = time.Now()
 }
 
 func (d *dashboard) moveSelection(delta int) {

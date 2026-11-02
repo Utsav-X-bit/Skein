@@ -81,7 +81,7 @@ func TestInspectorOverlayShowsTheFullEndpoint(t *testing.T) {
 	v := view{
 		st:    statusDTO{ID: "local", Name: "XD_OD"},
 		peers: []peerDTO{{ID: "p", Name: "yoga", State: "up", Transport: "udp", Endpoint: endpoint, RTTMs: 1.2}},
-		ui:    dashboardState{focus: focusOverview, selected: "p", inspector: true},
+		ui:    dashboardState{focus: focusOverview, selected: "p", expanded: true, expandedFocus: focusOverview},
 	}
 	lines := d.buildSized(v, 160, 45)
 	out := strings.Join(lines, "\n")
