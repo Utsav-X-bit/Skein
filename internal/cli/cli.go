@@ -1110,7 +1110,12 @@ func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fw := firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}
+	fw := firewall.Config{
+		Interface: cfg.Node.Interface,
+		Port:      cfg.Node.ListenPort,
+		PrefixV4:  cfg.Node.OverlayIPv4Prefix.String(),
+		PrefixV6:  cfg.Node.OverlayIPv6Prefix.String(),
+	}
 	manager := firewall.Manager()
 	name := manager
 	if name == "" {

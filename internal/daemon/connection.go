@@ -281,7 +281,12 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		// rules without blocking the dataplane or the control API.
 		cfg := d.config()
 		go func() {
-			if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
+			if err := firewall.Ensure(firewall.Config{
+				Interface: cfg.Node.Interface,
+				Port:      cfg.Node.ListenPort,
+				PrefixV4:  cfg.Node.OverlayIPv4Prefix.String(),
+				PrefixV6:  cfg.Node.OverlayIPv6Prefix.String(),
+			}); err != nil {
 				log.Printf("skein: warning: firewall: %v", err)
 			}
 		}()

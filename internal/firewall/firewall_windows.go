@@ -32,17 +32,28 @@ type winRule struct {
 // rule to a named interface, so the overlay rules use New-NetFirewallRule
 // through an encoded PowerShell command; values are single-quote escaped.
 func windowsRules(cfg Config) []winRule {
-	iface := strings.ReplaceAll(cfg.Interface, "'", "''")
+	remote := cfg.PrefixV4
+	if cfg.PrefixV6 != "" {
+		if remote != "" {
+			remote += ","
+		}
+		remote += cfg.PrefixV6
+	}
+	if remote == "" {
+		// Fallback for callers that only know the interface name.
+		remote = "10.144.144.0/24,fd00:6d65:7368::/64"
+	}
+	remote = strings.ReplaceAll(remote, "'", "")
 	return []winRule{
 		{underlayRule, "netsh", []string{"advfirewall", "firewall", "add", "rule",
 			"name=" + underlayRule, "dir=in", "action=allow", "protocol=UDP",
 			fmt.Sprintf("localport=%d", cfg.Port), "profile=any"}},
 		{overlayRule, "powershell", powershellArgs(fmt.Sprintf(
-			"New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -InterfaceAlias '%s' -Profile Any -ErrorAction Stop | Out-Null",
-			overlayRule, iface))},
+			"New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
+			overlayRule, remote))},
 		{overlayOutRule, "powershell", powershellArgs(fmt.Sprintf(
-			"New-NetFirewallRule -DisplayName '%s' -Direction Outbound -Action Allow -InterfaceAlias '%s' -Profile Any -ErrorAction Stop | Out-Null",
-			overlayOutRule, iface))},
+			"New-NetFirewallRule -DisplayName '%s' -Direction Outbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
+			overlayOutRule, remote))},
 	}
 }
 

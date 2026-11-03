@@ -29,6 +29,8 @@ func classifyInterfaceError(err error) error {
 type Config struct {
 	Interface string
 	Port      uint16
+	PrefixV4  string
+	PrefixV6  string
 }
 
 // Runner executes a command and returns its combined output.
