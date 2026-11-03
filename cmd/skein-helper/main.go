@@ -493,6 +493,12 @@ func decodeRequest(data []byte, out any) error {
 // readInvite takes the join string from piped stdin: one string, at most 2 KiB.
 func readInvite(data []byte) (string, error) {
 	invite := strings.TrimSpace(string(data))
+	var req struct {
+		Invite string `json:"invite"`
+	}
+	if strings.HasPrefix(invite, "{") && json.Unmarshal(data, &req) == nil && req.Invite != "" {
+		invite = strings.TrimSpace(req.Invite)
+	}
 	if invite == "" {
 		return "", errors.New("join: pipe the network invite to stdin, e.g. echo 'skein:2:...' | skein-helper join")
 	}
