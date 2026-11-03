@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,6 +66,9 @@ func helperJSON[T any](ctx context.Context, verb string, payload any, args ...st
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err) {
+			return zero, errors.New("the Skein helper is not installed; install the Skein DEB/RPM/NSIS package first")
+		}
 		return zero, fmt.Errorf("helper %s: %w: %s", verb, err, strings.TrimSpace(errb.String()+out.String()))
 	}
 	var env struct {

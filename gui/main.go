@@ -21,10 +21,11 @@ func main() {
 		Name:             "main",
 		Title:            "Skein",
 		URL:              "/",
-		Width:            1440,
-		Height:           900,
+		Width:            1280,
+		Height:           800,
 		MinWidth:         900,
 		MinHeight:        600,
+		StartState:       application.WindowStateMaximised,
 		Frameless:        frameless,
 		BackgroundColour: application.NewRGB(8, 9, 11),
 		Mac: application.MacWindow{

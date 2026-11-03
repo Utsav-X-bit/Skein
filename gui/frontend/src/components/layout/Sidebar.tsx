@@ -25,7 +25,7 @@ export function Sidebar() {
         <button onClick={toggle} className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--text)]" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           <ArrowLeftRight size={16} className={collapsed ? "rotate-180" : ""} />
         </button>
-        {!collapsed && <><LogoMark size={34} /><Wordmark /></>}
+        {!collapsed && <><LogoMark size={56} /><Wordmark /></>}
       </div>
       <nav className="flex-1 space-y-1 p-2" aria-label="Primary">
         {items.map(({ to, label, icon: Icon, end }) => (
