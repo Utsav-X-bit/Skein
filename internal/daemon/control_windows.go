@@ -40,7 +40,9 @@ func (d *Daemon) serveControl(ctx context.Context) {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = srv.Serve(ln)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("skein: error: control pipe: %v", err)
 	}
+	log.Printf("skein: control pipe server stopped: %v", err)
 }

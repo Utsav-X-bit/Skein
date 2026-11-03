@@ -78,36 +78,23 @@ func sidFromString(s string) (*windows.SID, error) {
 	return sid, nil
 }
 
-// pipeSecurityDescriptor builds a DACL admitting SYSTEM, Administrators, and
-// every granted SID with full pipe access.
+// pipeSecurityDescriptor builds a protected DACL admitting SYSTEM,
+// Administrators, and every granted SID with full pipe access. SDDL is used
+// because CreateNamedPipe expects a self-relative descriptor.
 func pipeSecurityDescriptor(granted []string) (*windows.SECURITY_DESCRIPTOR, error) {
-	entries := make([]windows.EXPLICIT_ACCESS, 0, len(granted))
-	for _, s := range granted {
-		sid, err := sidFromString(s)
-		if err != nil {
-			return nil, fmt.Errorf("sid %s: %w", s, err)
+	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+	for _, sid := range granted {
+		if sid == sidSystem || sid == sidAdministrators {
+			continue
 		}
-		entries = append(entries, windows.EXPLICIT_ACCESS{
-			AccessPermissions: windows.GENERIC_READ | windows.GENERIC_WRITE,
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.NO_INHERITANCE,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_USER,
-				TrusteeValue: windows.TrusteeValue(unsafe.Pointer(sid)),
-			},
-		})
+		if _, err := sidFromString(sid); err != nil {
+			return nil, fmt.Errorf("sid %s: %w", sid, err)
+		}
+		sddl += "(A;;GA;;;" + sid + ")"
 	}
-	acl, err := windows.ACLFromEntries(entries, nil)
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
-		return nil, err
-	}
-	sd, err := windows.NewSecurityDescriptor()
-	if err != nil {
-		return nil, err
-	}
-	if err := sd.SetDACL(acl, true, false); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pipe SDDL: %w", err)
 	}
 	return sd, nil
 }
