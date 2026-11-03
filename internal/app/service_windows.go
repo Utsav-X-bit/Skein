@@ -4,6 +4,9 @@ package app
 
 import (
 	"context"
+	"log"
+	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows/svc"
 
@@ -13,6 +16,13 @@ import (
 func isWindowsService() (bool, error) { return svc.IsWindowsService() }
 
 func runAsService(run func(context.Context) error) error {
+	// A Windows service has no console. Persist daemon logs so startup
+	// failures are diagnosable from ProgramData.
+	if f, err := os.OpenFile(filepath.Join(SystemDir(), "skein.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+		log.SetOutput(f)
+		os.Stderr = f
+		defer f.Close()
+	}
 	return svc.Run(service.Name, &serviceHandler{run: run})
 }
 
@@ -32,6 +42,7 @@ func (h *serviceHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, 
 	for {
 		select {
 		case err := <-done:
+			log.Printf("skein: service run returned: %v", err)
 			if err != nil {
 				return false, 1
 			}
