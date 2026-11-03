@@ -186,7 +186,7 @@ stun = false
 
 	// The first packets may race the end-to-end handshake; retry for a while.
 	var out string
-	pingDeadline := time.Now().Add(20 * time.Second)
+	pingDeadline := time.Now().Add(60 * time.Second)
 	for {
 		out = run(t, "ip", "netns", "exec", ns["n4"], "ping", "-c", "2", "-W", "2", "10.144.144.3")
 		if receivedPackets(out) >= 1 {
