@@ -7,7 +7,15 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
+
+// scCmd runs sc.exe without flashing a console window in the GUI.
+func scCmd(args ...string) *exec.Cmd {
+	cmd := scCmd(args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd
+}
 
 func binPathFor(executable, configPath string) (string, error) {
 	if !strings.Contains(executable, `:\`) {
@@ -24,14 +32,14 @@ func install(executable, configPath string) error {
 	if err != nil {
 		return err
 	}
-	if out, err := exec.Command("sc", "create", Name, "binPath=", binPath, "start=", "auto", "DisplayName=", "Skein mesh VPN").CombinedOutput(); err != nil {
+	if out, err := scCmd("create", Name, "binPath=", binPath, "start=", "auto", "DisplayName=", "Skein mesh VPN").CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc create: %w: %s", err, out)
 	}
-	if out, err := exec.Command("sc", "description", Name, "Skein mesh VPN daemon").CombinedOutput(); err != nil {
+	if out, err := scCmd("description", Name, "Skein mesh VPN daemon").CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc description: %w: %s", err, out)
 	}
 	// Recover from crashes: retry at 5s, 10s, 30s, then give up.
-	if out, err := exec.Command("sc", "failure", Name, "reset=86400",
+	if out, err := scCmd("failure", Name, "reset=86400",
 		"actions=restart/5000/restart/10000/restart/30000").CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc failure: %w: %s", err, out)
 	}
@@ -39,7 +47,7 @@ func install(executable, configPath string) error {
 }
 
 func rewrite(executable, configPath string) error {
-	if _, err := exec.Command("sc", "qc", Name).Output(); err != nil {
+	if _, err := scCmd("qc", Name).Output(); err != nil {
 		return fmt.Errorf("service: %w", err)
 	}
 	binPath, err := binPathFor(executable, configPath)
@@ -47,14 +55,14 @@ func rewrite(executable, configPath string) error {
 		return err
 	}
 	// sc change rejects a new binPath while the service is running.
-	if out, err := exec.Command("sc", "change", Name, "binPath="+binPath).CombinedOutput(); err != nil {
+	if out, err := scCmd("change", Name, "binPath="+binPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc change: %w: %s", err, out)
 	}
 	return nil
 }
 
 func uninstall() error {
-	out, err := exec.Command("sc", "delete", Name).CombinedOutput()
+	out, err := scCmd("delete", Name).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "1060") {
 		return fmt.Errorf("service: sc delete: %w: %s", err, out)
 	}
@@ -62,14 +70,14 @@ func uninstall() error {
 }
 
 func start() error {
-	if out, err := exec.Command("sc", "start", Name).CombinedOutput(); err != nil {
+	if out, err := scCmd("start", Name).CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc start: %w: %s", err, out)
 	}
 	return nil
 }
 
 func stop() error {
-	if out, err := exec.Command("sc", "stop", Name).CombinedOutput(); err != nil {
+	if out, err := scCmd("stop", Name).CombinedOutput(); err != nil {
 		// 1062: already stopped.
 		if strings.Contains(string(out), "1062") {
 			return nil
@@ -89,7 +97,7 @@ func restart() error {
 // status reads the SCM state without elevation (sc query is readable by any
 // user).
 func status() (Status, error) {
-	out, err := exec.Command("sc", "query", Name).CombinedOutput()
+	out, err := scCmd("query", Name).CombinedOutput()
 	if err != nil {
 		msg := strings.ToLower(err.Error() + " " + string(out))
 		if strings.Contains(msg, "1060") || strings.Contains(msg, "does not exist as an installed service") {
@@ -129,7 +137,7 @@ func status() (Status, error) {
 
 // enabled reports the service start type without elevation.
 func enabled() bool {
-	out, err := exec.Command("sc", "qc", Name).Output()
+	out, err := scCmd("qc", Name).Output()
 	if err != nil {
 		return false
 	}
@@ -143,7 +151,7 @@ func enabled() bool {
 
 // installed parses the SCM binPath into its executable and config path.
 func installed() (string, string, bool, error) {
-	out, err := exec.Command("sc", "qc", Name).Output()
+	out, err := scCmd("qc", Name).Output()
 	if err != nil {
 		return "", "", false, nil
 	}
