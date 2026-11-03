@@ -158,11 +158,16 @@ try {
     $procA = $null
     $procB = $null
 
-    Start-Sleep -Seconds 2
-    $interfaces = netsh interface show interface
+    # Wintun removes adapters asynchronously after the process exits.
+    $cleanupDeadline = (Get-Date).AddSeconds(10)
     foreach ($name in @("SkeinSmokeA", "SkeinSmokeB")) {
-        if (($interfaces -join "`n") -match [regex]::Escape($name)) {
-            throw "interface $name survived daemon shutdown"
+        while ($true) {
+            $interfaces = netsh interface show interface
+            if (($interfaces -join "`n") -notmatch [regex]::Escape($name)) { break }
+            if ((Get-Date) -ge $cleanupDeadline) {
+                throw "interface $name survived daemon shutdown"
+            }
+            Start-Sleep -Milliseconds 500
         }
     }
     $failed = $false
