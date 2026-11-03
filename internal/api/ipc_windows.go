@@ -194,6 +194,7 @@ func (p *pipeListener) Accept() (net.Conn, error) {
 	if !ok {
 		return nil, net.ErrClosed
 	}
+	log.Printf("skein: pipe accept returned")
 	return c, nil
 }
 
@@ -358,6 +359,7 @@ type pipeConn struct {
 }
 
 func (c *pipeConn) Read(b []byte) (int, error) {
+	log.Printf("skein: pipe read enter")
 	var n uint32
 	err := windows.ReadFile(c.h, b, &n, nil)
 	log.Printf("skein: pipe read n=%d err=%v data=%q", n, err, string(b[:n]))
