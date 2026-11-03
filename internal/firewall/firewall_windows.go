@@ -16,10 +16,12 @@ import (
 // `show rule` first, so exactly one set of rules exists after any number of
 // repairs. All commands are netsh argv — no PowerShell string interpolation.
 const (
-	underlayRule   = "Skein underlay"
-	overlayRule    = "Skein overlay"
-	overlayOutRule = "Skein overlay out"
-	legacyRule     = "skein"
+	underlayRule     = "Skein underlay"
+	overlayRule      = "Skein overlay"
+	overlayOutRule   = "Skein overlay out"
+	overlayV6Rule    = "Skein overlay v6"
+	overlayOutV6Rule = "Skein overlay out v6"
+	legacyRule       = "skein"
 )
 
 type winRule struct {
@@ -32,29 +34,33 @@ type winRule struct {
 // rule to a named interface, so the overlay rules use New-NetFirewallRule
 // through an encoded PowerShell command; values are single-quote escaped.
 func windowsRules(cfg Config) []winRule {
-	remote := cfg.PrefixV4
-	if cfg.PrefixV6 != "" {
-		if remote != "" {
-			remote += ","
-		}
-		remote += cfg.PrefixV6
+	v4 := cfg.PrefixV4
+	if v4 == "" {
+		v4 = "10.144.144.0/24"
 	}
-	if remote == "" {
-		// Fallback for callers that only know the interface name.
-		remote = "10.144.144.0/24,fd00:6d65:7368::/64"
-	}
-	remote = strings.ReplaceAll(remote, "'", "")
-	return []winRule{
+	v4 = strings.ReplaceAll(v4, "'", "")
+	rules := []winRule{
 		{underlayRule, "netsh", []string{"advfirewall", "firewall", "add", "rule",
 			"name=" + underlayRule, "dir=in", "action=allow", "protocol=UDP",
 			fmt.Sprintf("localport=%d", cfg.Port), "profile=any"}},
 		{overlayRule, "powershell", powershellArgs(fmt.Sprintf(
 			"New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
-			overlayRule, remote))},
+			overlayRule, v4))},
 		{overlayOutRule, "powershell", powershellArgs(fmt.Sprintf(
 			"New-NetFirewallRule -DisplayName '%s' -Direction Outbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
-			overlayOutRule, remote))},
+			overlayOutRule, v4))},
 	}
+	if v6 := strings.ReplaceAll(cfg.PrefixV6, "'", ""); v6 != "" {
+		rules = append(rules,
+			winRule{overlayV6Rule, "powershell", powershellArgs(fmt.Sprintf(
+				"New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
+				overlayV6Rule, v6))},
+			winRule{overlayOutV6Rule, "powershell", powershellArgs(fmt.Sprintf(
+				"New-NetFirewallRule -DisplayName '%s' -Direction Outbound -Action Allow -RemoteAddress '%s' -Profile Any -ErrorAction Stop | Out-Null",
+				overlayOutV6Rule, v6))},
+		)
+	}
+	return rules
 }
 
 // powershellArgs builds a -EncodedCommand invocation so a config interface
@@ -167,7 +173,7 @@ func ensureInterface(cfg Config) error {
 }
 
 func remove(cfg Config) error {
-	for _, name := range []string{underlayRule, overlayRule, overlayOutRule, legacyRule} {
+	for _, name := range []string{underlayRule, overlayRule, overlayOutRule, overlayV6Rule, overlayOutV6Rule, legacyRule} {
 		// netsh deletes every rule with that name, including duplicates.
 		_, _ = runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+name)
 	}
