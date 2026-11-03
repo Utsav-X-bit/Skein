@@ -4,6 +4,7 @@ import { ConnectionService, NetworkService, errText, isOffline } from "@/lib/api
 import { Button } from "@/components/ui/button";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import { useUI } from "@/lib/store";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 export function CommandBar({ onPalette }: { onPalette: () => void }) {
@@ -13,9 +14,15 @@ export function CommandBar({ onPalette }: { onPalette: () => void }) {
   const toggle = useMutation({
     mutationFn: async () => {
       const state = status.data?.connection?.state;
-      if (state === "paused") await ConnectionService.Connect();
-      else await ConnectionService.Disconnect();
+      if (state === "paused") {
+        await ConnectionService.Connect();
+        return "resumed";
+      }
+      await ConnectionService.Disconnect();
+      return "paused";
     },
+    onSuccess: (action) => toast.success(action === "resumed" ? "Mesh resumed" : "Mesh paused"),
+    onError: (e) => toast.error(errText(e)),
     onSettled: () => qc.invalidateQueries({ queryKey: ["status"] }),
   });
 

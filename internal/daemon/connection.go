@@ -106,6 +106,11 @@ func (c *conn) setGeneration(engCancel, ctlCancel context.CancelFunc, pauseCh, r
 func (c *conn) snapshot() api.Connection {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.snapshotLocked()
+}
+
+// snapshotLocked is snapshot for callers already holding c.mu.
+func (c *conn) snapshotLocked() api.Connection {
 	return api.Connection{State: c.state, PausedReason: c.reason, LastError: c.lastErr, SinceMS: c.since.UnixMilli()}
 }
 
@@ -168,14 +173,21 @@ func (d *Daemon) Disconnect(ctx context.Context) (api.Connection, error) {
 	d.conn.mu.Lock()
 	switch d.conn.state {
 	case ConnPaused, ConnError:
-		st := d.conn.snapshot()
+		st := d.conn.snapshotLocked()
 		d.conn.mu.Unlock()
 		return st, &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "connection is " + st.State}
 	case ConnConnecting:
+		st := d.conn.snapshotLocked()
 		d.conn.mu.Unlock()
-		return d.conn.snapshot(), &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "connection is changing"}
+		return st, &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "connection is changing"}
 	}
-	d.conn.state = ConnConnecting
+	// Mark paused before signalling the loop. Otherwise the loop can observe
+	// ConnConnecting after teardown and restart the dataplane before we set
+	// the paused state, which made Disconnect look like a no-op.
+	d.conn.state = ConnPaused
+	d.conn.reason = "user"
+	d.conn.lastErr = ""
+	d.conn.since = time.Now()
 	pauseCh, downCh := d.conn.pauseCh, d.conn.downCh
 	engCancel, ctlCancel := d.conn.engCancel, d.conn.ctlCancel
 	d.conn.mu.Unlock()
@@ -191,7 +203,6 @@ func (d *Daemon) Disconnect(ctx context.Context) (api.Connection, error) {
 	if err := savePausedState(connState{Paused: true, PausedReason: "user", SinceMS: time.Now().UnixMilli()}); err != nil {
 		log.Printf("skein: warning: persisting paused state: %v", err)
 	}
-	d.conn.set(ConnPaused, "user", nil)
 	d.publishConnection()
 	return d.Connection(), nil
 }
@@ -201,7 +212,7 @@ func (d *Daemon) Connect(ctx context.Context) (api.Connection, error) {
 	d.conn.mu.Lock()
 	switch d.conn.state {
 	case ConnConnected, ConnConnecting:
-		st := d.conn.snapshot()
+		st := d.conn.snapshotLocked()
 		d.conn.mu.Unlock()
 		return st, &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "connection is " + st.State}
 	}

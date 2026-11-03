@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 )
@@ -86,5 +88,39 @@ func TestLogWriterParsesLevels(t *testing.T) {
 	}
 	if strings.Contains(entries[0].Message, "skein:") {
 		t.Fatalf("prefix kept: %s", entries[0].Message)
+	}
+}
+
+func TestDisconnectOnPausedConnectionDoesNotDeadlock(t *testing.T) {
+	d := &Daemon{conn: &conn{state: ConnPaused, since: time.Now()}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.Disconnect(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Disconnect on a paused connection returned nil error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Disconnect deadlocked while reading the paused state")
+	}
+}
+
+func TestConnectOnConnectedConnectionDoesNotDeadlock(t *testing.T) {
+	d := &Daemon{conn: &conn{state: ConnConnected, since: time.Now()}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.Connect(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Connect on a connected connection returned nil error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Connect deadlocked while reading the connected state")
 	}
 }
