@@ -110,7 +110,7 @@ func TestGrantedUIDACL(t *testing.T) {
 		t.Skipf("read ACL back: %v", err)
 	}
 	raw := buf[:n]
-	if len(raw) < 12 || binary.BigEndian.Uint32(raw[:4]) != 2 {
+	if len(raw) < 12 || binary.LittleEndian.Uint32(raw[:4]) != 2 {
 		t.Fatalf("bad ACL blob: %x", raw)
 	}
 	found := false
