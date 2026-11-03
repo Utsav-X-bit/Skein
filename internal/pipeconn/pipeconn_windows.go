@@ -67,6 +67,7 @@ type conn struct {
 var _ = net.Conn(&conn{})
 
 func (c *conn) Read(b []byte) (int, error) {
+	log.Printf("pipeconn: read enter")
 	ov := &windows.Overlapped{}
 	ov.HEvent = c.in
 	windows.ResetEvent(c.in)
