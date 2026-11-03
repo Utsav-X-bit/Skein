@@ -2,7 +2,9 @@ package main
 
 import (
 	"log"
+	"os"
 	"runtime"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -25,6 +27,7 @@ func main() {
 		Height:           800,
 		MinWidth:         900,
 		MinHeight:        600,
+		StartState:       application.WindowStateMaximised,
 		Frameless:        frameless,
 		BackgroundColour: application.NewRGB(8, 9, 11),
 		Mac: application.MacWindow{
@@ -42,8 +45,17 @@ func main() {
 		}
 	})
 
-	registerTray(a)
+	if os.Getenv("SKEIN_NO_TRAY") == "" {
+		registerTray(a)
+	}
 	registerUpdater(a)
+
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		if w := a.Window(); w != nil {
+			w.Fullscreen()
+		}
+	}()
 
 	if err := a.Run(); err != nil {
 		log.Fatal(err)

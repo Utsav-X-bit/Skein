@@ -39,3 +39,11 @@ export function Init(req: $models.InitRequest): $CancellablePromise<app$0.Bootst
 export function Join(invite: string): $CancellablePromise<app$0.BootstrapResult> {
     return $Call.ByID(154893786, invite);
 }
+
+/**
+ * Reset backs up the existing root config/identity (or keeps identity) so a
+ * new network can be created. It is destructive and requires confirmation.
+ */
+export function Reset(keepIdentity: boolean): $CancellablePromise<app$0.BackupResult> {
+    return $Call.ByID(2194576161, keepIdentity);
+}

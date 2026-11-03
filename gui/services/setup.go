@@ -39,6 +39,16 @@ func (s *SetupService) Join(ctx context.Context, invite string) (app.BootstrapRe
 	return helperJSON[app.BootstrapResult](ctx, "join", map[string]string{"invite": invite})
 }
 
+// Reset backs up the existing root config/identity (or keeps identity) so a
+// new network can be created. It is destructive and requires confirmation.
+func (s *SetupService) Reset(ctx context.Context, keepIdentity bool) (app.BackupResult, error) {
+	args := []string{}
+	if keepIdentity {
+		args = append(args, "--keep-identity")
+	}
+	return helperJSON[app.BackupResult](ctx, "reset", nil, args...)
+}
+
 // Import migrates a user-mode config into the root-owned system path.
 func (s *SetupService) Import(ctx context.Context, path string) (app.BootstrapResult, error) {
 	return helperJSON[app.BootstrapResult](ctx, "import", nil, "--source", path)
@@ -65,22 +75,31 @@ func helperJSON[T any](ctx context.Context, verb string, payload any, args ...st
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err) {
-			return zero, errors.New("the Skein helper is not installed; install the Skein DEB/RPM/NSIS package first")
-		}
-		return zero, fmt.Errorf("helper %s: %w: %s", verb, err, strings.TrimSpace(errb.String()+out.String()))
-	}
+	runErr := cmd.Run()
 	var env struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
+		OK          bool   `json:"ok"`
+		Error       string `json:"error"`
+		Remediation string `json:"remediation"`
 	}
 	raw := out.Bytes()
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return zero, fmt.Errorf("helper %s: invalid result: %w", verb, err)
+	_ = json.Unmarshal(raw, &env)
+	if runErr != nil {
+		if errors.Is(runErr, exec.ErrNotFound) || os.IsNotExist(runErr) {
+			return zero, errors.New("the Skein helper is not installed; install the Skein package first")
+		}
+		if env.Error != "" {
+			if env.Remediation != "" {
+				return zero, fmt.Errorf("%s: %s", env.Error, env.Remediation)
+			}
+			return zero, errors.New(env.Error)
+		}
+		return zero, fmt.Errorf("helper %s: %w: %s", verb, runErr, strings.TrimSpace(errb.String()+out.String()))
 	}
 	if !env.OK {
-		return zero, fmt.Errorf("%s", env.Error)
+		if env.Remediation != "" {
+			return zero, fmt.Errorf("%s: %s", env.Error, env.Remediation)
+		}
+		return zero, errors.New(env.Error)
 	}
 	var result T
 	if err := json.Unmarshal(raw, &result); err != nil {
