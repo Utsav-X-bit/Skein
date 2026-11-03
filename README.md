@@ -194,13 +194,26 @@ desktop Security page can repair them.
 
 **Git Bash**
 
-The same build works in Git Bash:
+Do not paste the PowerShell commands above into Git Bash: backslashes escape
+the next character, so `.\cmd\skein` becomes `.cmd\skein`. Use forward
+slashes and install the Wails CLI into `$HOME/go/bin`:
 
 ```bash
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+export PATH="$PATH:$HOME/go/bin"
+
 go build -trimpath -o dist/skein.exe        ./cmd/skein
 go build -trimpath -o dist/skeind.exe       ./cmd/skeind
 go build -trimpath -o dist/skein-helper.exe ./cmd/skein-helper
+(cd gui && wails3 build)                    # -> gui/bin/skein-desktop.exe
 ./scripts/fetch-wintun.cmd -Dest dist
+```
+
+If `wails3` is still not found, run `wails3 doctor` after restarting the shell,
+or use the PowerShell wrapper instead:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\test\windows\build.ps1
 ```
 
 Use Windows Terminal or `winpty` for the animated TUI; MinTTY gets the static

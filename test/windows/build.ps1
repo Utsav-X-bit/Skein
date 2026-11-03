@@ -24,6 +24,8 @@ function Require-Command($Name, $Hint) {
 }
 
 Require-Command "go" "Install Go and add it to PATH."
+$goBin = Join-Path (& go env GOPATH) "bin"
+if (Test-Path $goBin) { $env:Path = "$goBin;$env:Path" }
 Push-Location $root
 try {
     Write-Host "Building CLI, daemon, and helper..."
