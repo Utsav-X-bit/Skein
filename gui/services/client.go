@@ -35,7 +35,9 @@ func ControlClient() (*Client, error) {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return dialControl(ctx)
 			},
-			DisableKeepAlives: false,
+			// Each pipe request gets a fresh connection; the daemon serves
+			// one HTTP request per pipe instance.
+			DisableKeepAlives: true,
 		},
 	}
 	defaultClient = &Client{hc: hc, base: "http://skein"}
