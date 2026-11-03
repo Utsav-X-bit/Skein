@@ -407,11 +407,28 @@ func ensureService(cfg conf.Config) (service.State, error) {
 	if err := service.Start(); err != nil {
 		return service.StateError, fmt.Errorf("service start: %w", err)
 	}
-	st, err := service.ReadStatus()
-	if err != nil {
-		return service.StateUnknown, nil
+	// `sc start` can return success just before the service exits. Wait for a
+	// settled state so onboarding reports a failed start instead of leaving
+	// the desktop on "daemon offline".
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		st, err := service.ReadStatus()
+		if err == nil {
+			switch st.State {
+			case service.StateRunning:
+				return st.State, nil
+			case service.StateStopped, service.StateError:
+				return st.State, fmt.Errorf("service did not stay running (state: %s)", st.State)
+			}
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return service.StateUnknown, fmt.Errorf("service state: %w", err)
+			}
+			return st.State, fmt.Errorf("service did not reach running (state: %s)", st.State)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	return st.State, nil
 }
 
 // daemonExecutable finds the installed daemon binary. skeind is the thin
