@@ -61,264 +61,197 @@ flowchart LR
   terminals, renders only known route paths, and shows per-link throughput,
   transport, RTT, jitter, and authenticated aggregate mesh activity.
 
-## Status
-
-| Area | Verified |
-|---|---|
-| Unit tests, `-race`, fuzz target | pass |
-| Loopback UDP handshake + overlay packet | pass |
-| Three-node Linux netns bridge (v4-only ↔ v6-only) | pass |
-| mDNS discovery across a veth | pass (2 s to `up`) |
-| systemd install / start / stop / uninstall | pass |
-| TUN kernel round-trip | pass |
-| Relay introductions (punch) | unit tests (control relay + dataplane) |
-| TCP fallback over loopback | pass |
-| Firewall automation (ufw) | verified live; iptables fallback covered by unit tests |
-| Desktop onboarding, service control, security, firewall repair | verified live on Linux |
-| Desktop build (`wails3 build`) | verified on Linux; Windows build scripted |
-| Windows | cross-compiles; runtime smoke script provided, not yet run in a VM |
-
 Version `0.1.0-dev`.
 
 ## Install
 
+Skein ships as four pieces:
+
+| File | Purpose |
+|---|---|
+| `skein` | CLI, daemon (`skein run`), and TUI dashboard |
+| `skein-helper` | Elevated fixed-verb helper used by the desktop |
+| `skein-desktop` | Wails desktop control surface |
+| `wintun.dll` | Windows tunnel driver (Windows only) |
+
 ### Linux
 
-Build the CLI, the fixed-verb helper, and the desktop app:
+**Prerequisites**
+
+- Go 1.26+
+- Wails 3 CLI: `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`
+- GTK4 + WebKitGTK 6.0 development packages
+
+```bash
+# Arch
+sudo pacman -S --needed go gtk4 webkitgtk-6.0
+
+# Debian / Ubuntu
+sudo apt install build-essential libgtk-4-dev libwebkitgtk-6.0-dev
+
+# Fedora
+sudo dnf install gcc gtk4-devel webkitgtk6.0-devel
+
+export PATH="$PATH:$(go env GOPATH)/bin"
+wails3 doctor
+```
+
+**Build**
 
 ```bash
 git clone https://github.com/Utsav-X-bit/Skein && cd Skein
 go build -trimpath -o skein ./cmd/skein
 go build -trimpath -o skein-helper ./cmd/skein-helper
-
-cd gui
-wails3 build          # -> gui/bin/skein-desktop
-cd ..
-
-sudo install -m 0755 skein /usr/local/bin/skein
-sudo install -m 0755 skein-helper /usr/libexec/skein-helper
-sudo install -m 0755 gui/bin/skein-desktop /usr/local/bin/skein-desktop
+(cd gui && wails3 build)          # -> gui/bin/skein-desktop
 ```
 
-The desktop build needs the Wails 3 CLI and the GTK4/WebKitGTK 6.0
-development packages. `wails3 doctor` reports missing dependencies. The helper
-must stay root-owned at `/usr/libexec/skein-helper`.
-
-Start the desktop app as your normal user:
+**Install**
 
 ```bash
-skein-desktop
+sudo install -Dm0755 skein /usr/local/bin/skein
+sudo install -Dm0755 skein-helper /usr/libexec/skein-helper
+sudo install -Dm0755 gui/bin/skein-desktop /usr/local/bin/skein-desktop
 ```
 
-First run offers **Create a network**, **Join a network**, or **Use an
-existing installation**. The desktop uses `pkexec` to run the helper, which
-writes the root-owned config to `/etc/skein`, installs `skein.service`, starts
-it, and grants your uid access to `/run/skein/control.sock`. The TUI and CLI
-then attach to that service without `-c`:
+`skein-helper` must stay root-owned at `/usr/libexec/skein-helper`; the
+desktop invokes it with `pkexec`. The desktop writes the service config to
+`/etc/skein/skein.toml`, installs `skein.service`, starts it, and grants your
+uid access to `/run/skein/control.sock`.
+
+**Service without the desktop**
 
 ```bash
-skein status
-skein dashboard
-```
-
-The CLI-only path remains available for development:
-
-```bash
-skein init                       # user-owned config; no root needed
-sudo skein run -c ~/.config/skein/skein.toml
-```
-
-For a service install without the desktop:
-
-```bash
+skein init
 sudo skein install-service -c /home/$USER/.config/skein/skein.toml
 sudo systemctl enable --now skein
 ```
 
-`install-service` opens the underlay UDP port for **IPv4 and IPv6** before the
+`install-service` opens the underlay UDP port for IPv4 and IPv6 before the
 service starts; the overlay interface trust rule is added when the daemon
-starts. ufw and firewalld both get family-neutral rules, so one rule covers
-both stacks; without either, Skein appends its own iptables rules. The TUN
-interface, addresses, routes, and MTU are configured by the daemon.
+starts. ufw and firewalld get family-neutral rules; without either, Skein
+appends its own iptables rules.
 
 ### Windows
 
-1. Build the CLI, helper, and desktop app:
+**Prerequisites**
 
-   ```powershell
-   git clone https://github.com/Utsav-X-bit/Skein
-   cd Skein
-   go build -trimpath -o dist\skein.exe        .\cmd\skein
-   go build -trimpath -o dist\skeind.exe       .\cmd\skeind
-   go build -trimpath -o dist\skein-helper.exe .\cmd\skein-helper
+- Go 1.26+
+- Wails 3 CLI: `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`
+- WebView2 runtime (included with current Windows 10/11)
+- Administrator access for the service and firewall rules
 
-   cd gui
-   wails3 build          # -> gui\bin\skein-desktop.exe
-   cd ..
+**Build** (PowerShell)
 
-   .\scripts\fetch-wintun.cmd -Dest dist
-   ```
+```powershell
+git clone https://github.com/Utsav-X-bit/Skein
+cd Skein
+go build -trimpath -o dist\skein.exe        .\cmd\skein
+go build -trimpath -o dist\skeind.exe       .\cmd\skeind
+go build -trimpath -o dist\skein-helper.exe .\cmd\skein-helper
 
-   `fetch-wintun.cmd` runs the PowerShell fetcher with `-ExecutionPolicy
-   Bypass`, downloads the pinned Wintun release, verifies its SHA-256, and
-   installs `wintun.dll` plus its license. If scripts are blocked entirely:
+cd gui
+wails3 build          # -> gui\bin\skein-desktop.exe
+cd ..
 
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\fetch-wintun.ps1 -Dest dist
-   ```
+.\scripts\fetch-wintun.cmd -Dest dist
+```
 
-   or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and
-   copy `wintun/bin/amd64/wintun.dll` into `dist`.
+`fetch-wintun.cmd` downloads the pinned Wintun release, verifies its SHA-256,
+and installs `wintun.dll` plus its license. If scripts are blocked:
 
-2. Install the desktop bundle. The GUI expects the helper at its default
-   location:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\fetch-wintun.ps1 -Dest dist
+```
 
-   ```powershell
-   New-Item -ItemType Directory -Force 'C:\Program Files\Skein' | Out-Null
-   Copy-Item dist\skein-helper.exe 'C:\Program Files\Skein\skein-helper.exe'
-   Copy-Item gui\bin\skein-desktop.exe dist\
-   ```
+Or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and copy
+`wintun/bin/amd64/wintun.dll` into `dist`.
 
-   `wintun.dll` must sit next to every executable that creates the tunnel and
-   match its architecture.
+**Install**
 
-3. Start `dist\skein-desktop.exe` as your normal user. First run offers
-   **Create a network**, **Join a network**, or **Use an existing
-   installation**; UAC elevates the helper, which writes
-   `C:\ProgramData\Skein\skein.toml`, installs the `skein` service, and
-   starts it. The desktop then talks to the daemon over
-   `\\.\pipe\skein-control`.
+```powershell
+$dst = 'C:\Program Files\Skein'
+New-Item -ItemType Directory -Force $dst | Out-Null
+Copy-Item dist\* $dst -Recurse
+Copy-Item gui\bin\skein-desktop.exe $dst
+```
 
-4. The CLI-only path is still available for development:
+The helper must be at `C:\Program Files\Skein\skein-helper.exe` (the
+desktop's default). `wintun.dll` must sit next to `skein.exe` and
+`skein-desktop.exe`.
 
-   ```powershell
-   .\skein.exe init
-   .\skein.exe run -c "$env:APPDATA\skein\skein.toml"      # elevated
-   .\skein.exe status
-   .\skein.exe peers list
-   ```
+**Service without the desktop**
 
-5. Service install without the desktop:
+```powershell
+cd 'C:\Program Files\Skein'
+.\skein.exe init
+.\skein.exe install-service -c "$env:APPDATA\skein\skein.toml"
+sc start skein
+```
 
-   ```powershell
-   .\skein.exe install-service -c "$env:APPDATA\skein\skein.toml"
-   sc start skein
-   ```
+`install-service` creates the underlay UDP rule immediately; the inbound and
+outbound overlay interface rules are created when the daemon starts. The
+desktop Security page can repair them.
 
-`install-service` creates the underlay UDP rule (both address families)
-immediately; the overlay interface rules (inbound and outbound) are created
-when the daemon starts. The desktop Security page can repair them.
+**Git Bash**
 
-### Windows with Git Bash
-
-Everything works from Git Bash; the differences are elevation and the terminal.
+The same build works in Git Bash:
 
 ```bash
-git clone https://github.com/Utsav-X-bit/Skein && cd Skein
 go build -trimpath -o dist/skein.exe        ./cmd/skein
 go build -trimpath -o dist/skeind.exe       ./cmd/skeind
 go build -trimpath -o dist/skein-helper.exe ./cmd/skein-helper
-
-# fetch wintun (bypasses the PowerShell execution policy)
 ./scripts/fetch-wintun.cmd -Dest dist
 ```
 
-If the wrapper is blocked too:
-
-```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fetch-wintun.ps1 -Dest dist
-```
-
-Confirm the DLL sits next to the binaries:
-
-```bash
-ls -l dist/wintun.dll
-```
-
-The dev CLI config lives in `%APPDATA%\skein\skein.toml`, which Git Bash
-exposes as `$APPDATA/skein/skein.toml`. The desktop/service config lives in
-`C:\ProgramData\Skein\skein.toml` and is root/Administrator-owned:
-
-```bash
-./dist/skein.exe init
-./dist/skein.exe status
-./dist/skein.exe peers list
-./dist/skein.exe -c "$APPDATA/skein/skein.toml" dashboard
-```
-
-- `sudo` does not exist in Git Bash. Start it with **Run as administrator**
-  for `run`, `install-service`, and `dashboard` when they need to start the
-  daemon.
-- MinTTY is not a Windows console, so the dashboard falls back to the static
-  snapshot there. For the animated TUI use `winpty` or a Windows Terminal /
-  PowerShell tab:
-
-  ```bash
-  winpty ./dist/skein.exe dashboard
-  ```
-
-- If the dashboard is not elevated it prints the exact command to run from an
-  elevated prompt instead of starting a daemon it cannot create. With the
-  desktop service installed, `skein status` and `skein dashboard` attach to
-  `\\.\pipe\skein-control` without `-c`.
-- `scripts/fetch-wintun.sh` also works in Git Bash when `unzip` is installed;
-  the `.cmd` wrapper needs no extra tools.
-
+Use Windows Terminal or `winpty` for the animated TUI; MinTTY gets the static
+snapshot.
 
 ## Quick start
 
-**First node** (no privileges needed):
+### Desktop (GUI)
+
+**First node**
+
+1. Launch `skein-desktop` (Linux) or
+   `C:\Program Files\Skein\skein-desktop.exe` (Windows).
+2. Choose **Create a network**. The defaults are usually enough; set a name if
+   you want peers to see it.
+3. Approve the UAC/`pkexec` prompt. The helper installs and starts the service.
+4. Copy the join string shown by the app.
+
+**Other nodes**
+
+1. Launch the desktop and choose **Join a network**.
+2. Paste the join string.
+3. Approve the elevation prompt. The node joins and starts automatically.
+
+If `/etc/skein` (Linux) or `C:\ProgramData\Skein` (Windows) already exists
+but the service is stopped, choose **Use an existing installation** instead of
+creating a new network. The Overview page shows peers and routes; Security
+shows the firewall manager and repair action.
+
+### Terminal (TUI)
+
+With the service installed, the TUI attaches over the control socket/pipe; no
+`-c` or `sudo` is needed:
 
 ```bash
-./skein init          # identity, config, secret, API token, and a join string
+skein dashboard
 ```
 
-It prints a `join:` line like `skein:2:…`. That one string carries the network
-secret, the inviter's identity and addresses, the overlay prefixes, and the
-overlay addresses already in use. Treat it as a secret.
-
-**Every other node**:
+Without a service, run a dev daemon:
 
 ```bash
-./skein join "skein:2:…"   # sets the secret, a free overlay address, and the inviter as a peer
+skein init                                  # prints a join string
+sudo skein run -c ~/.config/skein/skein.toml
+# in another terminal:
+skein dashboard
 ```
 
-`join` writes the config and, if needed, a fresh identity. Start both ends:
-
-```bash
-sudo ./skein run -c ~/.config/skein/skein.toml
-```
-
-The inviter accepts the joiner automatically once the joiner proves the network
-secret during the handshake; no peer block is needed on the inviter. Static
-peers remain supported when you want fixed addresses:
-
-```toml
-[[peer]]
-id     = "b3f64ecc491aba35"
-pubkey = "K2Ipr1k0juOQxvsbrOFvFo2vMupEJjP78aIA1VytR2U="
-dialer = true                      # exactly one side of each pair
-addrs  = ["udp://203.0.113.5:11010"]
-```
-
-Start the daemon as root/Administrator and check it as your normal user:
-
-```bash
-sudo ./skein run -c ~/.config/skein/skein.toml      # the shell expands ~ first
-./skein status
-./skein peers list
-./skein routes
-./skein ping 10.144.144.2
-```
-
-Service mode:
-
-```bash
-sudo ./skein install-service -c ~/.config/skein/skein.toml   # systemd / Windows SCM
-```
-
-`skeind` remains available as a thin wrapper with the same `run`,
-`install-service`, and `uninstall-service` commands.
+Join another node with `skein join "skein:2:…"` before starting its daemon.
+Dashboard keys: `Tab`/`h`/`l` panels, `j`/`k` or arrows select, `Enter`
+inspector, `Space` pause motion, `?` help, `q` quit. `--no-motion` renders a
+static snapshot.
 
 ## Dashboard
 
