@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node, Position } from "@xyflow/react";
+import { Background, Controls, ReactFlow, type Edge, type Node, Position } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Peer, Status } from "@/lib/api";
 import { shortID } from "@/lib/utils";
@@ -47,7 +47,6 @@ export function Topology({ status, peers, onSelect }: { status: Status; peers: P
       <ReactFlow nodes={nodes} edges={edges} nodeTypes={{ peer: PeerNode }} fitView onNodeClick={(_, n) => onSelect?.(n.id)} proOptions={{ hideAttribution: true }} minZoom={0.4} maxZoom={1.6}>
         <Background color="var(--border)" gap={32} size={1} />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable nodeColor="var(--accent)" maskColor="rgba(0,0,0,.55)" style={{ background: "#101216" }} />
       </ReactFlow>
     </div>
   );
