@@ -5,6 +5,7 @@ package pipeconn
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ func Dial(name string) (net.Conn, error) {
 	h, err := windows.CreateFile(
 		name16,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		0, // no sharing: a single writer/reader pair per instance
+		0,
 		nil,
 		windows.OPEN_EXISTING,
 		0,
@@ -38,12 +39,12 @@ func Dial(name string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pipeconn: open %s: %w", name, err)
 	}
-	return &conn{h: h}, nil
+	return &conn{f: os.NewFile(uintptr(h), name)}, nil
 }
 
 // conn is a blocking net.Conn over one named pipe instance.
 type conn struct {
-	h windows.Handle
+	f *os.File
 
 	mu       sync.Mutex
 	deadline time.Time
@@ -51,35 +52,9 @@ type conn struct {
 
 var _ = net.Conn(&conn{})
 
-func (c *conn) Read(b []byte) (int, error) {
-	var n uint32
-	err := windows.ReadFile(c.h, b, &n, nil)
-	return int(n), err
-}
-
-func (c *conn) Write(b []byte) (int, error) {
-	total := 0
-	for total < len(b) {
-		var n uint32
-		err := windows.WriteFile(c.h, b[total:], &n, nil)
-		total += int(n)
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
-}
-
-func (c *conn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.h == 0 {
-		return nil
-	}
-	err := windows.CloseHandle(c.h)
-	c.h = 0
-	return err
-}
+func (c *conn) Read(b []byte) (int, error)  { return c.f.Read(b) }
+func (c *conn) Write(b []byte) (int, error) { return c.f.Write(b) }
+func (c *conn) Close() error                { return c.f.Close() }
 
 func (c *conn) LocalAddr() net.Addr  { return addr{} }
 func (c *conn) RemoteAddr() net.Addr { return addr{} }
