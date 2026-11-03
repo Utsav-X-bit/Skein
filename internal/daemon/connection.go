@@ -433,7 +433,10 @@ func overlayPrefixes(cfg conf.Config) (addresses, routes []netip.Prefix) {
 
 // engine returns the live dataplane engine, or nil while paused.
 func (d *Daemon) engine() *dataplane.Engine {
-	d.dataPlaneMu.Lock()
+	// Status must not block behind a slow TUN/firewall startup.
+	if !d.dataPlaneMu.TryLock() {
+		return nil
+	}
 	defer d.dataPlaneMu.Unlock()
 	return d.eng
 }
