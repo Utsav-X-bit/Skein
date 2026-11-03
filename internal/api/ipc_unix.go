@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // ErrSocketBusy reports that a live daemon already listens on the socket.
@@ -170,37 +168,11 @@ func (c *peerCredConn) ConnContext() context.Context {
 		base = u.ConnContext()
 	}
 	uid := -1
-	if ucred, err := peerCredential(c.c); err == nil {
-		uid = int(ucred.Uid)
+	if peerUID, err := peerCredential(c.c); err == nil {
+		uid = peerUID
 	}
 	if uid >= 0 {
 		return WithCaller(base, Caller{UID: uid})
 	}
 	return base
-}
-
-// peerCredential reads SO_PEERCRED on a Unix connection.
-func peerCredential(c net.Conn) (*unix.Ucred, error) {
-	u, ok := c.(*net.UnixConn)
-	if !ok {
-		return nil, errors.New("not a unix connection")
-	}
-	raw, err := u.SyscallConn()
-	if err != nil {
-		return nil, err
-	}
-	var (
-		cred *unix.Ucred
-		serr error
-	)
-	err = raw.Control(func(fd uintptr) {
-		cred, serr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
-	if err != nil {
-		return nil, err
-	}
-	if serr != nil {
-		return nil, serr
-	}
-	return cred, nil
 }
