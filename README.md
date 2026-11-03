@@ -33,11 +33,21 @@ flowchart LR
   invites.
 - **Bounded routing**: distance vector with full paths, split horizon, and at
   most four links. Relays rewrite only `to_next` and `ttl`.
-- **One binary**: `skein` runs the daemon (`skein run`), the system service,
-  the dashboard, and every client command; `skeind` remains a thin wrapper.
+- **One CLI binary**: `skein` runs the daemon (`skein run`), the system
+  service, the TUI dashboard, and every client command; `skeind` remains a
+  thin wrapper.
+- **Desktop control surface**: `skein-desktop` is a Wails app for onboarding,
+  peers, invites, activity, diagnostics, settings, firewall repair, and
+  service control. It talks to the daemon over a root-owned Unix socket or
+  Windows named pipe, never a shell.
+- **Fixed-verb privileged helper**: `skein-helper` performs init/join/import,
+  service changes, secret rotation, resets, and signed updates. Every verb
+  validates its inputs and returns one JSON object; secrets travel on stdin or
+  a GUI-created pipe, never argv.
 - **Automatic firewall**: `skein run` opens the underlay port and trusts the
-  overlay interface (ufw, firewalld, or Windows Firewall), so any protocol
-  works without extra rules.
+  overlay interface (ufw, firewalld, raw iptables fallback, or Windows
+  Firewall), so any protocol works without extra rules. The desktop Security
+  page shows the manager, owned rules, and a repair action.
 - **Relay introductions**: a peer reachable only through a relay asks it for an
   introduction, both sides dial each other's observed endpoint at once, and a
   failed punch keeps the relayed path.
@@ -63,7 +73,9 @@ flowchart LR
 | TUN kernel round-trip | pass |
 | Relay introductions (punch) | unit tests (control relay + dataplane) |
 | TCP fallback over loopback | pass |
-| Firewall automation (ufw) | verified live |
+| Firewall automation (ufw) | verified live; iptables fallback covered by unit tests |
+| Desktop onboarding, service control, security, firewall repair | verified live on Linux |
+| Desktop build (`wails3 build`) | verified on Linux; Windows build scripted |
 | Windows | cross-compiles; runtime smoke script provided, not yet run in a VM |
 
 Version `0.1.0-dev`.
@@ -72,27 +84,53 @@ Version `0.1.0-dev`.
 
 ### Linux
 
-From source:
+Build the CLI, the fixed-verb helper, and the desktop app:
 
 ```bash
 git clone https://github.com/Utsav-X-bit/Skein && cd Skein
 go build -trimpath -o skein ./cmd/skein
+go build -trimpath -o skein-helper ./cmd/skein-helper
+
+cd gui
+wails3 build          # -> gui/bin/skein-desktop
+cd ..
+
 sudo install -m 0755 skein /usr/local/bin/skein
+sudo install -m 0755 skein-helper /usr/libexec/skein-helper
+sudo install -m 0755 gui/bin/skein-desktop /usr/local/bin/skein-desktop
 ```
 
-Or unpack a release archive and copy `skein` into `/usr/local/bin`.
+The desktop build needs the Wails 3 CLI and the GTK4/WebKitGTK 6.0
+development packages. `wails3 doctor` reports missing dependencies. The helper
+must stay root-owned at `/usr/libexec/skein-helper`.
 
-First-time setup (no root needed):
+Start the desktop app as your normal user:
 
 ```bash
-skein init                       # or: skein join "skein:2:…"
+skein-desktop
 ```
 
-Run the daemon (root) or install the service:
+First run offers **Create a network**, **Join a network**, or **Use an
+existing installation**. The desktop uses `pkexec` to run the helper, which
+writes the root-owned config to `/etc/skein`, installs `skein.service`, starts
+it, and grants your uid access to `/run/skein/control.sock`. The TUI and CLI
+then attach to that service without `-c`:
 
 ```bash
+skein status
+skein dashboard
+```
+
+The CLI-only path remains available for development:
+
+```bash
+skein init                       # user-owned config; no root needed
 sudo skein run -c ~/.config/skein/skein.toml
-# or
+```
+
+For a service install without the desktop:
+
+```bash
 sudo skein install-service -c /home/$USER/.config/skein/skein.toml
 sudo systemctl enable --now skein
 ```
@@ -100,19 +138,24 @@ sudo systemctl enable --now skein
 `install-service` opens the underlay UDP port for **IPv4 and IPv6** before the
 service starts; the overlay interface trust rule is added when the daemon
 starts. ufw and firewalld both get family-neutral rules, so one rule covers
-both stacks. The TUN interface, addresses, routes, and MTU are configured by
-the daemon.
+both stacks; without either, Skein appends its own iptables rules. The TUN
+interface, addresses, routes, and MTU are configured by the daemon.
 
 ### Windows
 
-1. Get the files — a release archive (`skein.exe`, `skeind.exe`, `wintun.dll`,
-   `wintun-LICENSE.txt`) or build them:
+1. Build the CLI, helper, and desktop app:
 
    ```powershell
    git clone https://github.com/Utsav-X-bit/Skein
    cd Skein
-   go build -trimpath -o dist\skein.exe  .\cmd\skein
-   go build -trimpath -o dist\skeind.exe .\cmd\skeind
+   go build -trimpath -o dist\skein.exe        .\cmd\skein
+   go build -trimpath -o dist\skeind.exe       .\cmd\skeind
+   go build -trimpath -o dist\skein-helper.exe .\cmd\skein-helper
+
+   cd gui
+   wails3 build          # -> gui\bin\skein-desktop.exe
+   cd ..
+
    .\scripts\fetch-wintun.cmd -Dest dist
    ```
 
@@ -127,49 +170,44 @@ the daemon.
    or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and
    copy `wintun/bin/amd64/wintun.dll` into `dist`.
 
-   Verify it landed next to the binaries:
+2. Install the desktop bundle. The GUI expects the helper at its default
+   location:
 
    ```powershell
-   dir dist\wintun.dll
+   New-Item -ItemType Directory -Force 'C:\Program Files\Skein' | Out-Null
+   Copy-Item dist\skein-helper.exe 'C:\Program Files\Skein\skein-helper.exe'
+   Copy-Item gui\bin\skein-desktop.exe dist\
    ```
 
-   On Linux, when cross-building, use `./scripts/fetch-wintun.sh amd64
-   dist/windows-amd64`.
+   `wintun.dll` must sit next to every executable that creates the tunnel and
+   match its architecture.
 
-2. Copy the folder anywhere (`C:\Skein` works). `wintun.dll` must sit next to
-   the executable and match its architecture.
+3. Start `dist\skein-desktop.exe` as your normal user. First run offers
+   **Create a network**, **Join a network**, or **Use an existing
+   installation**; UAC elevates the helper, which writes
+   `C:\ProgramData\Skein\skein.toml`, installs the `skein` service, and
+   starts it. The desktop then talks to the daemon over
+   `\\.\pipe\skein-control`.
 
-3. First-time setup (normal prompt):
+4. The CLI-only path is still available for development:
 
    ```powershell
-   cd C:\Skein
    .\skein.exe init
+   .\skein.exe run -c "$env:APPDATA\skein\skein.toml"      # elevated
+   .\skein.exe status
+   .\skein.exe peers list
    ```
 
-4. Start the daemon from an elevated prompt:
-
-   ```powershell
-   .\skein.exe run -c "$env:APPDATA\skein\skein.toml"
-   ```
-
-5. Or install it as a service:
+5. Service install without the desktop:
 
    ```powershell
    .\skein.exe install-service -c "$env:APPDATA\skein\skein.toml"
    sc start skein
    ```
 
-6. Verify:
-
-   ```powershell
-   .\skein.exe status
-   .\skein.exe peers list
-   ping 10.144.144.1
-   ```
-
 `install-service` creates the underlay UDP rule (both address families)
-immediately; the overlay interface rule is created when the daemon starts.
-`wintun.dll` must match the architecture of the executable.
+immediately; the overlay interface rules (inbound and outbound) are created
+when the daemon starts. The desktop Security page can repair them.
 
 ### Windows with Git Bash
 
@@ -177,8 +215,9 @@ Everything works from Git Bash; the differences are elevation and the terminal.
 
 ```bash
 git clone https://github.com/Utsav-X-bit/Skein && cd Skein
-go build -trimpath -o dist/skein.exe  ./cmd/skein
-go build -trimpath -o dist/skeind.exe ./cmd/skeind
+go build -trimpath -o dist/skein.exe        ./cmd/skein
+go build -trimpath -o dist/skeind.exe       ./cmd/skeind
+go build -trimpath -o dist/skein-helper.exe ./cmd/skein-helper
 
 # fetch wintun (bypasses the PowerShell execution policy)
 ./scripts/fetch-wintun.cmd -Dest dist
@@ -196,8 +235,9 @@ Confirm the DLL sits next to the binaries:
 ls -l dist/wintun.dll
 ```
 
-The config lives in `%APPDATA%\skein\skein.toml`, which Git Bash exposes as
-`$APPDATA/skein/skein.toml`:
+The dev CLI config lives in `%APPDATA%\skein\skein.toml`, which Git Bash
+exposes as `$APPDATA/skein/skein.toml`. The desktop/service config lives in
+`C:\ProgramData\Skein\skein.toml` and is root/Administrator-owned:
 
 ```bash
 ./dist/skein.exe init
@@ -218,7 +258,9 @@ The config lives in `%APPDATA%\skein\skein.toml`, which Git Bash exposes as
   ```
 
 - If the dashboard is not elevated it prints the exact command to run from an
-  elevated prompt instead of starting a daemon it cannot create.
+  elevated prompt instead of starting a daemon it cannot create. With the
+  desktop service installed, `skein status` and `skein dashboard` attach to
+  `\\.\pipe\skein-control` without `-c`.
 - `scripts/fetch-wintun.sh` also works in Git Bash when `unzip` is installed;
   the `.cmd` wrapper needs no extra tools.
 
@@ -281,14 +323,18 @@ sudo ./skein install-service -c ~/.config/skein/skein.toml   # systemd / Windows
 ## Dashboard
 
 ```bash
-sudo ./skein dashboard
+./skein dashboard
 ```
 
-If no daemon is answering, the dashboard starts one from the config file
-(`-c <path>`, or the default location; under `sudo` the invoking user's config
-is used) and stops it again when you quit. If a daemon is already running it
-simply attaches. Daemon output from a dashboard-started daemon goes to
-`<config>.log`.
+With the desktop service installed, the dashboard attaches to
+`/run/skein/control.sock` on Linux or `\\.\pipe\skein-control` on Windows;
+no `-c` is needed. A stale per-user config no longer hides the service: the
+default-path client prefers the system control plane, while an explicit `-c`
+still selects a dev daemon.
+
+If no daemon is answering, the dashboard starts one from the selected config
+(and stops it when you quit). Under `sudo` the invoking user's config is used.
+Daemon output from a dashboard-started daemon goes to `<config>.log`.
 
 The full-screen dashboard is a dense, btop-style network console. It uses a
 woven Skein infinity mark derived from `Logo.png` and reflows for compact,
@@ -344,14 +390,23 @@ name                = "utsav-laptop"        # optional, shown to peers (default:
 public_addr         = "203.0.113.7:11010"   # optional: only when the external port differs
 
 [api]
-listen = "127.0.0.1:11011"                  # loopback only
-token  = "<32 random bytes, base64url>"
+socket = "/run/skein/control.sock"          # Linux service; helper-managed
+# pipe = "skein-control"                    # Windows service
+listen = "127.0.0.1:11011"                  # dev-only loopback listener
+token  = "<32 random bytes, base64url>"     # dev-only bearer token
 
 [discovery]
 mdns        = true
 stun        = true                           # learn and advertise the public IPv4/IPv6
 stun_server = "stun.l.google.com:19302"      # optional override
 ```
+
+The desktop/service config is `/etc/skein/skein.toml` on Linux and
+`C:\ProgramData\Skein\skein.toml` on Windows, root/Administrator-owned; the
+helper writes `api.socket` or `api.pipe` and disables the dev TCP listener.
+`api.listen` + `api.token` are for a user-run dev daemon only. The system
+socket is `0660 root-owned` with a per-uid ACL; the Windows pipe DACL grants
+SYSTEM, Administrators, and the chosen user.
 
 Unknown keys are rejected. The daemon refuses a config readable by group or
 others, and the X25519 key lives in `<config dir>/identity.key` with owner-only
@@ -363,8 +418,8 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 
 | Command | Purpose |
 |---|---|
-| `skein init` | Create identity, config, network secret, API token |
-| `skein run` | Run the daemon (root / Administrator) |
+| `skein init` | Dev-only: create a user-owned identity, config, network secret, API token |
+| `skein run` | Run the daemon (root / Administrator); the service uses `/etc/skein` |
 | `skein reset [--purge] [--keep-identity]` | Leave the mesh: back up or remove the config and identity, then re-init or join |
 | `skein setup [--remove]` | Allow UDP `listen_port` and all traffic on the overlay interface (ufw, firewalld, iptables, Windows Firewall) |
 | `skein install-service` | Register the system service |
@@ -374,7 +429,7 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein invite --network` | Print the `skein:2:` join string (contains the secret) |
 | `skein join <invite>` | Configure this node from a network invite |
 | `skein name [value]` | Show or set this node's name |
-| `skein dashboard` | Live mesh view; starts the daemon if needed |
+| `skein dashboard` | Live TUI; attaches to the service socket/pipe or starts a dev daemon |
 | `skein status [--json]` | Overlay addresses, peers, uptime, counters |
 | `skein peers [list\|add\|rm]` | Manage peers |
 | `skein routes [--json]` | Reachability table |
@@ -382,11 +437,17 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein ping <overlay-ip>` | Ping through the overlay |
 | `skein version`, `skein -v` | Version plus the commit the binary was built from |
 
+`setup`, `install-service`, `uninstall-service`, and `reset` are also available
+through `skein-helper` with fixed arguments; the desktop uses the helper so no
+shell is involved. Helper verbs: `init`, `join`, `import`, `install`,
+`uninstall`, `start`, `stop`, `restart`, `status`, `rotate-secret`, `reset`,
+`grant-user`, `set-owner`, `update-daemon`.
+
 ### Global flags
 
 | Flag | Meaning |
 |---|---|
-| `-c, --config <path>` | Configuration file. Defaults to the user config dir; under `sudo` the invoking user's config is used. |
+| `-c, --config <path>` | Explicit config. Without it, client commands prefer the installed service control plane; otherwise the user config dir is used. |
 | `--json` | Machine-readable output for `status`, `peers`, `routes`. |
 | `--no-color` | Disable ANSI colour. |
 | `--no-motion` | Static dashboard (same as `SKEIN_NO_MOTION=1`). |
@@ -396,6 +457,9 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | Variable | Meaning |
 |---|---|
 | `SKEIN_NO_MOTION=1` | Render the dashboard as a static snapshot. |
+| `SKEIN_ASCII=1` | ASCII Skein mark for terminals without reliable Unicode. |
+| `SKEIN_NO_TRAY=1` | Start the desktop without a tray icon (diagnostics). |
+| `SKEIN_HELPER` | Override the helper path (desktop/development). |
 | `SKEIN_DEBUG=1` | Per-frame receive/forward/drop diagnostics on the daemon. |
 | `SKEIN_TUN_PROBE=1` | Root-only TUN kernel round-trip test. |
 | `SKEIN_NETNS_PREFIX` | Namespace prefix used by `test/netns/run.sh`. |
@@ -404,28 +468,58 @@ Exit codes: `0` success, `1` runtime or API error, `2` usage error.
 
 ## API
 
-Loopback only, `Authorization: Bearer <token from config>`; browser `Origin`
-requests are rejected and no CORS headers are sent.
+The desktop and CLI use the same JSON API over the service control plane:
+
+- **Linux**: `unix:///run/skein/control.sock`, `0660 root-owned` plus a per-uid
+  ACL; the daemon authenticates the caller with `SO_PEERCRED`.
+- **Windows**: `\\.\pipe\skein-control`, DACL SYSTEM/Administrators/granted
+  user; the server impersonates the client and checks the token SID.
+- **Dev TCP**: `api.listen` + `Authorization: Bearer <token>`; loopback only,
+  browser `Origin` requests rejected, no CORS headers.
+
+Body limit 16 KiB, strict JSON, unknown fields rejected. Mutations are audited
+without secrets and rate-limited per caller. Errors use
+`{code,message,remediation,details,request_id}`.
 
 | Method | Path |
 |---|---|
+| `GET` | `/api/v1/capabilities` |
 | `GET` | `/api/v1/status` |
+| `GET` | `/api/v1/identity` |
+| `GET` / `PATCH` | `/api/v1/config` (secrets redacted; patch allowlist) |
+| `POST` | `/api/v1/connection` (`connect` / `disconnect`) |
 | `GET` / `POST` | `/api/v1/peers` |
 | `DELETE` | `/api/v1/peers/{id}` |
 | `POST` | `/api/v1/peers/{id}/probe` |
 | `GET` | `/api/v1/routes` |
-| `GET` | `/api/v1/config` (secrets redacted) |
-| `GET` | `/api/v1/events` (SSE) |
+| `GET` | `/api/v1/activities` |
+| `POST` | `/api/v1/invites/peer`, `/api/v1/invites/network` |
+| `GET` | `/api/v1/logs?since=&limit=` |
+| `GET` | `/api/v1/events` (SSE; `Last-Event-ID` replay) |
+| `GET` | `/api/v1/diagnostics` |
+| `GET` | `/api/v1/security` |
+| `GET` | `/api/v1/firewall` |
+| `POST` | `/api/v1/firewall/repair` |
+
+Full contract: [`docs/gui-api.md`](docs/gui-api.md).
 
 ## Firewall and any protocol
 
 `skein run` opens what it needs at startup, idempotently:
 
-- **Linux** — with `ufw` active it allows `<port>/udp` and all traffic on the
-  overlay interface; with `firewalld` it adds the port and puts the interface in
-  the trusted zone.
-- **Windows** — it creates `Skein underlay` (inbound UDP on the port) and
-  `Skein overlay` (all inbound traffic on the interface) firewall rules.
+- **Linux** — with `ufw` active it allows `<port>/udp`, all traffic on the
+  overlay interface, and the matching route rules; with `firewalld` it adds the
+  port and puts the interface in the trusted zone; otherwise it appends
+  `INPUT`/`OUTPUT`/`FORWARD` accepts for the interface and underlay port.
+- **Windows** — it creates `Skein underlay` (inbound UDP on the port),
+  `Skein overlay` (all inbound traffic on the interface), and `Skein overlay
+  out` (all outbound traffic on the interface) firewall rules.
+
+The desktop Security page reports the detected manager, the owned rule set,
+config/identity ownership and modes, socket ACL, update signature, and a
+**Repair rules** action. “5 managed” is the expected set, not a live audit of
+every kernel rule. A systemd sandbox must allow `/run/ufw.lock` for `ufw status`
+to work; the shipped unit does.
 
 Because the overlay interface is trusted, every protocol works without
 per-service rules:
@@ -486,8 +580,8 @@ IPv6 first when it works; the route table then keeps the cheapest validated
 path. IPv6 needs UDP `<port>` open on the listener's host firewall, which the
 daemon configures automatically.
 
-Not implemented: TLS camouflage, STUN against an external service, and a
-global DERP-style relay network.
+Not implemented: TLS camouflage and a global DERP-style relay network. STUN
+is implemented (`discovery.stun`); the probes learn the public IPv4/IPv6.
 
 ## How it works
 
@@ -520,19 +614,22 @@ handshake backoff 1→30 s.
   PMTU is unsupported.
 - One shared secret, no per-peer ACLs or revocation. The join string contains
   that secret, so anyone holding it can join the network.
-- The loopback API is not an isolation boundary between processes of the same
-  user, and relays can observe peer IDs, sizes, and timing.
+- The control API authenticates the caller, but every process running as a
+  granted uid can use it; relays can observe peer IDs, sizes, and timing.
 
 ## Testing
 
 ```bash
 go test -race ./...
+(cd gui && wails3 build)                            # desktop compile
 sudo -E env "PATH=$PATH" ./test/netns/run.sh        # v4-only ↔ v6-only bridge
 SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" \
   go test ./internal/tun -run TestTUNWriteRead -v    # TUN kernel round-trip
 ```
 
-Windows runtime check: `test/windows/smoke.ps1` (elevated, with `wintun.dll`).
+TUI smoke: `skein dashboard` with the service running should attach over the
+socket/pipe and quit with `q`. Windows runtime check:
+`test/windows/smoke.ps1` (elevated, with `wintun.dll`).
 
 ## Docs
 
@@ -540,14 +637,17 @@ Windows runtime check: `test/windows/smoke.ps1` (elevated, with `wintun.dll`).
   discovery, configuration.
 - [`docs/measurements.md`](docs/measurements.md) — what was measured and how to
   reproduce it.
+- [`docs/gui-api.md`](docs/gui-api.md) — desktop/daemon API contract.
 - [`docs/superpowers/specs/`](docs/superpowers/specs) — design spec.
 - [`docs/superpowers/plans/`](docs/superpowers/plans) — implementation plan.
 
 ## Layout
 
 ```
-cmd/skein                 daemon, dashboard, and CLI in one binary
+cmd/skein                 daemon, TUI dashboard, and CLI in one binary
 cmd/skeind                thin daemon wrapper
+cmd/skein-helper          fixed-verb elevated helper for the desktop
+gui/                      Wails desktop app, services, frontend, packaging
 internal/identity         X25519 keys, peer IDs, invites
 internal/conf             TOML schema, defaults, validation
 internal/wire             bounded frame codec
@@ -562,7 +662,10 @@ internal/control          keepalive, state sync, rekey, probes
 internal/api, internal/daemon   loopback API and composition
 internal/app              daemon entry points shared by both binaries
 internal/cli              CLI, API client, and dashboard
-internal/firewall         automatic ufw/firewalld/Windows firewall rules
+internal/firewall         automatic ufw/firewalld/iptables/Windows rules
 internal/service          systemd and Windows service installation
+internal/pipeconn         Windows named-pipe transport
+internal/activity         bounded authenticated mesh telemetry
 test/netns, test/windows  runtime harnesses
+docs/gui-api.md           desktop/daemon API contract
 ```

@@ -12,6 +12,9 @@ import (
 // setControlField writes the platform control plane into the config.
 func setControlField(cfg *conf.Config) { cfg.API.Pipe = ControlPipeName }
 
+// ApplyControl points an in-memory client config at the service control plane.
+func ApplyControl(cfg *conf.Config) { setControlField(cfg) }
+
 // ControlPipeName is the bare pipe name written to api.pipe; the daemon
 // prepends \\.\pipe\ itself.
 const ControlPipeName = "skein-control"

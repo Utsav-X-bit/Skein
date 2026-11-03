@@ -6,7 +6,7 @@ Unix socket / Windows named pipe; TCP is dev-only and keeps bearer auth.
 
 ## Transport and auth
 
-- Linux: `unix:///run/skein/control.sock`, 0660 root:skein + per-user ACL.
+- Linux: `unix:///run/skein/control.sock`, 0660 root-owned + per-user ACL.
   Caller uid from `SO_PEERCRED`; socket DACL authorizes.
 - Windows: `\\.\pipe\skein-control`, DACL SYSTEM/Administrators/granted user;
   server impersonates client and checks token SID; client verifies server PID

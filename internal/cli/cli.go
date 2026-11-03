@@ -144,17 +144,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Println("skein service removed")
 		return 0
 	case "dashboard", "top":
-		cfg, err := loadConfig(path)
+		cfg, resolvedPath, err := loadOnlineConfig(path, opts.explicit)
 		if err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
 		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
 		d := newDashboard(cfg, stdout, !opts.noColor, motion)
-		d.configPath = path
+		d.configPath = resolvedPath
 		dashCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := d.ensureDaemon(dashCtx, path); err != nil {
+		if err := d.ensureDaemon(dashCtx, resolvedPath); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
@@ -203,7 +203,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "status", "peers", "routes", "probe", "ping":
-		cfg, err := loadConfig(path)
+		cfg, _, err := loadOnlineConfig(path, opts.explicit)
 		if err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
@@ -227,6 +227,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 type globalOptions struct {
 	path     string
+	explicit bool
 	rest     []string
 	jsonOut  bool
 	noColor  bool
@@ -242,6 +243,7 @@ func parseGlobal(args []string) (globalOptions, error) {
 				return opts, fmt.Errorf("%s requires a path", args[i])
 			}
 			opts.path = args[i+1]
+			opts.explicit = true
 			i++
 		case "--json":
 			opts.jsonOut = true
@@ -262,23 +264,65 @@ func parseGlobal(args []string) (globalOptions, error) {
 	return opts, nil
 }
 
+// loadOnlineConfig loads the config for a client command. When the default
+// per-user config is absent or unreadable but the service config exists, it
+// falls back to the service control plane, so `skein dashboard`/`status` work
+// against a normal system install without passing -c.
+func loadOnlineConfig(path string, explicit bool) (conf.Config, string, error) {
+	cfg, err := conf.Load(path)
+	if err == nil {
+		// A system install owns the control plane even when an older
+		// per-user config (dev TCP listener) is still present. Prefer the
+		// service socket/pipe for default-path client commands; an explicit
+		// -c always wins.
+		if !explicit && cfg.API.Socket == "" && cfg.API.Pipe == "" && systemControlAvailable() {
+			app.ApplyControl(&cfg)
+			return cfg, app.SystemConfigPath(), nil
+		}
+		return cfg, path, nil
+	}
+	if explicit {
+		return conf.Config{}, path, loadConfigError(path, err)
+	}
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
+		return conf.Config{}, path, loadConfigError(path, err)
+	}
+	if !systemControlAvailable() {
+		return conf.Config{}, path, loadConfigError(path, err)
+	}
+	app.ApplyControl(&cfg)
+	return cfg, app.SystemConfigPath(), nil
+}
+
+// systemControlAvailable reports whether the service control plane exists.
+// On Unix the system config directory is root-only, but the socket is
+// world-stat-able; on Windows ProgramData is readable.
+func systemControlAvailable() bool {
+	if runtime.GOOS == "windows" {
+		_, err := os.Stat(app.SystemConfigPath())
+		return err == nil
+	}
+	_, err := os.Stat(app.ControlPath())
+	return err == nil
+}
+
+func loadConfigError(path string, err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		if filepath.Dir(path) == app.SystemDir() {
+			return fmt.Errorf("load %s: the system config is root-owned; use the desktop app or run elevated", path)
+		}
+		return fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown -R $(id -u):$(id -g) %s", path, filepath.Dir(path))
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load %s: config not found\n  new node: run `skein init`\n  existing daemon: pass its config with -c (find it with: systemctl cat skein | grep ExecStart, or pgrep -af 'skein(d)? run')", path)
+	}
+	return fmt.Errorf("load %s: %w", path, err)
+}
+
 func loadConfig(path string) (conf.Config, error) {
 	cfg, err := conf.Load(path)
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			if filepath.Dir(path) == app.SystemDir() {
-				// System install: the config is root-owned on purpose; the
-				// GUI talks to the daemon over the socket, not the file.
-				return conf.Config{}, fmt.Errorf("load %s: the system config is root-owned; use the desktop app or run elevated", path)
-			}
-			// The dev daemon runs as root and may have rewritten a file the
-			// user cannot read; hand the whole directory back to them.
-			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown -R $(id -u):$(id -g) %s", path, filepath.Dir(path))
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			return conf.Config{}, fmt.Errorf("load %s: config not found\n  new node: run `skein init`\n  existing daemon: pass its config with -c (find it with: systemctl cat skein | grep ExecStart, or pgrep -af 'skein(d)? run')", path)
-		}
-		return conf.Config{}, fmt.Errorf("load %s: %w", path, err)
+		return conf.Config{}, loadConfigError(path, err)
 	}
 	return cfg, nil
 }

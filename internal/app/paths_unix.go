@@ -17,6 +17,9 @@ const (
 // setControlField writes the platform control plane into the config.
 func setControlField(cfg *conf.Config) { cfg.API.Socket = controlSocket }
 
+// ApplyControl points an in-memory client config at the service control plane.
+func ApplyControl(cfg *conf.Config) { setControlField(cfg) }
+
 // SystemDir holds the root-owned configuration and identity.
 func SystemDir() string { return systemDir }
 

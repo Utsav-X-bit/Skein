@@ -58,14 +58,9 @@ func helperJSON[T any](ctx context.Context, verb string, payload any, args ...st
 	var zero T
 	path := os.Getenv("SKEIN_HELPER")
 	if path == "" {
-		path = "/usr/libexec/skein-helper"
+		path = defaultHelperPath()
 	}
-	var cmd *exec.Cmd
-	if os.Getenv("SKEIN_HELPER_NO_PKEXEC") == "1" {
-		cmd = exec.CommandContext(ctx, path, append([]string{verb}, args...)...)
-	} else {
-		cmd = exec.CommandContext(ctx, "pkexec", append([]string{path, verb}, args...)...)
-	}
+	cmd := helperCommand(ctx, path, append([]string{verb}, args...)...)
 	if payload != nil {
 		raw, err := json.Marshal(payload)
 		if err != nil {

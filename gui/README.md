@@ -1,59 +1,38 @@
-# Welcome to Your New Wails3 Project!
+# Skein Desktop
 
-Congratulations on generating your Wails3 application! This README will guide you through the next steps to get your project up and running.
+Wails 3 control surface for a Skein mesh. The Go services talk to the daemon
+over the root-owned Unix socket (`/run/skein/control.sock`) or the Windows
+named pipe (`\\.\pipe\skein-control`); the frontend never talks to the daemon
+directly. Privileged setup, service changes, secret rotation, reset, and signed
+updates go through the fixed-verb `skein-helper`.
 
-## Getting Started
+## Build
 
-1. Navigate to your project directory in the terminal.
+```bash
+cd gui
+wails3 build        # -> bin/skein-desktop
+```
 
-2. To run your application in development mode, use the following command:
+Prerequisites: Go, the Wails 3 CLI, and GTK4 + WebKitGTK 6.0 development
+packages on Linux; WebView2 on Windows. `wails3 doctor` reports missing
+dependencies.
 
-   ```
-   wails3 dev
-   ```
+Install the helper root-owned before using onboarding:
 
-   This will start your application and enable hot-reloading for both frontend and backend changes.
+```bash
+sudo install -m 0755 ../skein-helper /usr/libexec/skein-helper   # Linux
+```
 
-3. To build your application for production, use:
+Windows expects `C:\Program Files\Skein\skein-helper.exe`.
 
-   ```
-   wails3 build
-   ```
+## Development
 
-   This will create a production-ready executable in the `build` directory.
+```bash
+wails3 dev
+```
 
-## Exploring Wails3 Features
+The frontend lives in `frontend/` (React + TypeScript). The bound services are
+in `services/`; the Wails app/window/tray/updater hooks are in `main.go`,
+`app.go`, `tray.go`, and `updater.go`.
 
-Now that you have your project set up, it's time to explore the features that Wails3 offers:
-
-1. **Check out the examples**: The best way to learn is by example. Visit the `examples` directory in the `v3/examples` directory to see various sample applications.
-
-2. **Run an example**: To run any of the examples, navigate to the example's directory and use:
-
-   ```
-   go run .
-   ```
-
-   Note: Some examples may be under development during the alpha phase.
-
-3. **Explore the documentation**: Visit the [Wails3 documentation](https://v3.wails.io/) for in-depth guides and API references.
-
-4. **Join the community**: Have questions or want to share your progress? Join the [Wails Discord](https://discord.gg/JDdSxwjhGf) or visit the [Wails discussions on GitHub](https://github.com/wailsapp/wails/discussions).
-
-## Project Structure
-
-Take a moment to familiarize yourself with your project structure:
-
-- `frontend/`: Contains your frontend code (HTML, CSS, JavaScript/TypeScript)
-- `main.go`: The entry point of your Go backend
-- `app.go`: Define your application structure and methods here
-- `wails.json`: Configuration file for your Wails project
-
-## Next Steps
-
-1. Modify the frontend in the `frontend/` directory to create your desired UI.
-2. Add backend functionality in `main.go`.
-3. Use `wails3 dev` to see your changes in real-time.
-4. When ready, build your application with `wails3 build`.
-
-Happy coding with Wails3! If you encounter any issues or have questions, don't hesitate to consult the documentation or reach out to the Wails community.
+The daemon API contract is in [`../docs/gui-api.md`](../docs/gui-api.md).
