@@ -403,6 +403,9 @@ func ensureService(cfg conf.Config) (service.State, error) {
 		return service.StateUnknown, err
 	}
 	if installed {
+		if err := service.Stop(); err != nil {
+			return service.StateError, fmt.Errorf("service stop: %w", err)
+		}
 		if err := service.Rewrite(exe, SystemConfigPath()); err != nil {
 			return service.StateUnknown, err
 		}

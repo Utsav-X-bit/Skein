@@ -55,7 +55,7 @@ func rewrite(executable, configPath string) error {
 		return err
 	}
 	// sc change rejects a new binPath while the service is running.
-	if out, err := scCmd("change", Name, "binPath="+binPath).CombinedOutput(); err != nil {
+	if out, err := scCmd("change", Name, "binPath=", binPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc change: %w: %s", err, out)
 	}
 	return nil
