@@ -33,8 +33,18 @@ function Assert-Exit {
 
 function Invoke-Native {
     param([string]$File, [string[]]$Arguments = @())
-    $output = & $File @Arguments 2>&1
-    return @{ Output = ($output -join "`n"); Code = $LASTEXITCODE }
+    # Windows PowerShell turns redirected native stderr into a terminating
+    # NativeCommandError while ErrorActionPreference is Stop. Capture it as
+    # text and let the caller inspect the exit code instead.
+    $oldPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $File @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+    return @{ Output = ($output -join "`n"); Code = $code }
 }
 
 function Get-ServiceState {
