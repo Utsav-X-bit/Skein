@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
@@ -417,9 +418,31 @@ func ensureService(cfg conf.Config) (service.State, error) {
 // wrapper; a full skein binary also has `run`, so either works. The helper
 // must never register itself as the service: it only performs bootstrap verbs.
 func daemonExecutable() (string, error) {
-	for _, name := range []string{"skeind", "skein"} {
+	names := []string{"skeind", "skein"}
+	if runtime.GOOS == "windows" {
+		names = []string{"skeind.exe", "skein.exe"}
+	}
+	// A dist bundle keeps the helper and daemon together; prefer that before
+	// PATH and the install directory.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for _, name := range names {
+			p := filepath.Join(dir, name)
+			if _, err := os.Stat(p); err == nil {
+				return p, nil
+			}
+		}
+	}
+	for _, name := range names {
 		if p, err := exec.LookPath(name); err == nil {
 			return p, nil
+		}
+		if runtime.GOOS == "windows" {
+			p := filepath.Join(os.Getenv("ProgramFiles"), "Skein", name)
+			if _, err := os.Stat(p); err == nil {
+				return p, nil
+			}
+			continue
 		}
 		for _, p := range []string{"/usr/local/bin/" + name, "/usr/bin/" + name, "/usr/libexec/" + name} {
 			if _, err := os.Stat(p); err == nil {
