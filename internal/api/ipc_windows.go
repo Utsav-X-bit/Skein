@@ -106,9 +106,9 @@ func createPipeInstance(name string, first bool, sa *windows.SecurityAttributes)
 	if err != nil {
 		return 0, err
 	}
-	flags := uint32(0)
+	flags := uint32(windows.FILE_FLAG_OVERLAPPED)
 	if first {
-		flags = windows.FILE_FLAG_FIRST_PIPE_INSTANCE
+		flags |= windows.FILE_FLAG_FIRST_PIPE_INSTANCE
 	}
 	return windows.CreateNamedPipe(&u16[0], windows.PIPE_ACCESS_DUPLEX|flags, pipeMode, windows.PIPE_UNLIMITED_INSTANCES, pipeBuf, pipeBuf, 0, sa)
 }
@@ -282,7 +282,23 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		p.mu.Lock()
 		p.connecting = h
 		p.mu.Unlock()
-		err = windows.ConnectNamedPipe(h, nil)
+		connectEvent, cerr := windows.CreateEvent(nil, 1, 0, nil)
+		if cerr != nil {
+			windows.CloseHandle(h)
+			continue
+		}
+		ov := &windows.Overlapped{}
+		ov.HEvent = connectEvent
+		err = windows.ConnectNamedPipe(h, ov)
+		if err == windows.ERROR_IO_PENDING {
+			_, werr := windows.WaitForSingleObject(connectEvent, windows.INFINITE)
+			if werr == nil {
+				var n uint32
+				werr = windows.GetOverlappedResult(h, ov, &n, false)
+			}
+			err = werr
+		}
+		windows.CloseHandle(connectEvent)
 		p.mu.Lock()
 		p.connecting = 0
 		p.mu.Unlock()
@@ -295,6 +311,8 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		}
 		log.Printf("skein: pipe client accepted handle=%v", h)
 		c := &pipeConn{h: h, name: p.name, release: p.release}
+		c.in, _ = windows.CreateEvent(nil, 1, 0, nil)
+		c.out, _ = windows.CreateEvent(nil, 1, 0, nil)
 		c.caller = p.verifyClient(h)
 		log.Printf("skein: pipe client caller=%q", c.caller.SID)
 		select {
@@ -350,6 +368,8 @@ func (p *pipeListener) verifyClient(h windows.Handle) Caller {
 
 type pipeConn struct {
 	h       windows.Handle
+	in      windows.Handle
+	out     windows.Handle
 	name    string
 	caller  Caller
 	release func()
@@ -359,27 +379,71 @@ type pipeConn struct {
 }
 
 func (c *pipeConn) Read(b []byte) (int, error) {
-	log.Printf("skein: pipe read enter")
 	var n uint32
-	err := windows.ReadFile(c.h, b, &n, nil)
-	log.Printf("skein: pipe read n=%d err=%v data=%q", n, err, string(b[:n]))
-	return int(n), err
+	ov := &windows.Overlapped{HEvent: c.in}
+	windows.ResetEvent(c.in)
+	err := windows.ReadFile(c.h, b, nil, ov)
+	if err == nil {
+		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+			return 0, err
+		}
+		return int(n), nil
+	}
+	if err != windows.ERROR_IO_PENDING {
+		return 0, err
+	}
+	if _, werr := windows.WaitForSingleObject(c.in, windows.INFINITE); werr != nil {
+		return 0, werr
+	}
+	if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
+
 func (c *pipeConn) Write(b []byte) (int, error) {
-	var n uint32
-	err := windows.WriteFile(c.h, b, &n, nil)
-	log.Printf("skein: pipe write n=%d err=%v", n, err)
-	return int(n), err
+	total := 0
+	for total < len(b) {
+		var n uint32
+		ov := &windows.Overlapped{HEvent: c.out}
+		windows.ResetEvent(c.out)
+		err := windows.WriteFile(c.h, b[total:], nil, ov)
+		if err == nil {
+			if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+				return total, err
+			}
+			total += int(n)
+			continue
+		}
+		if err != windows.ERROR_IO_PENDING {
+			return total, err
+		}
+		if _, werr := windows.WaitForSingleObject(c.out, windows.INFINITE); werr != nil {
+			return total, werr
+		}
+		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+			return total, err
+		}
+		total += int(n)
+	}
+	return total, nil
 }
 
 // Close releases the pipe handle and the connection-cap slot.
 func (c *pipeConn) Close() error {
 	c.once.Do(func() {
 		c.err = windows.CloseHandle(c.h)
+		if c.in != 0 {
+			windows.CloseHandle(c.in)
+		}
+		if c.out != 0 {
+			windows.CloseHandle(c.out)
+		}
 		c.release()
 	})
 	return c.err
 }
+
 func (c *pipeConn) LocalAddr() net.Addr              { return pipeAddr{name: c.name} }
 func (c *pipeConn) RemoteAddr() net.Addr             { return pipeAddr{name: c.name} }
 func (c *pipeConn) SetDeadline(time.Time) error      { return nil }
