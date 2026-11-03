@@ -48,6 +48,7 @@ function Write-Config($cfgPath, $overlay, $port, $apiPort, $interface, $peerID, 
     $token = "4VFScqAStn6UYJtGDdyHG6SRYA9xCEHVANw2-iYqF1E"
     $body = @"
 [node]
+overlay_ipv4_prefix = "10.144.145.0/24"
 overlay_ipv4 = "$overlay"
 listen_port = $port
 network_secret = "$psk"
@@ -91,8 +92,8 @@ Write-Host "Generating identities..."
 $idA = Get-Identity $cfgA
 $idB = Get-Identity $cfgB
 
-Write-Config $cfgA "10.144.144.1" 11020 11021 "SkeinSmokeA" $idB.ID $idB.Pub "127.0.0.1:11030" "true" $psk
-Write-Config $cfgB "10.144.144.2" 11030 11031 "SkeinSmokeB" $idA.ID $idA.Pub "127.0.0.1:11020" "false" $psk
+Write-Config $cfgA "10.144.145.1" 11020 11021 "SkeinSmokeA" $idB.ID $idB.Pub "127.0.0.1:11030" "true" $psk
+Write-Config $cfgB "10.144.145.2" 11030 11031 "SkeinSmokeB" $idA.ID $idA.Pub "127.0.0.1:11020" "false" $psk
 
 $procA = $null
 $procB = $null
@@ -141,7 +142,7 @@ try {
     if (-not $up) { throw "daemons did not establish a direct link" }
 
     Write-Host "Overlay ping:"
-    $ping = ping -n 2 10.144.144.2
+    $ping = ping -n 2 10.144.145.2
     $ping | Write-Host
     if (-not ($ping -join "`n") -match 'Received\s*=\s*[1-9]') { throw "overlay ping failed" }
 
