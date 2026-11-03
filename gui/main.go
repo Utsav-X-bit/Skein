@@ -19,6 +19,11 @@ func main() {
 	// (WindowControls in the command bar).
 	frameless := runtime.GOOS == "windows"
 
+	startState := application.WindowStateMaximised
+	if runtime.GOOS == "windows" {
+		startState = application.WindowStateNormal
+	}
+
 	a.window = a.App.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",
 		Title:            "Skein",
@@ -27,7 +32,7 @@ func main() {
 		Height:           800,
 		MinWidth:         900,
 		MinHeight:        600,
-		StartState:       application.WindowStateMaximised,
+		StartState:       startState,
 		Frameless:        frameless,
 		BackgroundColour: application.NewRGB(8, 9, 11),
 		Mac: application.MacWindow{
@@ -58,12 +63,16 @@ func main() {
 	}
 	registerUpdater(a)
 
-	go func() {
-		time.Sleep(700 * time.Millisecond)
-		if w := a.Window(); w != nil {
-			w.Fullscreen()
-		}
-	}()
+	// Fullscreen is a Linux-only presentation choice; Windows keeps a normal
+	// resizable window with the custom titlebar.
+	if runtime.GOOS == "linux" {
+		go func() {
+			time.Sleep(700 * time.Millisecond)
+			if w := a.Window(); w != nil {
+				w.Fullscreen()
+			}
+		}()
+	}
 
 	if err := a.Run(); err != nil {
 		log.Fatal(err)

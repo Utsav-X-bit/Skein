@@ -175,9 +175,10 @@ Copy-Item dist\* $dst -Recurse
 Copy-Item gui\bin\skein-desktop.exe $dst
 ```
 
-The helper must be at `C:\Program Files\Skein\skein-helper.exe` (the
-desktop's default). `wintun.dll` must sit next to `skein.exe` and
-`skein-desktop.exe`.
+The desktop looks for `skein-helper.exe` next to itself first, then at
+`C:\Program Files\Skein\skein-helper.exe`, so running the app from `dist`
+works when both binaries are there. `wintun.dll` must sit next to `skein.exe`
+and `skein-desktop.exe`.
 
 **Service without the desktop**
 
