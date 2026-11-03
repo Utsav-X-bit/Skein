@@ -109,9 +109,9 @@ func repair(cfg Config) (Status, error) {
 		return st, nil
 	}
 	for _, r := range windowsRules(cfg) {
-		if ruleActive(r.name) {
-			continue
-		}
+		// Interface-scoped rules store the adapter GUID. Recreate them on
+		// every daemon start so a recreated TUN adapter is matched.
+		_, _ = runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
 		if _, err := runner(r.binary, r.args...); err != nil {
 			return failed(err)
 		}
