@@ -31,3 +31,5 @@ if ($state -eq "Running") {
 }
 
 Write-Host "service checks passed"
+
+exit 0

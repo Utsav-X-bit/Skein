@@ -25,3 +25,5 @@ $r = Invoke-Native $helper @()
 if ($r.Code -ne 2) { throw "skein-helper with no verb exited $($r.Code), want 2" }
 
 Write-Host "helper checks passed"
+
+exit 0

@@ -39,3 +39,5 @@ Assert-Exit "skein dashboard --no-motion" $r.Code
 if ($r.Output -notmatch "SKEIN") { throw "dashboard output did not contain the Skein mark" }
 
 Write-Host "cli checks passed (service: $state, connection: $($status.connection.state))"
+
+exit 0

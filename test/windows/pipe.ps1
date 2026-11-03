@@ -28,3 +28,5 @@ try {
 } finally {
     $pipe.Dispose()
 }
+
+exit 0

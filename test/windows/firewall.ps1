@@ -46,3 +46,5 @@ $legacy = @(Get-NetFirewallRule -DisplayName "skein" -ErrorAction SilentlyContin
 if ($legacy) { throw "legacy duplicate firewall rule 'skein' is still present" }
 
 Write-Host "firewall checks passed"
+
+exit 0
