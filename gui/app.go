@@ -1,15 +1,11 @@
 package main
 
 import (
-	"embed"
-
+	_ "embed"
 	"github.com/Utsav-X-bit/skein/gui/services"
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
-
-//go:embed all:frontend/dist
-var assets embed.FS
 
 //go:embed build/appicon.png
 var appIcon []byte
