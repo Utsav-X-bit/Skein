@@ -39,10 +39,18 @@ func main() {
 	// Closing the window hides to the tray when one is available; otherwise
 	// it closes for real. The service keeps running either way.
 	a.window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		if !quitting.Load() && trayAvailable() {
+		if quitting.Load() {
+			return
+		}
+		if trayAvailable() {
 			a.window.Hide()
 			e.Cancel()
+			return
 		}
+		// No tray to reopen from: closing the window must end the process,
+		// otherwise the single-instance handler leaves a headless app behind.
+		quitting.Store(true)
+		a.Quit()
 	})
 
 	if os.Getenv("SKEIN_NO_TRAY") == "" {
