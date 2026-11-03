@@ -3,10 +3,13 @@
 package firewall
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // Rule names are stable and unique per direction; every add is checked with
@@ -19,26 +22,40 @@ const (
 	legacyRule     = "skein"
 )
 
-// windowsRules is the fixed set of netsh "add rule" command lines Skein
-// manages.
-func windowsRules(cfg Config) []struct {
-	name string
-	args []string
-} {
-	return []struct {
-		name string
-		args []string
-	}{
-		{underlayRule, []string{"advfirewall", "firewall", "add", "rule",
+type winRule struct {
+	name   string
+	binary string
+	args   []string
+}
+
+// windowsRules is the fixed set of rules Skein manages. netsh cannot scope a
+// rule to a named interface, so the overlay rules use New-NetFirewallRule
+// through an encoded PowerShell command; values are single-quote escaped.
+func windowsRules(cfg Config) []winRule {
+	iface := strings.ReplaceAll(cfg.Interface, "'", "''")
+	return []winRule{
+		{underlayRule, "netsh", []string{"advfirewall", "firewall", "add", "rule",
 			"name=" + underlayRule, "dir=in", "action=allow", "protocol=UDP",
 			fmt.Sprintf("localport=%d", cfg.Port), "profile=any"}},
-		{overlayRule, []string{"advfirewall", "firewall", "add", "rule",
-			"name=" + overlayRule, "dir=in", "action=allow",
-			fmt.Sprintf("interface=%s", cfg.Interface), "profile=any"}},
-		{overlayOutRule, []string{"advfirewall", "firewall", "add", "rule",
-			"name=" + overlayOutRule, "dir=out", "action=allow",
-			fmt.Sprintf("interface=%s", cfg.Interface), "profile=any"}},
+		{overlayRule, "powershell", powershellArgs(fmt.Sprintf(
+			"New-NetFirewallRule -DisplayName '%s' -Direction Inbound -Action Allow -InterfaceAlias '%s' -Profile Any -ErrorAction Stop | Out-Null",
+			overlayRule, iface))},
+		{overlayOutRule, "powershell", powershellArgs(fmt.Sprintf(
+			"New-NetFirewallRule -DisplayName '%s' -Direction Outbound -Action Allow -InterfaceAlias '%s' -Profile Any -ErrorAction Stop | Out-Null",
+			overlayOutRule, iface))},
 	}
+}
+
+// powershellArgs builds a -EncodedCommand invocation so a config interface
+// name cannot inject a PowerShell command.
+func powershellArgs(script string) []string {
+	units := utf16.Encode([]rune(script))
+	raw := make([]byte, len(units)*2)
+	for i, unit := range units {
+		binary.LittleEndian.PutUint16(raw[i*2:], unit)
+	}
+	return []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+		"-EncodedCommand", base64.StdEncoding.EncodeToString(raw)}
 }
 
 func expectedRules(cfg Config) []Rule {
@@ -95,7 +112,7 @@ func repair(cfg Config) (Status, error) {
 		if ruleActive(r.name) {
 			continue
 		}
-		if _, err := runner("netsh", r.args...); err != nil {
+		if _, err := runner(r.binary, r.args...); err != nil {
 			return failed(err)
 		}
 		added = append(added, r.name)
@@ -120,7 +137,7 @@ func ensurePort(cfg Config) error {
 	if ruleActive(r.name) {
 		return nil
 	}
-	_, err := runner("netsh", r.args...)
+	_, err := runner(r.binary, r.args...)
 	return err
 }
 
@@ -131,7 +148,7 @@ func ensureInterface(cfg Config) error {
 		if ruleActive(r.name) {
 			continue
 		}
-		if _, err := runner("netsh", r.args...); err != nil {
+		if _, err := runner(r.binary, r.args...); err != nil {
 			return classifyInterfaceError(err)
 		}
 	}
