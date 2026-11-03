@@ -92,6 +92,18 @@ func ruleActive(name string) bool {
 	return !strings.Contains(out, "No rule matches")
 }
 
+// deleteRule removes every rule with this display name, including duplicates.
+func deleteRule(name string) {
+	for i := 0; i < 16; i++ {
+		if !ruleActive(name) {
+			return
+		}
+		if _, err := runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+name); err != nil {
+			return
+		}
+	}
+}
+
 func status(cfg Config) (Status, error) {
 	st := Status{Manager: "windows firewall", LastCheckMS: time.Now().UnixMilli(), Rules: expectedRules(cfg)}
 	missing := 0
@@ -128,7 +140,7 @@ func repair(cfg Config) (Status, error) {
 	for _, r := range windowsRules(cfg) {
 		// Interface-scoped rules store the adapter GUID. Recreate them on
 		// every daemon start so a recreated TUN adapter is matched.
-		_, _ = runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.name)
+		deleteRule(r.name)
 		if _, err := runner(r.binary, r.args...); err != nil {
 			return failed(err)
 		}
@@ -174,8 +186,7 @@ func ensureInterface(cfg Config) error {
 
 func remove(cfg Config) error {
 	for _, name := range []string{underlayRule, overlayRule, overlayOutRule, overlayV6Rule, overlayOutV6Rule, legacyRule} {
-		// netsh deletes every rule with that name, including duplicates.
-		_, _ = runner("netsh", "advfirewall", "firewall", "delete", "rule", "name="+name)
+		deleteRule(name)
 	}
 	return nil
 }

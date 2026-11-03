@@ -281,6 +281,9 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		// rules without blocking the dataplane or the control API.
 		cfg := d.config()
 		go func() {
+			if os.Getenv("SKEIN_NO_FIREWALL") != "" {
+				return
+			}
 			if err := firewall.Ensure(firewall.Config{
 				Interface: cfg.Node.Interface,
 				Port:      cfg.Node.ListenPort,

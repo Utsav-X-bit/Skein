@@ -104,8 +104,14 @@ $errB = Join-Path $root "node-b.err.log"
 $failed = $true
 try {
     Write-Host "Starting daemons..."
+    # The service owns the production firewall rules; smoke adapters must not
+    # recreate the same named rules.
+    $oldNoFirewall = $env:SKEIN_NO_FIREWALL
+    $env:SKEIN_NO_FIREWALL = "1"
     $procA = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgA`"" -PassThru -RedirectStandardOutput $logA -RedirectStandardError $errA
     $procB = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgB`"" -PassThru -RedirectStandardOutput $logB -RedirectStandardError $errB
+    if ($null -eq $oldNoFirewall) { Remove-Item Env:\SKEIN_NO_FIREWALL -ErrorAction SilentlyContinue }
+    else { $env:SKEIN_NO_FIREWALL = $oldNoFirewall }
 
     # Wait for each daemon's API before asking for peers; otherwise a failed
     # daemon looks like a connection error instead of an exited process.
