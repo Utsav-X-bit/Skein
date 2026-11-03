@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,8 +16,13 @@ import (
 
 // Dial opens the named pipe as a client instance.
 func Dial(name string) (net.Conn, error) {
-	if len(name) == 0 || name[0] != '\\' {
-		name = `\\` + name
+	switch {
+	case strings.HasPrefix(name, `\\.\pipe\`):
+		// already a full pipe path
+	case strings.HasPrefix(name, `\\`):
+		name = `\\.\pipe\` + strings.TrimPrefix(name, `\\`)
+	default:
+		name = `\\.\pipe\` + name
 	}
 	name16, err := windows.UTF16PtrFromString(name)
 	if err != nil {
