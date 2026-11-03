@@ -1,14 +1,10 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/Utsav-X-bit/skein/internal/app"
 )
@@ -56,39 +52,21 @@ func (s *SetupService) Import(ctx context.Context, path string) (app.BootstrapRe
 
 func helperJSON[T any](ctx context.Context, verb string, payload any, args ...string) (T, error) {
 	var zero T
-	path := os.Getenv("SKEIN_HELPER")
-	if path == "" {
-		path = defaultHelperPath()
-	}
-	cmd := helperCommand(ctx, path, append([]string{verb}, args...)...)
-	if payload != nil {
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			return zero, err
-		}
-		cmd.Stdin = bytes.NewReader(raw)
-	}
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	runErr := cmd.Run()
+	raw, runErr := runHelperJSON(ctx, verb, payload, args...)
 	var env struct {
 		OK          bool   `json:"ok"`
 		Error       string `json:"error"`
 		Remediation string `json:"remediation"`
 	}
-	raw := out.Bytes()
 	_ = json.Unmarshal(raw, &env)
 	if runErr != nil {
-		if errors.Is(runErr, exec.ErrNotFound) || os.IsNotExist(runErr) {
-			return zero, errors.New("the Skein helper is not installed; install the Skein package first")
-		}
 		if env.Error != "" {
 			if env.Remediation != "" {
 				return zero, fmt.Errorf("%s: %s", env.Error, env.Remediation)
 			}
 			return zero, errors.New(env.Error)
 		}
-		return zero, fmt.Errorf("helper %s: %w: %s", verb, runErr, strings.TrimSpace(errb.String()+out.String()))
+		return zero, fmt.Errorf("helper %s: %w", verb, runErr)
 	}
 	if !env.OK {
 		if env.Remediation != "" {

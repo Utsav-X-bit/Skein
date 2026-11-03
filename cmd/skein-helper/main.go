@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -59,6 +60,8 @@ type options struct {
 	manifest   string
 	consent    bool
 	pipe       string
+	request    string
+	result     string
 	purge      bool
 	keepIdent  bool
 	name       string
@@ -87,7 +90,48 @@ type joinRequest struct {
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	var stdout bytes.Buffer
+	code := run(os.Args[1:], &stdout, os.Stderr)
+	if path := flagValue(os.Args[1:], "--result"); path != "" {
+		if err := writeResultFile(path, stdout.Bytes()); err != nil {
+			fmt.Fprintf(os.Stderr, "skein-helper: result file: %v\n", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+// flagValue returns the value of a repeated-free flag from argv.
+func flagValue(args []string, name string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// writeResultFile writes the helper's JSON output atomically for the GUI.
+func writeResultFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".skein-helper-result-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 // run dispatches one helper verb and writes the JSON result to stdout.
@@ -113,14 +157,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "init":
 		var req initRequest
-		if err := decodeRequest(stdinRequest(), &req); err != nil {
+		if err := decodeRequest(requestData(opts), &req); err != nil {
 			return fail(stdout, err)
 		}
 		mergeInitOptions(&opts, req)
 		res, err := app.InitRoot(initOptions(opts))
 		return result(stdout, err, res)
 	case "join":
-		invite, err := readInvite(stdinRequest())
+		invite, err := readInvite(requestData(opts))
 		if err != nil {
 			return fail(stdout, err)
 		}
@@ -332,6 +376,18 @@ func parseOptions(args []string) (options, []string, error) {
 				return o, rest, err
 			}
 			o.pipe = v
+		case "--request":
+			v, err := next(arg)
+			if err != nil {
+				return o, rest, err
+			}
+			o.request = v
+		case "--result":
+			v, err := next(arg)
+			if err != nil {
+				return o, rest, err
+			}
+			o.result = v
 		case "--purge":
 			o.purge = true
 		case "--keep-identity":
@@ -401,6 +457,19 @@ func parseOptions(args []string) (options, []string, error) {
 
 // stdinRequest returns the helper's stdin as the request source when it is a
 // terminal (nothing piped), so a missing invite is a clean error.
+// requestData reads the request from --request for an elevated helper, or
+// from stdin for a direct invocation.
+func requestData(o options) []byte {
+	if o.request != "" {
+		data, err := os.ReadFile(o.request)
+		if err != nil {
+			return nil
+		}
+		return data
+	}
+	return stdinRequest()
+}
+
 func stdinRequest() []byte {
 	stat, _ := os.Stdin.Stat()
 	if stat.Mode()&os.ModeCharDevice != 0 {
