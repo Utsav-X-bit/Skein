@@ -6,11 +6,11 @@ package api
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"strings"
@@ -120,34 +120,20 @@ func listenUnix(path, group string, uids []int) (net.Listener, error) {
 	return &peerCredListener{l: ln}, nil
 }
 
-// applyUnixACL writes a system.posix_acl_access blob granting rw to each uid
-// on top of the socket's 0660 root:group permissions.
+// applyUnixACL grants rw to each persisted uid on the socket. setfacl is
+// used because some tmpfs mounts reject the raw system.posix_acl_access
+// xattr even though the ACL helper works.
 func applyUnixACL(path string, uids []int) error {
-	const (
-		tagUserObj  = 0x01
-		tagUser     = 0x02
-		tagGroupObj = 0x04
-		tagMask     = 0x10
-		tagOther    = 0x20
-		rw          = 0o6
-	)
-	var b []byte
-	b = append(b, 0, 0, 0, 2) // version 2, big-endian
-	add := func(tag, perm uint16, id int) {
-		b = binary.LittleEndian.AppendUint16(b, tag)
-		b = binary.LittleEndian.AppendUint16(b, perm)
-		b = binary.LittleEndian.AppendUint32(b, uint32(id))
-	}
-	add(tagUserObj, rw, 0)
-	for _, u := range uids {
-		if u != 0 { // root is already covered by user::
-			add(tagUser, rw, u)
+	for _, uid := range uids {
+		if uid == 0 {
+			continue
+		}
+		out, err := exec.Command("setfacl", "-m", fmt.Sprintf("u:%d:rw", uid), path).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("setfacl %s uid %d: %w: %s", path, uid, err, strings.TrimSpace(string(out)))
 		}
 	}
-	add(tagGroupObj, rw, 0)
-	add(tagMask, rw, 0)
-	add(tagOther, 0, 0)
-	return unix.Setxattr(path, "system.posix_acl_access", b, 0)
+	return nil
 }
 
 // peerCredListener stamps each accepted connection with its peer's uid.

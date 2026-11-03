@@ -25,7 +25,6 @@ func main() {
 		Height:           800,
 		MinWidth:         900,
 		MinHeight:        600,
-		StartState:       application.WindowStateMaximised,
 		Frameless:        frameless,
 		BackgroundColour: application.NewRGB(8, 9, 11),
 		Mac: application.MacWindow{

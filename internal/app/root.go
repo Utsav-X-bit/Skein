@@ -395,11 +395,11 @@ func ensureService(cfg conf.Config) (service.State, error) {
 			return service.StateUnknown, err
 		}
 	} else {
-		self, err := os.Executable()
+		daemon, err := daemonExecutable()
 		if err != nil {
 			return service.StateUnknown, err
 		}
-		if err := service.Install(self, SystemConfigPath()); err != nil {
+		if err := service.Install(daemon, SystemConfigPath()); err != nil {
 			return service.StateUnknown, err
 		}
 	}
@@ -411,6 +411,20 @@ func ensureService(cfg conf.Config) (service.State, error) {
 		return service.StateUnknown, nil
 	}
 	return st.State, nil
+}
+
+// daemonExecutable finds the installed skeind binary. The helper must never
+// register itself as the service: it only performs bootstrap verbs.
+func daemonExecutable() (string, error) {
+	if p, err := exec.LookPath("skeind"); err == nil {
+		return p, nil
+	}
+	for _, p := range []string{"/usr/local/bin/skeind", "/usr/bin/skeind", "/usr/libexec/skeind"} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", errors.New("skeind is not installed; install the Skein package first")
 }
 
 // bootstrapResult renders the public metadata, the peer invite, and the

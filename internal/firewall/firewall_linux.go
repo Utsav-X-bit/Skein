@@ -44,8 +44,8 @@ func ufwRules(cfg Config) []struct {
 		{"underlay", []string{"allow", fmt.Sprintf("%d/udp", cfg.Port)}},
 		{"overlay-in", []string{"allow", "in", "on", cfg.Interface}},
 		{"overlay-out", []string{"allow", "out", "on", cfg.Interface}},
-		{"forward-in", []string{"route", "allow", "in", "on", cfg.Interface, "out", "any"}},
-		{"forward-out", []string{"route", "allow", "in", "any", "out", "on", cfg.Interface}},
+		{"forward-in", []string{"route", "allow", "in", "on", cfg.Interface}},
+		{"forward-out", []string{"route", "allow", "out", "on", cfg.Interface}},
 	}
 }
 
