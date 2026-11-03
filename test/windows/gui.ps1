@@ -6,6 +6,10 @@ param([string]$Bin = "")
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $Bin = Resolve-Bin $Bin
+if ((Get-Process -Id $PID).SessionId -eq 0) {
+    Write-Host "SKIP GUI checks (session 0 has no interactive desktop)"
+    exit 0
+}
 $gui = Join-Path $Bin "skein-desktop.exe"
 if (-not (Test-Path $gui)) { throw "skein-desktop.exe not found in $Bin" }
 
