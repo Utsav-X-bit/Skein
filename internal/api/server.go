@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -137,7 +136,6 @@ type handlerFunc func(http.ResponseWriter, *http.Request)
 // mutating requests in the audit hook.
 func (s *Server) wrap(next handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("skein: api %s %s caller=%q", r.Method, r.URL.Path, CallerFrom(r.Context()).ID())
 		if r.Header.Get("Origin") != "" {
 			http.Error(w, "browser origins are not allowed", http.StatusForbidden)
 			return
@@ -202,10 +200,7 @@ func (r *statusRecorder) Flush() {
 }
 
 func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
-	log.Printf("skein: api status begin")
-	st := s.state.Status()
-	log.Printf("skein: api status end")
-	writeJSON(w, http.StatusOK, st)
+	writeJSON(w, http.StatusOK, s.state.Status())
 }
 
 func (s *Server) getPeers(w http.ResponseWriter, r *http.Request) {

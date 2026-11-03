@@ -5,7 +5,6 @@ package pipeconn
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -67,7 +66,6 @@ type conn struct {
 var _ = net.Conn(&conn{})
 
 func (c *conn) Read(b []byte) (int, error) {
-	log.Printf("pipeconn: read enter")
 	ov := &windows.Overlapped{}
 	ov.HEvent = c.in
 	windows.ResetEvent(c.in)
@@ -77,7 +75,6 @@ func (c *conn) Read(b []byte) (int, error) {
 		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
 			return 0, err
 		}
-		log.Printf("pipeconn: read sync n=%d", n)
 		return int(n), nil
 	}
 	if err != windows.ERROR_IO_PENDING {
@@ -89,7 +86,6 @@ func (c *conn) Read(b []byte) (int, error) {
 	if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
 		return 0, err
 	}
-	log.Printf("pipeconn: read async n=%d", n)
 	return int(n), nil
 }
 
@@ -105,7 +101,6 @@ func (c *conn) Write(b []byte) (int, error) {
 			if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
 				return total, err
 			}
-			log.Printf("pipeconn: write sync n=%d", n)
 			total += int(n)
 			continue
 		}
@@ -118,7 +113,6 @@ func (c *conn) Write(b []byte) (int, error) {
 		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
 			return total, err
 		}
-		log.Printf("pipeconn: write async n=%d", n)
 		total += int(n)
 	}
 	return total, nil
