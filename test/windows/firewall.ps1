@@ -9,6 +9,11 @@ param(
 . (Join-Path $PSScriptRoot "common.ps1")
 Assert-Admin
 $Bin = Resolve-Bin $Bin
+$state = Get-ServiceState
+if ($state -eq "missing" -and -not $Repair) {
+    Write-Host "SKIP firewall checks (skein service is not installed)"
+    exit 0
+}
 
 if ($Repair) {
     $skein = Join-Path $Bin "skein.exe"
