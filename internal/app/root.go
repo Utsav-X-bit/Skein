@@ -384,7 +384,9 @@ func EnsureService() (service.State, error) {
 // the firewall on the way. A firewall failure only warns: the daemon
 // re-applies the interface rule when it creates the adapter.
 func ensureService(cfg conf.Config) (service.State, error) {
-	if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
+	// Only the port can be opened before the service creates its TUN
+	// interface. The daemon adds the interface-scoped rules after startup.
+	if err := firewall.EnsurePort(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
 		log.Printf("skein-helper: firewall: %v", err)
 	}
 	exe, _, installed, err := service.Installed()

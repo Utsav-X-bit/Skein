@@ -24,7 +24,6 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/dataplane"
 	"github.com/Utsav-X-bit/skein/internal/discovery"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
-	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/path"
@@ -305,15 +304,6 @@ func (d *Daemon) sessionEstablished(peerID uint64) {
 // resumed without stopping the service.
 func (d *Daemon) Run(ctx context.Context) error {
 	cfg := d.config()
-	// Open the underlay port and trust the overlay interface so any protocol
-	// works without manual rules. Run this off the startup path: Windows
-	// netsh can block for a long time, and the control API must still come up
-	// so the desktop can report the daemon as running.
-	go func() {
-		if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
-			log.Printf("skein: warning: firewall: %v", err)
-		}
-	}()
 
 	for _, p := range d.peers.List() {
 		addrs := make([]string, 0, len(p.Candidates))

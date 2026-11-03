@@ -19,6 +19,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/dataplane"
+	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/netcfg"
 	"github.com/Utsav-X-bit/skein/internal/tun"
@@ -276,6 +277,14 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 			d.publishConnection()
 			return err
 		}
+		// The TUN interface now exists; add the interface-scoped firewall
+		// rules without blocking the dataplane or the control API.
+		cfg := d.config()
+		go func() {
+			if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
+				log.Printf("skein: warning: firewall: %v", err)
+			}
+		}()
 		d.conn.set(ConnConnected, "", nil)
 		d.publishConnection()
 
