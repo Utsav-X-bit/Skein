@@ -232,6 +232,7 @@ func TestInitPrintsAJoinString(t *testing.T) {
 }
 
 func TestJoinBootstrapsASecondNode(t *testing.T) {
+	stubDaemon(t, false)
 	dirA := t.TempDir()
 	pathA := filepath.Join(dirA, "skein.toml")
 	code, outA, stderr := runCLI(t, "-c", pathA, "init")
@@ -298,6 +299,7 @@ func TestJoinBootstrapsASecondNode(t *testing.T) {
 }
 
 func TestJoinMovesACollidingOverlayAddress(t *testing.T) {
+	stubDaemon(t, false)
 	dirA := t.TempDir()
 	pathA := filepath.Join(dirA, "skein.toml")
 	code, outA, stderr := runCLI(t, "-c", pathA, "init")
