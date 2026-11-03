@@ -72,8 +72,11 @@ func (c *conn) Read(b []byte) (int, error) {
 	ov.HEvent = c.in
 	windows.ResetEvent(c.in)
 	var n uint32
-	err := windows.ReadFile(c.h, b, &n, ov)
+	err := windows.ReadFile(c.h, b, nil, ov)
 	if err == nil {
+		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+			return 0, err
+		}
 		log.Printf("pipeconn: read sync n=%d", n)
 		return int(n), nil
 	}
@@ -97,8 +100,11 @@ func (c *conn) Write(b []byte) (int, error) {
 		ov.HEvent = c.out
 		windows.ResetEvent(c.out)
 		var n uint32
-		err := windows.WriteFile(c.h, b[total:], &n, ov)
+		err := windows.WriteFile(c.h, b[total:], nil, ov)
 		if err == nil {
+			if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+				return total, err
+			}
 			log.Printf("pipeconn: write sync n=%d", n)
 			total += int(n)
 			continue
