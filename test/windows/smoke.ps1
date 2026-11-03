@@ -96,17 +96,43 @@ Write-Config $cfgB "10.144.144.2" 11030 11031 "SkeinSmokeB" $idA.ID $idA.Pub "12
 
 $procA = $null
 $procB = $null
+$logA = Join-Path $root "node-a.log"
+$logB = Join-Path $root "node-b.log"
+$errA = Join-Path $root "node-a.err.log"
+$errB = Join-Path $root "node-b.err.log"
 $failed = $true
 try {
     Write-Host "Starting daemons..."
-    $procA = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgA`"" -PassThru
-    $procB = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgB`"" -PassThru
+    $procA = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgA`"" -PassThru -RedirectStandardOutput $logA -RedirectStandardError $errA
+    $procB = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgB`"" -PassThru -RedirectStandardOutput $logB -RedirectStandardError $errB
+
+    # Wait for each daemon's API before asking for peers; otherwise a failed
+    # daemon looks like a connection error instead of an exited process.
+    $deadline = (Get-Date).AddSeconds(30)
+    $readyA = $false
+    $readyB = $false
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        if ($procA.HasExited) { throw "daemon A exited during startup; see $errA" }
+        if ($procB.HasExited) { throw "daemon B exited during startup; see $errB" }
+        if (-not $readyA) {
+            $null = & $skeinExe -c $cfgA status --json 2>&1
+            if ($LASTEXITCODE -eq 0) { $readyA = $true }
+        }
+        if (-not $readyB) {
+            $null = & $skeinExe -c $cfgB status --json 2>&1
+            if ($LASTEXITCODE -eq 0) { $readyB = $true }
+        }
+        if ($readyA -and $readyB) { break }
+    }
+    if (-not $readyA) { throw "daemon A API did not become ready; see $errA" }
+    if (-not $readyB) { throw "daemon B API did not become ready; see $errB" }
 
     $deadline = (Get-Date).AddSeconds(30)
     $up = $false
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        $json = & $skeinExe -c $cfgA peers --json 2>$null
+        $json = & $skeinExe -c $cfgA peers --json 2>&1
         if ($LASTEXITCODE -eq 0 -and ($json -join "") -match '"state"\s*:\s*"up"') {
             $up = $true
             break
@@ -144,6 +170,14 @@ try {
 finally {
     foreach ($p in @($procA, $procB)) {
         if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    }
+    if ($failed) {
+        foreach ($log in @($logA, $errA, $logB, $errB)) {
+            if (Test-Path $log) {
+                Write-Host "--- $log ---"
+                Get-Content $log -ErrorAction SilentlyContinue | Write-Host
+            }
+        }
     }
     Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
     if ($failed) { Write-Host "smoke test failed" }
