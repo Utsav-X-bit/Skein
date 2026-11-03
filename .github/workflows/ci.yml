@@ -12,6 +12,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/frontend/package-lock.json
+      - name: Build frontend
+        run: |
+          cd gui/frontend
+          npm ci
+          npm run build
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
@@ -19,10 +29,11 @@ jobs:
       - run: GOOS=darwin GOARCH=arm64 go build ./...
       - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skeind.exe ./cmd/skeind
       - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skein.exe ./cmd/skein
+      - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skein-helper.exe ./cmd/skein-helper
       - run: |
           mkdir -p /tmp/release
-          cp /tmp/skeind.exe /tmp/skein.exe /tmp/release/
-          test -f /tmp/release/skeind.exe && test -f /tmp/release/skein.exe
+          cp /tmp/skeind.exe /tmp/skein.exe /tmp/skein-helper.exe /tmp/release/
+          test -f /tmp/release/skeind.exe && test -f /tmp/release/skein.exe && test -f /tmp/release/skein-helper.exe
 
   release:
     runs-on: ubuntu-latest
@@ -36,11 +47,13 @@ jobs:
           mkdir -p dist/linux-amd64
           GOOS=linux GOARCH=amd64 go build -trimpath -o dist/linux-amd64/skein ./cmd/skein
           GOOS=linux GOARCH=amd64 go build -trimpath -o dist/linux-amd64/skeind ./cmd/skeind
+          GOOS=linux GOARCH=amd64 go build -trimpath -o dist/linux-amd64/skein-helper ./cmd/skein-helper
       - name: Build Windows
         run: |
           mkdir -p dist/windows-amd64
           GOOS=windows GOARCH=amd64 go build -trimpath -o dist/windows-amd64/skein.exe ./cmd/skein
           GOOS=windows GOARCH=amd64 go build -trimpath -o dist/windows-amd64/skeind.exe ./cmd/skeind
+          GOOS=windows GOARCH=amd64 go build -trimpath -o dist/windows-amd64/skein-helper.exe ./cmd/skein-helper
           ./scripts/fetch-wintun.sh amd64 dist/windows-amd64
       - uses: actions/upload-artifact@v4
         with:
