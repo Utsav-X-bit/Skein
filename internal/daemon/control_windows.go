@@ -16,13 +16,16 @@ import (
 func (d *Daemon) serveControl(ctx context.Context) {
 	cfg := d.config()
 	if cfg.API.Pipe == "" {
+		log.Printf("skein: warning: control pipe disabled (api.pipe is empty)")
 		return
 	}
+	log.Printf("skein: control pipe %q", cfg.API.Pipe)
 	ln, err := api.NewPipeListener(ctx, cfg.API.Pipe, controlAccessFile, d.api.ConnectionCap())
 	if err != nil {
-		log.Printf("skein: error: control pipe: %v", err)
+		log.Printf("skein: error: control pipe %v: %v", cfg.API.Pipe, err)
 		return
 	}
+	log.Printf("skein: control pipe listening at \\\\.\\pipe\\%s", cfg.API.Pipe)
 	srv := &http.Server{
 		Handler:           d.api.Handler(),
 		ConnContext:       api.CallerContext,
