@@ -12,7 +12,7 @@ import (
 
 // scCmd runs sc.exe without flashing a console window in the GUI.
 func scCmd(args ...string) *exec.Cmd {
-	cmd := scCmd(args...)
+	cmd := exec.Command("sc", args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	return cmd
 }
