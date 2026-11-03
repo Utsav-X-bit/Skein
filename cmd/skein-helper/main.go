@@ -92,6 +92,10 @@ type joinRequest struct {
 func main() {
 	var stdout bytes.Buffer
 	code := run(os.Args[1:], &stdout, os.Stderr)
+	if _, err := os.Stdout.Write(stdout.Bytes()); err != nil {
+		fmt.Fprintf(os.Stderr, "skein-helper: stdout: %v\n", err)
+		code = 1
+	}
 	if path := flagValue(os.Args[1:], "--result"); path != "" {
 		if err := writeResultFile(path, stdout.Bytes()); err != nil {
 			fmt.Fprintf(os.Stderr, "skein-helper: result file: %v\n", err)
