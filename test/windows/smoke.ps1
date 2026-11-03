@@ -3,10 +3,29 @@
 # Runs two daemons on one machine with distinct interface names and ports,
 # verifies the direct link, pings across the overlay, and checks cleanup.
 #
-# Run from an elevated PowerShell in the directory that holds the binaries:
+# Run from an elevated PowerShell:
+#   .\smoke.ps1 -Bin ..\..\dist
+# or from the directory that holds the binaries:
 #   .\smoke.ps1
 
+param(
+    [string]$Bin = ""
+)
+
 $ErrorActionPreference = "Stop"
+
+if (-not $Bin) {
+    $Bin = (Get-Location).Path
+    $fallback = Join-Path $PSScriptRoot "..\..\dist"
+    if (-not (Test-Path (Join-Path $Bin "skein.exe")) -and (Test-Path (Join-Path $fallback "skein.exe"))) {
+        $Bin = (Resolve-Path $fallback).Path
+    }
+} else {
+    $Bin = (Resolve-Path $Bin).Path
+}
+$skeinExe = Join-Path $Bin "skein.exe"
+$skeindExe = Join-Path $Bin "skeind.exe"
+$wintunDll = Join-Path $Bin "wintun.dll"
 
 function Assert-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -17,7 +36,7 @@ function Assert-Admin {
 }
 
 function Get-Identity($cfgPath) {
-    $out = & .\skein.exe -c $cfgPath genkey
+    $out = & $skeinExe -c $cfgPath genkey
     if ($LASTEXITCODE -ne 0) { throw "genkey failed for $cfgPath" }
     $id = [regex]::Match(($out -join "`n"), 'node id:\s+([0-9a-f]{16})').Groups[1].Value
     $pub = [regex]::Match(($out -join "`n"), 'public key:\s+(\S+)').Groups[1].Value
@@ -54,9 +73,9 @@ addrs = ["udp://$peerAddr"]
 }
 
 Assert-Admin
-if (-not (Test-Path ".\skeind.exe")) { throw "skeind.exe not found in the current directory" }
-if (-not (Test-Path ".\skein.exe")) { throw "skein.exe not found in the current directory" }
-if (-not (Test-Path ".\wintun.dll")) { throw "wintun.dll not found next to skeind.exe" }
+if (-not (Test-Path $skeindExe)) { throw "skeind.exe not found in $Bin" }
+if (-not (Test-Path $skeinExe)) { throw "skein.exe not found in $Bin" }
+if (-not (Test-Path $wintunDll)) { throw "wintun.dll not found next to skeind.exe" }
 
 $root = Join-Path $env:TEMP ("skein-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 $dirA = Join-Path $root "node a"
@@ -80,14 +99,14 @@ $procB = $null
 $failed = $true
 try {
     Write-Host "Starting daemons..."
-    $procA = Start-Process -FilePath ".\skeind.exe" -ArgumentList "run -c `"$cfgA`"" -PassThru
-    $procB = Start-Process -FilePath ".\skeind.exe" -ArgumentList "run -c `"$cfgB`"" -PassThru
+    $procA = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgA`"" -PassThru
+    $procB = Start-Process -FilePath $skeindExe -ArgumentList "run -c `"$cfgB`"" -PassThru
 
     $deadline = (Get-Date).AddSeconds(30)
     $up = $false
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        $json = & .\skein.exe -c $cfgA peers --json 2>$null
+        $json = & $skeinExe -c $cfgA peers --json 2>$null
         if ($LASTEXITCODE -eq 0 -and ($json -join "") -match '"state"\s*:\s*"up"') {
             $up = $true
             break
@@ -101,7 +120,7 @@ try {
     if (-not ($ping -join "`n") -match 'Received\s*=\s*[1-9]') { throw "overlay ping failed" }
 
     Write-Host "Routes:"
-    & .\skein.exe -c $cfgA routes
+    & $skeinExe -c $cfgA routes
     if ($LASTEXITCODE -ne 0) { throw "routes command failed" }
 
     Write-Host "Stopping daemons..."

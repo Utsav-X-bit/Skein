@@ -561,8 +561,9 @@ SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" \
 ```
 
 TUI smoke: `skein dashboard` with the service running should attach over the
-socket/pipe and quit with `q`. Windows runtime check:
-`test/windows/smoke.ps1` (elevated, with `wintun.dll`).
+socket/pipe and quit with `q`. Windows: build with
+`test/windows/build.ps1`, then run `test/windows/run-all.ps1 -Bin .\dist`
+from an elevated PowerShell (see [`test/windows/README.md`](test/windows/README.md)).
 
 ## Docs
 
