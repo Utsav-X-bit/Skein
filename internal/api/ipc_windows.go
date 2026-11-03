@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"runtime"
@@ -181,6 +182,7 @@ func NewPipeListener(ctx context.Context, name, accessFile string, maxConns int)
 	if err != nil {
 		return nil, fmt.Errorf("create first pipe instance: %w", err)
 	}
+	log.Printf("skein: pipe created name=%q handle=%v", p.name, h)
 	p.pending = h
 	p.acceptDone = make(chan struct{})
 	go p.acceptLoop(ctx)
@@ -225,6 +227,7 @@ func (p *pipeListener) release() { <-p.active }
 
 func (p *pipeListener) acceptLoop(ctx context.Context) {
 	defer func() {
+		log.Printf("skein: pipe accept loop exit name=%q", p.name)
 		close(p.conns)
 		close(p.acceptDone)
 	}()
@@ -266,6 +269,7 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		if h == 0 {
 			h, err = createPipeInstance(p.name, false, p.sa)
 			if err != nil {
+				log.Printf("skein: pipe create instance: %v", err)
 				select {
 				case <-ctx.Done():
 					return
@@ -286,6 +290,7 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		// ERROR_PIPE_CONNECTED: the client connected during
 		// CreateNamedPipe; both outcomes are success.
 		if err != nil && err != windows.ERROR_PIPE_CONNECTED {
+			log.Printf("skein: pipe connect: %v", err)
 			windows.CloseHandle(h)
 			continue
 		}
