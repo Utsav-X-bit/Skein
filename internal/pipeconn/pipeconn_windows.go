@@ -5,7 +5,6 @@ package pipeconn
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"sync"
@@ -67,30 +66,83 @@ type conn struct {
 var _ = net.Conn(&conn{})
 
 func (c *conn) Read(b []byte) (int, error) {
-	n, err := c.io(c.in, func(ov *windows.Overlapped) error {
-		return windows.ReadFile(c.h, b, nil, ov)
-	})
-	if n > 0 {
-		return n, nil
+	ov := &windows.Overlapped{}
+	ov.HEvent = c.in
+	windows.ResetEvent(c.in)
+	var n uint32
+	err := windows.ReadFile(c.h, b, &n, ov)
+	if err == nil {
+		return int(n), nil
 	}
-	if err != nil {
+	if err != windows.ERROR_IO_PENDING {
 		return 0, err
 	}
-	return 0, io.EOF
+	if err := c.wait(c.in, ov); err != nil {
+		return 0, err
+	}
+	if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 func (c *conn) Write(b []byte) (int, error) {
 	total := 0
 	for total < len(b) {
-		n, err := c.io(c.out, func(ov *windows.Overlapped) error {
-			return windows.WriteFile(c.h, b[total:], nil, ov)
-		})
-		total += n
-		if err != nil {
+		ov := &windows.Overlapped{}
+		ov.HEvent = c.out
+		windows.ResetEvent(c.out)
+		var n uint32
+		err := windows.WriteFile(c.h, b[total:], &n, ov)
+		if err == nil {
+			total += int(n)
+			continue
+		}
+		if err != windows.ERROR_IO_PENDING {
 			return total, err
 		}
+		if err := c.wait(c.out, ov); err != nil {
+			return total, err
+		}
+		if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
+			return total, err
+		}
+		total += int(n)
 	}
 	return total, nil
+}
+
+// wait blocks until an overlapped operation completes or the shared
+// deadline expires.
+func (c *conn) wait(event windows.Handle, ov *windows.Overlapped) error {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.mu.Unlock()
+	wait := uint32(0xFFFFFFFF) // INFINITE
+	if !deadline.IsZero() {
+		d := time.Until(deadline)
+		if d <= 0 {
+			return osDeadline{}
+		}
+		ms := uint32(d / time.Millisecond)
+		if ms == 0 {
+			ms = 1
+		}
+		wait = ms
+	}
+	ev, err := windows.WaitForSingleObject(event, wait)
+	if err != nil {
+		return err
+	}
+	switch {
+	case ev == windows.WAIT_OBJECT_0:
+		return nil
+	case ev == 0x102: // WAIT_TIMEOUT
+		windows.CancelIoEx(c.h, ov)
+		return osDeadline{}
+	default:
+		return errors.New("pipeconn: wait failed")
+	}
 }
 
 func (c *conn) Close() error {
@@ -126,50 +178,6 @@ func (c *conn) SetDeadline(t time.Time) error {
 
 func (c *conn) SetReadDeadline(t time.Time) error  { return c.SetDeadline(t) }
 func (c *conn) SetWriteDeadline(t time.Time) error { return c.SetDeadline(t) }
-
-// io runs one overlapped read or write, waiting on the completion event
-// until the shared deadline.
-func (c *conn) io(event windows.Handle, op func(*windows.Overlapped) error) (int, error) {
-	c.mu.Lock()
-	deadline := c.deadline
-	c.mu.Unlock()
-
-	ov := &windows.Overlapped{}
-	ov.HEvent = event
-	windows.ResetEvent(event)
-	if err := op(ov); err != nil && err != windows.ERROR_IO_PENDING {
-		return 0, err
-	}
-	wait := uint32(0xFFFFFFFF) // INFINITE
-	if !deadline.IsZero() {
-		d := time.Until(deadline)
-		if d <= 0 {
-			return 0, osDeadline{}
-		}
-		ms := uint32(d / time.Millisecond)
-		if ms == 0 {
-			ms = 1
-		}
-		wait = ms
-	}
-	ev, err := windows.WaitForSingleObject(event, wait)
-	if err != nil {
-		return 0, err
-	}
-	switch {
-	case ev == windows.WAIT_OBJECT_0:
-	case ev == 0x102: // WAIT_TIMEOUT (x/sys types it as syscall.Errno)
-		windows.CancelIoEx(c.h, ov)
-		return 0, osDeadline{}
-	default:
-		return 0, errors.New("pipeconn: wait failed")
-	}
-	var n uint32
-	if err := windows.GetOverlappedResult(c.h, ov, &n, false); err != nil {
-		return 0, err
-	}
-	return int(n), nil
-}
 
 // osDeadline is a net.Error whose deadline flag is true.
 type osDeadline struct{}
