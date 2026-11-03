@@ -41,7 +41,7 @@ ProtectHome=true
 PrivateTmp=true
 StateDirectory=skein
 RuntimeDirectory=skein
-ReadWritePaths=/etc/skein /var/lib/skein /run/skein -/etc/ufw -/etc/firewalld -/run/ufw -/run/xtables.lock
+ReadWritePaths=/etc/skein /var/lib/skein /run/skein -/etc/ufw -/etc/firewalld -/run/ufw -/run/ufw.lock -/var/lib/ufw -/run/xtables.lock
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
