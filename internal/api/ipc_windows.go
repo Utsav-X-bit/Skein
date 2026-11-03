@@ -294,8 +294,10 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 			windows.CloseHandle(h)
 			continue
 		}
+		log.Printf("skein: pipe client accepted handle=%v", h)
 		c := &pipeConn{h: h, name: p.name, release: p.release}
 		c.caller = p.verifyClient(h)
+		log.Printf("skein: pipe client caller=%q", c.caller.SID)
 		select {
 		case p.conns <- c:
 		case <-ctx.Done():
