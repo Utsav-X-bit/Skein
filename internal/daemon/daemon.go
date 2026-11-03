@@ -201,6 +201,11 @@ func (d *Daemon) registerPeer(id uint64, publicKey []byte, addrs []netip.AddrPor
 	if err := d.sessions.SetPeer(id, publicKey); err != nil {
 		return err
 	}
+	// A discovery/gossip update must not flip the configured dialer role and
+	// leave both sides waiting for the other to connect.
+	if existing, ok := d.peers.Get(id); ok {
+		dialer = existing.Dialer
+	}
 	if err := d.peers.Upsert(peer.Peer{
 		ID:        id,
 		PublicKey: publicKey,
