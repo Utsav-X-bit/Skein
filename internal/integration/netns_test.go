@@ -150,6 +150,9 @@ stun = false
 			filepath.Join(binDir, "skeind"), "run", "-c", paths[n.name])
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
+		// Isolate the persisted pause flag; otherwise a paused host service
+		// makes every test daemon start down.
+		cmd.Env = append(os.Environ(), "SKEIN_STATE_FILE="+filepath.Join(cfgDir, n.name, "state.json"))
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start %s: %v", n.name, err)
 		}
@@ -165,6 +168,8 @@ stun = false
 		time.Sleep(250 * time.Millisecond)
 	}
 	if !peersUp(t, ns["ndual"], filepath.Join(binDir, "skein"), paths["ndual"], 2) {
+		t.Logf("ndual status: %s", run(t, "ip", "netns", "exec", ns["ndual"], filepath.Join(binDir, "skein"), "-c", paths["ndual"], "status", "--json"))
+		t.Logf("ndual peers: %s", run(t, "ip", "netns", "exec", ns["ndual"], filepath.Join(binDir, "skein"), "-c", paths["ndual"], "peers", "--json"))
 		t.Fatal("ndual did not establish both direct links")
 	}
 

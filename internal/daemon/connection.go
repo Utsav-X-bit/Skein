@@ -38,6 +38,9 @@ const (
 // persistent state directory (StateDirectory=skein), not the ephemeral
 // runtime directory.
 func stateFile() string {
+	if p := os.Getenv("SKEIN_STATE_FILE"); p != "" {
+		return p
+	}
 	if runtime.GOOS == "windows" {
 		return filepath.Join(os.Getenv("ProgramData"), "Skein", "state.json")
 	}
