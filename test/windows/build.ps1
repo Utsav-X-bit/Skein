@@ -37,6 +37,8 @@ try {
     Assert-Exit "go build skein-helper" $LASTEXITCODE
 
     if (-not $SkipDesktop) {
+        Require-Command "node" "Install Node.js LTS: winget install OpenJS.NodeJS.LTS"
+        Require-Command "npm" "npm ships with Node.js; install Node.js LTS and reopen PowerShell."
         Require-Command "wails3" "Install it with: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0"
         Push-Location (Join-Path $root "gui")
         try {
