@@ -32,7 +32,7 @@ const (
 	sidSystem         = "S-1-5-18"
 	sidAdministrators = "S-1-5-32-544"
 
-	pipeTypeByte     = 0x1
+	pipeTypeByte     = 0x0
 	pipeReadModeByte = 0x0
 	pipeWait         = 0x0
 	// pipeMode rejects remote (SMB redirect) clients; identity is
