@@ -15,9 +15,10 @@ import (
 func main() {
 	a := New()
 
-	// Native window decorations on Linux; a custom titlebar on Windows
-	// (WindowControls in the command bar).
-	frameless := runtime.GOOS == "windows"
+	// Use native window decorations everywhere. The Windows custom titlebar
+	// never exposed minimize/close controls, and native decorations are the
+	// expected behavior on Windows 10.
+	frameless := false
 
 	startState := application.WindowStateMaximised
 	if runtime.GOOS == "windows" {

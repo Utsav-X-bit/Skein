@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 // defaultHelperPath prefers the helper shipped beside the desktop binary,
@@ -25,5 +26,7 @@ func defaultHelperPath() string {
 }
 
 func helperCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, path, args...)
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	return cmd
 }

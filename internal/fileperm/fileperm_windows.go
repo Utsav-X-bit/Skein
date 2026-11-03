@@ -44,8 +44,8 @@ func restrict(path string) error {
 	return windows.SetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		user.User.Sid, nil, dacl, nil,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil,
 	)
 }
 
@@ -54,9 +54,9 @@ func chownToSudoUser(string) error { return nil }
 func preserveOwner(string, string) error { return nil }
 
 // root replaces the DACL with full control for SYSTEM and Administrators
-// only (no interactive user) and makes SYSTEM the owner. That is the
-// service-only DACL the spec requires for %ProgramData%\Skein: the service
-// runs as LocalSystem and Administrators can maintain it.
+// only (no interactive user). The DACL is the service boundary; setting the
+// owner to SYSTEM needs SeRestorePrivilege and fails for some elevated
+// administrators, so the owner is left unchanged.
 func root(path string) error {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
@@ -76,8 +76,8 @@ func root(path string) error {
 	return windows.SetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		system, nil, dacl, nil,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil,
 	)
 }
 
