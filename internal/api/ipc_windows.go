@@ -367,7 +367,7 @@ type pipeConn struct {
 func (c *pipeConn) Read(b []byte) (int, error) {
 	var n uint32
 	err := windows.ReadFile(c.h, b, &n, nil)
-	log.Printf("skein: pipe read n=%d err=%v", n, err)
+	log.Printf("skein: pipe read n=%d err=%v data=%q", n, err, string(b[:n]))
 	return int(n), err
 }
 func (c *pipeConn) Write(b []byte) (int, error) {
