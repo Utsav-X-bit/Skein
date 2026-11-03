@@ -24,7 +24,7 @@ import (
 // x/sys/windows lacks ImpersonateNamedPipeClient and
 // GetProcessImageFileNameW, so they are bound directly.
 var (
-	impersonateNamedPipeClientProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("ImpersonateNamedPipeClient")
+	impersonateNamedPipeClientProc = windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateNamedPipeClient")
 	getProcessImageFileNameProc    = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessImageFileNameW")
 )
 
