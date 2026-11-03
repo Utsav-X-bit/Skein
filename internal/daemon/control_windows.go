@@ -18,7 +18,7 @@ func (d *Daemon) serveControl(ctx context.Context) {
 	if cfg.API.Pipe == "" {
 		return
 	}
-	ln, err := api.NewPipeListener(ctx, cfg.API.Pipe, "", d.api.ConnectionCap())
+	ln, err := api.NewPipeListener(ctx, cfg.API.Pipe, controlAccessFile, d.api.ConnectionCap())
 	if err != nil {
 		log.Printf("skein: error: control pipe: %v", err)
 		return

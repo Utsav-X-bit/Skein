@@ -5,6 +5,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"golang.org/x/sys/windows"
 
@@ -22,6 +23,12 @@ func SetOwnerRoot(user string) error {
 	sid, err := lookupSID(user)
 	if err != nil {
 		return err
+	}
+	if err := os.MkdirAll(SystemDir(), 0o750); err != nil {
+		return fmt.Errorf("set-owner: %s: %w", SystemDir(), err)
+	}
+	if err := os.WriteFile(AccessPath(), []byte(sid+"\n"), 0o600); err != nil {
+		return fmt.Errorf("set-owner: access file: %w", err)
 	}
 	if err := fileperm.GrantUser(SystemDir(), sid); err != nil {
 		return fmt.Errorf("set-owner: %s: %w", SystemDir(), err)
@@ -47,4 +54,14 @@ func lookupSID(user string) (string, error) {
 		return "", fmt.Errorf("set-owner: resolve user %q: %w", user, err)
 	}
 	return sid.String(), nil
+}
+
+// grantBootstrapUser grants the interactive user that launched the elevated
+// helper access to the service control pipe.
+func grantBootstrapUser() error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	return SetOwnerRoot(user.User.Sid.String())
 }

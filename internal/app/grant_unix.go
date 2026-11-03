@@ -60,3 +60,17 @@ func GrantUserRoot(uid int) error {
 func SetOwnerRoot(string) error {
 	return fmt.Errorf("set-owner is a Windows verb; on Unix use grant-user")
 }
+
+// grantBootstrapUser grants the user that invoked pkexec/sudo access to the
+// service control socket.
+func grantBootstrapUser() error {
+	for _, key := range []string{"PKEXEC_UID", "SUDO_UID"} {
+		if raw := os.Getenv(key); raw != "" {
+			uid, err := strconv.Atoi(raw)
+			if err == nil && uid > 0 {
+				return GrantUserRoot(uid)
+			}
+		}
+	}
+	return nil
+}

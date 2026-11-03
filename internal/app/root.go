@@ -384,6 +384,15 @@ func EnsureService() (service.State, error) {
 // the firewall on the way. A firewall failure only warns: the daemon
 // re-applies the interface rule when it creates the adapter.
 func ensureService(cfg conf.Config) (service.State, error) {
+	// Migrate older configs to the socket/pipe transport before the service
+	// starts; otherwise the desktop has no control endpoint to connect to.
+	setControlTransport(&cfg)
+	if err := writeConfigRoot(cfg); err != nil {
+		return service.StateError, fmt.Errorf("service config: %w", err)
+	}
+	if err := grantBootstrapUser(); err != nil {
+		return service.StateError, fmt.Errorf("grant user: %w", err)
+	}
 	// Only the port can be opened before the service creates its TUN
 	// interface. The daemon adds the interface-scoped rules after startup.
 	if err := firewall.EnsurePort(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {

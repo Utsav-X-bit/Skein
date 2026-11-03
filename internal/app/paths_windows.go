@@ -34,6 +34,9 @@ func SystemConfigPath() string { return filepath.Join(SystemDir(), "skein.toml")
 
 func SystemIdentityPath() string { return filepath.Join(SystemDir(), "identity.key") }
 
+// AccessPath lists granted user SIDs, one per line, for the control pipe.
+func AccessPath() string { return filepath.Join(SystemDir(), "access") }
+
 // ControlPath is the API transport field the helper writes: api.socket on
 // Unix, api.pipe on Windows.
 func ControlPath() string { return ControlPipe }

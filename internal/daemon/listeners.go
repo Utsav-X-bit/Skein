@@ -12,10 +12,7 @@ import (
 
 // Service defaults for the control transport: the socket is 0660 root:skein,
 // and per-user grants live in /etc/skein/access (written by the helper).
-const (
-	controlSocketGroup = "skein"
-	controlAccessFile  = "/etc/skein/access"
-)
+const controlSocketGroup = "skein"
 
 // StartControlListeners serves the API on the configured service control
 // transport: the Unix socket on unix, the named pipe on Windows (see

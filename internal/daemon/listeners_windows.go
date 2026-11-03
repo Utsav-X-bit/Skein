@@ -6,9 +6,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 )
+
+var controlAccessFile = filepath.Join(os.Getenv("ProgramData"), "Skein", "access")
 
 // controlListener opens the Windows named-pipe control server. Binding fails
 // if a squatter already owns the pipe name or the DACL cannot be built.
