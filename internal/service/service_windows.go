@@ -157,11 +157,16 @@ func installed() (string, string, bool, error) {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		upper := strings.ToUpper(line)
-		idx := strings.Index(upper, "BINPATH")
+		key := "BINARY_PATH_NAME"
+		idx := strings.Index(upper, key)
+		if idx < 0 {
+			key = "BINPATH"
+			idx = strings.Index(upper, key)
+		}
 		if idx < 0 {
 			continue
 		}
-		rest := line[idx+len("BINPATH"):]
+		rest := line[idx+len(key):]
 		rest = strings.TrimLeft(rest, " =:")
 		args, err := splitQuoted(rest)
 		if err != nil {
