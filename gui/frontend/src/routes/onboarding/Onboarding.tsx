@@ -93,7 +93,12 @@ export function Onboarding() {
         <Card><CardContent className="space-y-4 pt-5">
           <div><Label>network join string</Label><Input value={invite} onChange={(e) => setInvite(e.target.value)} placeholder="skein:2:…" autoFocus /></div>
           <p className="text-xs text-[var(--text-muted)]">The join string contains the network secret. It is sent only to the local helper and is never logged.</p>
-          {error && <div className="rounded-md border border-[var(--danger)]/40 p-3 text-xs text-[var(--danger)]">{errText(error)}</div>}
+          {error && (
+            <div className="space-y-3 rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/5 p-3 text-xs text-[var(--danger)]">
+              <div>{errText(error)}</div>
+              <Button size="sm" variant="danger" onClick={() => { if (confirm("Back up the current config and identity, then join a different network? The backup stays on disk.")) resetCfg.mutate(); }}>Reset current config</Button>
+            </div>
+          )}
           <div className="flex justify-between"><Button variant="ghost" onClick={() => setMode("welcome")}>Back</Button><Button onClick={() => join.mutate()} disabled={busy || !invite}>{busy ? "Joining…" : "Join network"}</Button></div>
         </CardContent></Card>
       )}

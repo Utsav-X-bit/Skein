@@ -549,8 +549,11 @@ func writeRoot(cfg conf.Config, id identity.Identity) error {
 	if err := fileperm.Root(SystemDir()); err != nil {
 		return err
 	}
-	if err := identity.Save(SystemIdentityPath(), id); err != nil {
-		return err
+	// Join/rotate reuse an existing identity; only create it when absent.
+	if _, err := os.Stat(SystemIdentityPath()); errors.Is(err, os.ErrNotExist) {
+		if err := identity.Save(SystemIdentityPath(), id); err != nil {
+			return err
+		}
 	}
 	if err := fileperm.Root(SystemIdentityPath()); err != nil {
 		return err
