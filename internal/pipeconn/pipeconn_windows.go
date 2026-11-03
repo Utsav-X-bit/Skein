@@ -34,7 +34,7 @@ func Dial(name string) (net.Conn, error) {
 		0, // no sharing: a single writer/reader pair per instance
 		nil,
 		windows.OPEN_EXISTING,
-		0,
+		windows.FILE_FLAG_OVERLAPPED,
 		0,
 	)
 	if err != nil {
