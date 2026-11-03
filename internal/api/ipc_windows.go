@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +23,7 @@ import (
 // x/sys/windows lacks ImpersonateNamedPipeClient and
 // GetProcessImageFileNameW, so they are bound directly.
 var (
-	impersonateNamedPipeClientProc = windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateNamedPipeClient")
-	getProcessImageFileNameProc    = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessImageFileNameW")
+	getProcessImageFileNameProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessImageFileNameW")
 )
 
 const (
@@ -310,23 +308,25 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 	}
 }
 
-// verifyClient impersonates the connected client (thread-bound) and returns
-// its identity when the user SID or one of its groups is admitted; otherwise
-// it returns an unknown caller, which the API layer rejects.
+// verifyClient reads the connected client's process token by PID. This
+// avoids ImpersonateNamedPipeClient, which can block in a service context.
 func (p *pipeListener) verifyClient(h windows.Handle) Caller {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	var caller Caller
-	if !impersonateNamedPipeClient(h) {
-		return caller
+	var pid uint32
+	if err := windows.GetNamedPipeClientProcessId(h, &pid); err != nil || pid == 0 {
+		return Caller{}
 	}
-	defer windows.RevertToSelf()
+	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return Caller{}
+	}
+	defer windows.CloseHandle(proc)
 	var tok windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &tok); err != nil {
-		return caller
+	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
+		return Caller{}
 	}
 	defer tok.Close()
 
+	var caller Caller
 	if user, err := tok.GetTokenUser(); err == nil {
 		caller.SID = user.User.Sid.String()
 	}
@@ -347,13 +347,6 @@ func (p *pipeListener) verifyClient(h windows.Handle) Caller {
 	return caller
 }
 
-func impersonateNamedPipeClient(h windows.Handle) bool {
-	r, _, _ := impersonateNamedPipeClientProc.Call(uintptr(h))
-	return r != 0
-}
-
-// pipeConn is one connected pipe instance. Reads and writes block
-// (PIPE_WAIT); deadline methods are no-ops.
 type pipeConn struct {
 	h       windows.Handle
 	name    string
