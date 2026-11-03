@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/path"
+	"github.com/Utsav-X-bit/skein/internal/pipeconn"
 	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
 	"github.com/Utsav-X-bit/skein/internal/wan"
@@ -41,12 +43,12 @@ const (
 const usage = `skein — Skein mesh VPN command line
 
 Usage:
-  skein [-c <config>] init                  create identity, config, secret, join string
-  skein [-c <config>] join <invite>         configure this node from a network invite
+  skein [-c <config>] init                  create identity, config, secret, join string (dev-only; the desktop uses skein-helper)
+  skein [-c <config>] join <invite>         configure this node from a network invite (dev-only)
   skein [-c <config>] name [value]          show or set this node's name
   skein [-c <config>] genkey                print the public key and node ID
   skein [-c <config>] invite [--network]    print a peer invite or a network join string
-  skein [-c <config>] run                   run the daemon (root / Administrator)
+  skein [-c <config>] run                   run the daemon (root / Administrator; -c is the dev path, the service uses the system config)
   skein [-c <config>] setup [--remove]      allow the firewall for the underlay and overlay
   skein [-c <config>] reset [--purge] [--keep-identity] [--force]
                                             leave the mesh: back up or remove config and identity
@@ -264,8 +266,13 @@ func loadConfig(path string) (conf.Config, error) {
 	cfg, err := conf.Load(path)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			// The daemon runs as root and may have rewritten files the user
-			// cannot read; hand the whole directory back to them.
+			if filepath.Dir(path) == app.SystemDir() {
+				// System install: the config is root-owned on purpose; the
+				// GUI talks to the daemon over the socket, not the file.
+				return conf.Config{}, fmt.Errorf("load %s: the system config is root-owned; use the desktop app or run elevated", path)
+			}
+			// The dev daemon runs as root and may have rewritten a file the
+			// user cannot read; hand the whole directory back to them.
 			return conf.Config{}, fmt.Errorf("load %s: permission denied; fix ownership with:\n  sudo chown -R $(id -u):$(id -g) %s", path, filepath.Dir(path))
 		}
 		if errors.Is(err, os.ErrNotExist) {
@@ -407,11 +414,7 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 	}
 
 	// A running daemon advertises the new name immediately; no restart.
-	c := &client{
-		base:  "http://" + cfg.API.Listen,
-		token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
-		http:  &http.Client{Timeout: 2 * time.Second},
-	}
+	c := clientFor(cfg, 2*time.Second)
 	if err := c.setName(context.Background(), name); err == nil {
 		fmt.Fprintf(stdout, "name set to %q; advertised immediately\n", name)
 		return nil
@@ -527,11 +530,7 @@ func allCandidates(cfg conf.Config) ([]netip.AddrPort, error) {
 // runningPeerOverlays asks the local daemon for overlay addresses already in
 // use. It returns nil when the daemon is not running.
 func runningPeerOverlays(cfg conf.Config) []netip.Addr {
-	c := &client{
-		base:  "http://" + cfg.API.Listen,
-		token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
-		http:  &http.Client{Timeout: 2 * time.Second},
-	}
+	c := clientFor(cfg, 2*time.Second)
 	var peers []struct {
 		OverlayIPv4 string `json:"overlay_ipv4"`
 	}
@@ -682,11 +681,7 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 }
 
 func runOnline(ctx context.Context, cfg conf.Config, args []string, jsonOut bool, stdout io.Writer) error {
-	c := &client{
-		base:  "http://" + cfg.API.Listen,
-		token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
-		http:  &http.Client{Timeout: 10 * time.Second},
-	}
+	c := clientFor(cfg, 10*time.Second)
 	switch args[0] {
 	case "status":
 		return c.print(ctx, "/api/v1/status", jsonOut, stdout, printStatus)
@@ -787,9 +782,44 @@ func parsePeerID(s string) (uint64, error) {
 }
 
 type client struct {
-	base  string
-	token string
-	http  *http.Client
+	base   string
+	token  string
+	socket string // Unix control socket (listener auth, no bearer token)
+	pipe   string // Windows control pipe (listener auth, no bearer token)
+	http   *http.Client
+}
+
+// clientFor picks the control transport the config declares: the Unix
+// socket or Windows pipe first (kernel-verified caller identity, no bearer
+// token), then the dev-only loopback TCP listener.
+func clientFor(cfg conf.Config, timeout time.Duration) *client {
+	c := &client{http: &http.Client{Timeout: timeout}}
+	switch {
+	case cfg.API.Socket != "":
+		c.base, c.socket = "http://localhost", cfg.API.Socket
+		d := net.Dialer{}
+		c.http.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return d.DialContext(ctx, "unix", c.socket)
+			},
+		}
+	case cfg.API.Pipe != "":
+		c.base, c.pipe = "http://localhost", cfg.API.Pipe
+		c.http.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				conn, err := pipeconn.Dial(c.pipe)
+				if err != nil {
+					return nil, err
+				}
+				_ = conn.SetDeadline(time.Now().Add(timeout))
+				return conn, nil
+			},
+		}
+	default:
+		c.base = "http://" + cfg.API.Listen
+		c.token = base64.RawURLEncoding.EncodeToString(cfg.API.Token)
+	}
+	return c
 }
 
 func (c *client) setName(ctx context.Context, name string) error {
@@ -813,7 +843,9 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -846,7 +878,9 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return daemonContactError(err)

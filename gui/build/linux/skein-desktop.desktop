@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=skein-desktop
+Exec=skein-desktop
+Icon=skein-desktop
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false

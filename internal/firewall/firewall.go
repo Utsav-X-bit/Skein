@@ -64,3 +64,32 @@ func EnsureInterface(cfg Config) error { return ensureInterface(cfg) }
 
 // Remove deletes the rules Ensure created. Missing rules are ignored.
 func Remove(cfg Config) error { return remove(cfg) }
+
+// Rule is one rule Skein manages, as the manager reports it.
+type Rule struct {
+	Name      string `json:"name"`
+	Direction string `json:"direction"` // in, out, or forward
+	Action    string `json:"action"`
+	Protocol  string `json:"protocol"`
+	Port      string `json:"port,omitempty"`
+	Interface string `json:"interface,omitempty"`
+}
+
+// Status inspects the manager for Skein's rules without changing anything.
+// State is "ok" when every rule is present, "degraded" when the manager is
+// active but a rule is missing, and "unknown" when the manager could not be
+// queried.
+type Status struct {
+	Manager     string `json:"manager"`
+	State       string `json:"state"`
+	Rules       []Rule `json:"rules"`
+	LastCheckMS int64  `json:"last_check_ms"`
+	LastError   string `json:"last_error,omitempty"`
+}
+
+// ReadStatus inspects the firewall state for cfg without changing anything.
+func ReadStatus(cfg Config) (Status, error) { return status(cfg) }
+
+// Repair re-applies the managed rules transactionally and returns the
+// refreshed status.
+func Repair(cfg Config) (Status, error) { return repair(cfg) }

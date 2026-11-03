@@ -1,0 +1,172 @@
+/* Skein design tokens — spec §5.1. Dark is the default (no attribute).
+   Themes: [data-theme="light"], [data-theme="high-contrast"],
+   [data-theme="high-contrast-light"]. All text pairs are AA-checked in
+   scripts/contrast.test.ts (W11). */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #08090b;
+  --surface: #101216;
+  --surface-raised: #161b22;
+  --border: #5a6a80; /* decorative only */
+  --border-strong: #66788f; /* interactive borders, ≥3:1 */
+  --text: #f4f6f8;
+  --text-muted: #a7b0be;
+  --text-faint: #8a94a3; /* metadata only */
+  --accent: #4fe3c1;
+  --accent-soft: color-mix(in oklch, #4fe3c1 12%, transparent);
+  --relay: #f2b35d;
+  --danger: #ff7a7a;
+  --info: #8fb4ff;
+  --success: #7be3a0;
+  --warning: #f2c94c;
+
+  /* 2px interactive borders in high-contrast light (spec §5.1) */
+  --border-w: 1px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Spacing scale 4–72 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-18: 72px;
+
+  /* Shell metrics — spec §4 */
+  --rail-w: 232px;
+  --rail-w-collapsed: 72px;
+  --command-bar-h: 56px;
+  --inspector-w: 320px;
+
+  /* Motion — spec §5.3. Allowed: transform, opacity, stroke-dashoffset;
+     filter/box-shadow only on small elements. */
+  --dur-hover: 120ms;
+  --dur-panel: 220ms;
+  --dur-dialog: 180ms;
+  --dur-page: 180ms;
+  --dur-node: 300ms;
+  --stagger-node: 30ms;
+  --dur-edge: 500ms;
+  --dur-logo: 900ms;
+  --dur-toast: 180ms;
+
+  /* Floating shadows only */
+  --shadow-float: 0 8px 24px rgb(0 0 0 / 0.35);
+  --shadow-float-sm: 0 4px 12px rgb(0 0 0 / 0.3);
+
+  /* Focus ring: 2px accent + 2px offset */
+  --focus-ring: 2px solid var(--accent);
+  --focus-offset: 2px;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f6f4ee;
+  --surface: #ffffff;
+  --surface-raised: #fbfaf6;
+  --border: #8c8474;
+  --border-strong: #7c7466;
+  --text: #14171c;
+  --text-muted: #4b5563;
+  --text-faint: #66707e;
+  --accent: #0b6b5a;
+  --accent-soft: color-mix(in oklch, #0b6b5a 10%, transparent);
+  --relay: #8a4e0a;
+  --danger: #b42318;
+  --info: #1d4ed8;
+  --success: #17663a;
+  --warning: #7a5600;
+
+  --shadow-float: 0 8px 24px rgb(20 23 28 / 0.12);
+  --shadow-float-sm: 0 4px 12px rgb(20 23 28 / 0.1);
+}
+
+[data-theme="high-contrast"] {
+  color-scheme: dark;
+
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-raised: #141414;
+  --border: #ffffff;
+  --border-strong: #ffffff;
+  --text: #ffffff;
+  --text-muted: #e6e6e6;
+  --text-faint: #d0d0d0;
+  --accent: #00ffd0;
+  --accent-soft: color-mix(in oklch, #00ffd0 18%, transparent);
+  --relay: #ffd166;
+  --danger: #ff8a8a;
+  --info: #9cc3ff;
+  --success: #8cffb0;
+  --warning: #ffe066;
+}
+
+[data-theme="high-contrast-light"] {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #f5f5f5;
+  --border: #000000;
+  --border-strong: #000000;
+  --text: #000000;
+  --text-muted: #1a1a1a;
+  --text-faint: #333333;
+  --accent: #004a3e;
+  --accent-soft: color-mix(in oklch, #004a3e 12%, transparent);
+  --relay: #6b3a00;
+  --danger: #8a1c00;
+  --info: #0033cc;
+  --success: #0a5c2e;
+  --warning: #5c4400;
+
+  --border-w: 2px;
+}
+
+/* Reduced motion: system preference or Settings → Motion = reduced. */
+@media (prefers-reduced-motion: reduce) {
+  [data-motion="system"],
+  [data-motion="reduced"] {
+    --dur-hover: 0.01ms;
+    --dur-panel: 0.01ms;
+    --dur-dialog: 0.01ms;
+    --dur-page: 0.01ms;
+    --dur-node: 0.01ms;
+    --stagger-node: 0ms;
+    --dur-edge: 0.01ms;
+    --dur-logo: 0.01ms;
+    --dur-toast: 0.01ms;
+  }
+}
+
+[data-motion="reduced"] {
+  --dur-hover: 0.01ms;
+  --dur-panel: 0.01ms;
+  --dur-dialog: 0.01ms;
+  --dur-page: 0.01ms;
+  --dur-node: 0.01ms;
+  --stagger-node: 0ms;
+  --dur-edge: 0.01ms;
+  --dur-logo: 0.01ms;
+  --dur-toast: 0.01ms;
+}
+
+/* Kill continuous animations (link flow, breathing) when reduced. */
+[data-motion="reduced"] .animate-flow,
+[data-motion="reduced"] .animate-breathe,
+[data-motion="reduced"] .animate-draw {
+  animation: none;
+}

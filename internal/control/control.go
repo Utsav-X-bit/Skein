@@ -69,6 +69,7 @@ type Controller struct {
 	trafficPrev map[uint64]trafficSample
 	lastRTT     map[uint64]time.Duration
 	onEvent     func(typ string, peerID uint64)
+	paused      bool
 }
 
 type trafficSample struct{ rx, tx uint64 }
@@ -136,6 +137,14 @@ func (c *Controller) event(typ string, peerID uint64) {
 	}
 }
 
+// SetPaused stops dialing, keepalives, rekeying, and punching while the
+// daemon is disconnected. State advertisements and probes may continue.
+func (c *Controller) SetPaused(paused bool) {
+	c.mu.Lock()
+	c.paused = paused
+	c.mu.Unlock()
+}
+
 // SetClock overrides the clock for tests.
 func (c *Controller) SetClock(now func() time.Time) {
 	c.mu.Lock()
@@ -160,6 +169,12 @@ func (c *Controller) Run(ctx context.Context) error {
 // Tick performs one control pass.
 func (c *Controller) Tick() {
 	now := c.now()
+	c.mu.Lock()
+	paused := c.paused
+	c.mu.Unlock()
+	if paused {
+		return
+	}
 	for _, p := range c.peers.List() {
 		// Configured dialers connect without waiting for overlay traffic.
 		if p.Dialer {

@@ -65,10 +65,14 @@ type Node struct {
 	PublicAddr netip.AddrPort
 }
 
-// API describes the loopback control API.
+// API describes the local control transports. Socket (Unix) or Pipe
+// (Windows) is the service control plane; Listen is a dev-only loopback
+// listener that still uses Token.
 type API struct {
 	Listen string
 	Token  []byte
+	Socket string
+	Pipe   string
 }
 
 // Discovery toggles zero-configuration discovery.
@@ -106,6 +110,8 @@ type fileConfig struct {
 	API struct {
 		Listen string `toml:"listen"`
 		Token  string `toml:"token"`
+		Socket string `toml:"socket"`
+		Pipe   string `toml:"pipe"`
 	} `toml:"api"`
 	Discovery struct {
 		MDNS       *bool  `toml:"mdns"`
@@ -257,8 +263,16 @@ func Render(cfg Config) ([]byte, error) {
 		fmt.Fprintf(&b, "public_addr         = %q\n", cfg.Node.PublicAddr.String())
 	}
 	b.WriteString("\n[api]\n")
-	fmt.Fprintf(&b, "listen = %q\n", cfg.API.Listen)
-	fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
+	if cfg.API.Socket != "" {
+		fmt.Fprintf(&b, "socket = %q\n", cfg.API.Socket)
+	}
+	if cfg.API.Pipe != "" {
+		fmt.Fprintf(&b, "pipe = %q\n", cfg.API.Pipe)
+	}
+	if cfg.API.Listen != "" {
+		fmt.Fprintf(&b, "listen = %q\n", cfg.API.Listen)
+		fmt.Fprintf(&b, "token  = %q\n", base64.RawURLEncoding.EncodeToString(cfg.API.Token))
+	}
 	b.WriteString("\n[discovery]\n")
 	fmt.Fprintf(&b, "mdns = %v\n", cfg.Discovery.MDNS)
 	if !cfg.Discovery.STUN {
@@ -414,8 +428,19 @@ func parse(text string) (Config, error) {
 		}
 	}
 
+	if s := fc.API.Socket; s != "" {
+		cfg.API.Socket = s
+	}
+	if s := fc.API.Pipe; s != "" {
+		cfg.API.Pipe = s
+	}
 	if s := fc.API.Listen; s != "" {
 		cfg.API.Listen = s
+	} else if cfg.API.Socket != "" || cfg.API.Pipe != "" {
+		// A socket/pipe service config has no dev TCP listener unless the
+		// file explicitly asks for one.
+		cfg.API.Listen = ""
+		cfg.API.Token = nil
 	}
 	if s := fc.API.Token; s != "" {
 		if cfg.API.Token, err = decodeSecret("api.token", s); err != nil {
@@ -586,15 +611,31 @@ func Validate(cfg Config) error {
 		}
 	}
 
-	apiAddr, err := netip.ParseAddrPort(cfg.API.Listen)
-	if err != nil {
-		return fmt.Errorf("api.listen: %w", err)
+	if cfg.API.Socket == "" && cfg.API.Pipe == "" && cfg.API.Listen == "" {
+		return errors.New("api requires a socket, pipe, or dev listen address")
 	}
-	if !apiAddr.Addr().IsLoopback() || apiAddr.Port() == 0 {
-		return fmt.Errorf("api.listen must be a loopback IP and port, got %s", cfg.API.Listen)
+	if cfg.API.Socket != "" {
+		if !filepath.IsAbs(cfg.API.Socket) {
+			return fmt.Errorf("api.socket must be an absolute path, got %q", cfg.API.Socket)
+		}
+		if strings.ContainsAny(cfg.API.Socket, "\x00\r\n") {
+			return errors.New("api.socket contains a control character")
+		}
 	}
-	if len(cfg.API.Token) != secretSize {
-		return fmt.Errorf("api.token must be exactly %d bytes, got %d", secretSize, len(cfg.API.Token))
+	if cfg.API.Pipe != "" && strings.ContainsAny(cfg.API.Pipe, "\\/\x00\r\n") {
+		return fmt.Errorf("api.pipe must be a bare pipe name, got %q", cfg.API.Pipe)
+	}
+	if cfg.API.Listen != "" {
+		apiAddr, err := netip.ParseAddrPort(cfg.API.Listen)
+		if err != nil {
+			return fmt.Errorf("api.listen: %w", err)
+		}
+		if !apiAddr.Addr().IsLoopback() || apiAddr.Port() == 0 {
+			return fmt.Errorf("api.listen must be a loopback IP and port, got %s", cfg.API.Listen)
+		}
+		if len(cfg.API.Token) != secretSize {
+			return fmt.Errorf("api.token must be exactly %d bytes, got %d", secretSize, len(cfg.API.Token))
+		}
 	}
 
 	if len(cfg.Peers) == 0 && !cfg.Discovery.MDNS {

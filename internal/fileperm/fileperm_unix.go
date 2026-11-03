@@ -3,6 +3,7 @@
 package fileperm
 
 import (
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -57,4 +58,21 @@ func preserveOwner(path, ref string) error {
 		}
 	}
 	return chownToSudoUser(path)
+}
+
+// root gives path to root and closes it to everyone else. Directories stay
+// executable by their owner only: 0750 root:root, files 0600.
+func root(path string) error {
+	if err := os.Chown(path, 0, 0); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		mode = 0o750
+	}
+	return os.Chmod(path, mode)
+}
+
+func grantUser(_, _ string) error {
+	return errors.New("fileperm: on Unix, socket access is granted with a setfacl ACL, not file ownership")
 }

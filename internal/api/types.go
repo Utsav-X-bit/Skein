@@ -3,16 +3,18 @@ package api
 
 // Status is the node status response.
 type Status struct {
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	OverlayIPv4   string `json:"overlay_ipv4"`
-	OverlayIPv6   string `json:"overlay_ipv6,omitempty"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	Version       string `json:"version"`
-	ListenPort    uint16 `json:"listen_port"`
-	PeerCount     int    `json:"peers"`
-	RxBytes       uint64 `json:"rx_bytes"`
-	TxBytes       uint64 `json:"tx_bytes"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name,omitempty"`
+	OverlayIPv4   string     `json:"overlay_ipv4"`
+	OverlayIPv6   string     `json:"overlay_ipv6,omitempty"`
+	UptimeSeconds int64      `json:"uptime_seconds"`
+	Version       string     `json:"version"`
+	ListenPort    uint16     `json:"listen_port"`
+	PeerCount     int        `json:"peers"`
+	RxBytes       uint64     `json:"rx_bytes"`
+	TxBytes       uint64     `json:"tx_bytes"`
+	Connection    Connection `json:"connection"`
+	Health        string     `json:"health"`
 }
 
 // Peer is one row of the peer table.
@@ -62,6 +64,7 @@ type Activity struct {
 
 // ConfigView is the redacted effective configuration.
 type ConfigView struct {
+	Name              string   `json:"name,omitempty"`
 	OverlayIPv4Prefix string   `json:"overlay_ipv4_prefix"`
 	OverlayIPv6Prefix string   `json:"overlay_ipv6_prefix"`
 	OverlayIPv4       string   `json:"overlay_ipv4"`
@@ -70,7 +73,14 @@ type ConfigView struct {
 	MTU               int      `json:"mtu"`
 	Interface         string   `json:"interface"`
 	APIListen         string   `json:"api_listen"`
+	APISocket         string   `json:"api_socket,omitempty"`
+	APIPipe           string   `json:"api_pipe,omitempty"`
 	MDNS              bool     `json:"mdns"`
+	STUN              bool     `json:"stun"`
+	STUNServer        string   `json:"stun_server"`
+	PublicAddr        string   `json:"public_addr,omitempty"`
+	ConfigPath        string   `json:"config_path,omitempty"`
+	Protocol          int      `json:"protocol"`
 	Peers             []string `json:"peers"`
 	// Secrets are always reported as redacted.
 	NetworkSecret string `json:"network_secret"`
@@ -79,6 +89,7 @@ type ConfigView struct {
 
 // Event is one SSE event.
 type Event struct {
+	ID     uint64 `json:"id,omitempty"`
 	Type   string `json:"type"`
 	PeerID string `json:"peer_id,omitempty"`
 	Detail string `json:"detail,omitempty"`

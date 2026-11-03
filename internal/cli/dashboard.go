@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -111,11 +110,7 @@ type dashboard struct {
 func newDashboard(cfg conf.Config, out io.Writer, color, motion bool) *dashboard {
 	uiUnicode = color && os.Getenv("SKEIN_ASCII") == ""
 	return &dashboard{
-		client: &client{
-			base:  "http://" + cfg.API.Listen,
-			token: base64.RawURLEncoding.EncodeToString(cfg.API.Token),
-			http:  &http.Client{Timeout: 3 * time.Second},
-		},
+		client:  clientFor(cfg, 3*time.Second),
 		out:     out,
 		color:   color,
 		motion:  motion,

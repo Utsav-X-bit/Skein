@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./tokens.css";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-relay: var(--relay);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --font-sans: "Geist Variable", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --default-border-width: var(--border-w);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-size: 14px;
+    line-height: 20px;
+    font-variant-numeric: tabular-nums;
+    overscroll-behavior: none;
+  }
+
+  /* Focus ring: 2px accent + 2px offset, everywhere keyboard focus lands. */
+  :focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-offset);
+    border-radius: var(--radius-sm);
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  h1 {
+    font-size: 32px;
+    line-height: 40px;
+    font-weight: 600;
+  }
+  h2 {
+    font-size: 24px;
+    line-height: 32px;
+    font-weight: 600;
+  }
+  h3 {
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 600;
+  }
+
+  small,
+  .text-small {
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  /* Mono data labels: 10px uppercase 0.08em (spec §5.1). */
+  .mono-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+  }
+}
+
+@utility glass {
+  background: color-mix(in oklch, var(--surface-raised) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+}
+
+/* Opaque fallback where backdrop-filter is unsupported. */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass {
+    background: var(--surface-raised);
+  }
+}

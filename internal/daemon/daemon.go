@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/activity"
@@ -27,7 +27,6 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
-	"github.com/Utsav-X-bit/skein/internal/netcfg"
 	"github.com/Utsav-X-bit/skein/internal/path"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
@@ -57,11 +56,16 @@ type Daemon struct {
 	http  *http.Server
 	start time.Time
 
-	events    chan api.Event
-	closeOnce sync.Once
-	closeErr  error
-	persistMu sync.Mutex
-	cfgMu     sync.RWMutex
+	events      chan api.Event
+	hub         *api.Hub
+	logs        *logRing
+	redact      *redactor
+	conn        *conn
+	dataPlaneMu sync.Mutex
+	closeOnce   sync.Once
+	closeErr    error
+	persistMu   sync.Mutex
+	cfgMu       sync.RWMutex
 }
 
 // config returns a snapshot safe to read outside the daemon lock.
@@ -96,6 +100,15 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		activity: activity.NewCache(32),
 		start:    time.Now(),
 		events:   make(chan api.Event, 64),
+		hub:      api.NewHub(),
+		logs:     &logRing{},
+	}
+	d.redact = newRedactor(cfg)
+	if st := loadPausedState(); st.Paused {
+		// A service restart honors a persisted pause: stay down until Connect.
+		d.conn = &conn{state: ConnPaused, reason: st.PausedReason, since: time.Now()}
+	} else {
+		d.conn = &conn{state: ConnConnecting, since: time.Now()}
 	}
 
 	for _, p := range cfg.Peers {
@@ -104,40 +117,9 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		}
 	}
 
-	udp, err := link.Listen(cfg.Node.ListenPort)
-	if err != nil {
-		if errors.Is(err, syscall.EADDRINUSE) {
-			return nil, fmt.Errorf("%w (another daemon is already running; stop the service with `systemctl stop skein` or `sc stop skein`)", err)
-		}
-		return nil, err
-	}
-	dev, err := tun.Open(cfg.Node.Interface, cfg.Node.MTU)
-	if err != nil {
-		udp.Close()
-		return nil, err
-	}
-
-	eng, err := dataplane.New(dataplane.Config{
-		LocalID:   id.ID,
-		Identity:  id,
-		OverlayV4: cfg.Node.OverlayIPv4,
-		OverlayV6: cfg.Node.OverlayIPv6,
-		PrefixV4:  cfg.Node.OverlayIPv4Prefix,
-		PrefixV6:  cfg.Node.OverlayIPv6Prefix,
-		MTU:       cfg.Node.MTU,
-	}, dataplane.Deps{
-		TUN:      dev,
-		Link:     udp,
-		Peers:    peers,
-		Routes:   routes,
-		Sessions: sessions,
-	})
-	if err != nil {
-		dev.Close()
-		udp.Close()
-		return nil, err
-	}
-
+	// The underlay, TUN, and engine are (re)opened by the connection loop so
+	// a pause can close them without touching the service. The controller
+	// talks to the live engine through an adapter that survives swaps.
 	ctl, err := control.New(control.Local{
 		ID:         id.ID,
 		Name:       cfg.Node.Name,
@@ -145,10 +127,8 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		OverlayV4:  cfg.Node.OverlayIPv4,
 		OverlayV6:  cfg.Node.OverlayIPv6,
 		Candidates: localCandidates(cfg),
-	}, peers, routes, merger, eng)
+	}, peers, routes, merger, engineAdapter{d})
 	if err != nil {
-		dev.Close()
-		udp.Close()
 		return nil, err
 	}
 
@@ -161,24 +141,16 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	merger.OnActivity = func(origin, seq uint64, records []activity.Record, expires time.Time) {
 		for _, record := range records {
 			d.activity.Put(origin, seq, record, expires)
+			d.emitActivitySample(origin, seq, record, expires)
 		}
 	}
 
 	ctl.SetEventHandler(func(typ string, peerID uint64) {
 		d.emit(api.Event{Type: typ, PeerID: fmt.Sprintf("%016x", peerID)})
 	})
-	d.link = udp
-	d.tun = dev
-	d.eng = eng
 	d.ctl = ctl
 	d.api = api.NewServer(cfg.API.Token, d, d, d)
-
-	eng.SetControlHandler(ctl.HandleControl)
-	eng.SetPingHandler(ctl.HandlePing)
-	eng.SetSessionHandler(d.sessionEstablished)
-	if !udp.HasTCP() {
-		log.Printf("skein: warning: TCP fallback unavailable on port %d; UDP only", cfg.Node.ListenPort)
-	}
+	log.SetOutput(io.MultiWriter(os.Stderr, &logWriter{ring: d.logs, red: d.redact, hub: d.hub}))
 	// A peer that proves the network secret may join without a configured
 	// entry; the invite carries the secret, so holding it is membership.
 	sessions.SetAcceptUnknown(true)
@@ -257,6 +229,7 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 	}
 	d.emit(api.Event{Type: "peer_joined", PeerID: fmt.Sprintf("%016x", id)})
 	d.persistPeers()
+	d.emitPeerChanged()
 }
 
 // persistPeers rewrites the configuration so learned peers survive a restart.
@@ -305,10 +278,8 @@ func (d *Daemon) persistLocked(base conf.Config) {
 	if err := fileperm.Restrict(tmpName); err != nil {
 		log.Printf("skein: warning: cannot restrict %s: %v", tmpName, err)
 	}
-	// The daemon runs as root; keep the config owned by the user who owns it.
-	if err := fileperm.PreserveOwner(tmpName, cfg.Path); err != nil {
-		log.Printf("skein: warning: cannot preserve config ownership: %v", err)
-	}
+	// Root-owned config: the daemon writes as root and no longer preserves the
+	// previous owner, which was a user-mode CLI artifact.
 	if err := os.Rename(tmpName, cfg.Path); err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
@@ -325,47 +296,20 @@ func (d *Daemon) sessionEstablished(peerID uint64) {
 	d.routes.ResetOrigin(peerID)
 	d.activity.ResetOrigin(peerID)
 	d.emit(api.Event{Type: "peer_up", PeerID: fmt.Sprintf("%016x", peerID)})
+	d.emitPeerChanged()
+	d.emitRouteChanged()
 }
 
-func (d *Daemon) emit(ev api.Event) {
-	ev.TimeMS = time.Now().UnixMilli()
-	select {
-	case d.events <- ev:
-	default:
-		// A slow consumer must never block the dataplane.
-	}
-}
-
-// Run configures the interface and runs every loop until ctx is cancelled.
+// Run runs every loop until ctx is cancelled. The dataplane (interface,
+// routes, TUN, link, engine) is owned by connLoop so it can be paused and
+// resumed without stopping the service.
 func (d *Daemon) Run(ctx context.Context) error {
 	cfg := d.config()
-	addresses := []netip.Prefix{netip.PrefixFrom(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv4Prefix.Bits())}
-	routes := []netip.Prefix{cfg.Node.OverlayIPv4Prefix}
-	if cfg.Node.OverlayIPv6.IsValid() {
-		addresses = append(addresses, netip.PrefixFrom(cfg.Node.OverlayIPv6, cfg.Node.OverlayIPv6Prefix.Bits()))
-		routes = append(routes, cfg.Node.OverlayIPv6Prefix)
-	}
-	if warnings, err := netcfg.Conflicts(routes); err == nil {
-		for _, w := range warnings {
-			log.Printf("skein: warning: %s", w)
-		}
-	}
-	if err := netcfg.Reconcile(cfg.Node.Interface, routes, routes); err != nil {
-		log.Printf("skein: warning: reconcile: %v", err)
-	}
-	if err := netcfg.Configure(cfg.Node.Interface, cfg.Node.MTU, addresses, routes); err != nil {
-		return err
-	}
 	// Open the underlay port and trust the overlay interface so any protocol
-	// works without manual rules.
+	// works without manual rules. The rules stay in place across pauses.
 	if err := firewall.Ensure(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
 		log.Printf("skein: warning: firewall: %v", err)
 	}
-	defer func() {
-		if err := netcfg.Remove(cfg.Node.Interface, addresses, routes); err != nil {
-			log.Printf("skein: warning: remove network configuration: %v", err)
-		}
-	}()
 
 	for _, p := range d.peers.List() {
 		addrs := make([]string, 0, len(p.Candidates))
@@ -389,20 +333,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	apiCtx, stopAPI := context.WithCancel(ctx)
 	defer stopAPI()
-	d.http = &http.Server{
-		Addr:              cfg.API.Listen,
-		Handler:           d.api.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-		BaseContext:       func(net.Listener) context.Context { return apiCtx },
+	if cfg.API.Listen != "" {
+		d.http = &http.Server{
+			Addr:              cfg.API.Listen,
+			Handler:           d.api.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+			BaseContext:       func(net.Listener) context.Context { return apiCtx },
+		}
 	}
-	go d.serveAPI(apiCtx, d.http)
+	if cfg.API.Listen != "" {
+		go d.serveAPI(apiCtx, d.http)
+	}
+	go d.serveControl(apiCtx)
 	go d.refreshWAN(ctx)
 	go d.pruneStalePeers(ctx)
 
-	go func() { _ = d.ctl.Run(ctx) }()
-	return d.eng.Run(ctx)
+	return d.connLoop(ctx)
 }
 
 func (d *Daemon) serveAPI(ctx context.Context, srv *http.Server) {
@@ -435,6 +383,7 @@ func (d *Daemon) discovered(inv identity.Invite) {
 		d.peers.AddCandidate(inv.ID, addr, peer.SourceMDNS)
 	}
 	d.emit(api.Event{Type: "peer_discovered", PeerID: fmt.Sprintf("%016x", inv.ID)})
+	d.emitPeerChanged()
 }
 
 // Close releases every resource. It is safe to call more than once.
@@ -443,8 +392,12 @@ func (d *Daemon) Close() error {
 		if d.mdns != nil {
 			d.mdns.Close()
 		}
-		if d.eng != nil {
-			_ = d.eng.Close()
+		d.dataPlaneMu.Lock()
+		eng, tunDev, linkDev := d.eng, d.tun, d.link
+		d.eng, d.tun, d.link = nil, nil, nil
+		d.dataPlaneMu.Unlock()
+		if eng != nil {
+			_ = eng.Close()
 		}
 		if d.http != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -453,13 +406,13 @@ func (d *Daemon) Close() error {
 			}
 			cancel()
 		}
-		if d.tun != nil {
-			if err := d.tun.Close(); err != nil {
+		if tunDev != nil {
+			if err := tunDev.Close(); err != nil {
 				d.closeErr = err
 			}
 		}
-		if d.link != nil {
-			if err := d.link.Close(); err != nil && d.closeErr == nil {
+		if linkDev != nil {
+			if err := linkDev.Close(); err != nil && d.closeErr == nil {
 				d.closeErr = err
 			}
 		}
@@ -482,7 +435,10 @@ func configWithPeers(cfg conf.Config, peers []peer.Peer) conf.Config {
 
 // Status implements api.StateReader.
 func (d *Daemon) Status() api.Status {
-	snap := d.eng.Counters()
+	var snap dataplane.Snapshot
+	if e := d.engine(); e != nil {
+		snap = e.Counters()
+	}
 	cfg := d.config()
 	st := api.Status{
 		ID:            fmt.Sprintf("%016x", d.id.ID),
@@ -494,11 +450,28 @@ func (d *Daemon) Status() api.Status {
 		PeerCount:     d.peers.Len(),
 		RxBytes:       snap.RxBytes,
 		TxBytes:       snap.TxBytes,
+		Connection:    d.Connection(),
 	}
 	if cfg.Node.OverlayIPv6.IsValid() {
 		st.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
 	}
+	st.Health = d.health(st.Connection)
 	return st
+}
+
+func (d *Daemon) health(c api.Connection) string {
+	if c.State == "error" {
+		return "error"
+	}
+	if c.State == "paused" {
+		return "offline"
+	}
+	for _, p := range d.peers.List() {
+		if p.State != "up" {
+			return "degraded"
+		}
+	}
+	return "ok"
 }
 
 // Peers implements api.StateReader.
@@ -577,6 +550,7 @@ func (d *Daemon) Activities() []api.Activity {
 func (d *Daemon) Config() api.ConfigView {
 	cfg := d.config()
 	view := api.ConfigView{
+		Name:              cfg.Node.Name,
 		OverlayIPv4Prefix: cfg.Node.OverlayIPv4Prefix.String(),
 		OverlayIPv6Prefix: cfg.Node.OverlayIPv6Prefix.String(),
 		OverlayIPv4:       cfg.Node.OverlayIPv4.String(),
@@ -584,12 +558,21 @@ func (d *Daemon) Config() api.ConfigView {
 		MTU:               cfg.Node.MTU,
 		Interface:         cfg.Node.Interface,
 		APIListen:         cfg.API.Listen,
+		APISocket:         cfg.API.Socket,
+		APIPipe:           cfg.API.Pipe,
 		MDNS:              cfg.Discovery.MDNS,
+		STUN:              cfg.Discovery.STUN,
+		STUNServer:        cfg.Discovery.STUNServer,
+		ConfigPath:        cfg.Path,
+		Protocol:          version.Protocol,
 		NetworkSecret:     "redacted",
 		APIToken:          "redacted",
 	}
 	if cfg.Node.OverlayIPv6.IsValid() {
 		view.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
+	}
+	if cfg.Node.PublicAddr.IsValid() {
+		view.PublicAddr = cfg.Node.PublicAddr.String()
 	}
 	for _, p := range cfg.Peers {
 		view.Peers = append(view.Peers, fmt.Sprintf("%016x", p.ID))
@@ -618,6 +601,7 @@ func (d *Daemon) AddPeer(invite string) error {
 	}
 	d.emit(api.Event{Type: "peer_added", PeerID: fmt.Sprintf("%016x", inv.ID)})
 	d.persistPeers()
+	d.emitPeerChanged()
 	return nil
 }
 
@@ -649,12 +633,55 @@ func (d *Daemon) RemovePeer(id uint64) error {
 	d.routes.RemoveDirect(id)
 	d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", id)})
 	d.persistPeers()
+	d.emitPeerChanged()
+	d.emitRouteChanged()
 	return nil
 }
 
 // ProbePeer implements api.Prober.
 func (d *Daemon) ProbePeer(ctx context.Context, id uint64) error {
 	return d.ctl.Probe(ctx, id)
+}
+
+// Probe implements api.GUI: it validates the peer, starts the probe in the
+// background, and reports pending. The result arrives as a peer:probe event.
+func (d *Daemon) Probe(ctx context.Context, id uint64) (api.ProbeResult, error) {
+	if _, ok := d.peers.Get(id); !ok {
+		return api.ProbeResult{}, &api.StatusError{
+			Status:      http.StatusNotFound,
+			Code:        api.ErrCodeNotFound,
+			Message:     fmt.Sprintf("peer %016x is unknown", id),
+			Remediation: "refresh the peer list",
+		}
+	}
+	if d.engine() == nil {
+		return api.ProbeResult{}, &api.StatusError{
+			Status:      http.StatusServiceUnavailable,
+			Code:        api.ErrCodeDaemonUnavailable,
+			Message:     "connection is paused",
+			Remediation: "connect first, then probe",
+		}
+	}
+	go d.runProbe(id)
+	return api.ProbeResult{PeerID: fmt.Sprintf("%016x", id), State: "pending"}, nil
+}
+
+func (d *Daemon) runProbe(id uint64) {
+	res := api.ProbeResult{PeerID: fmt.Sprintf("%016x", id), State: "error"}
+	ctx, cancel := context.WithTimeout(context.Background(), control.ProbeTimeout+time.Second)
+	defer cancel()
+	if err := d.ctl.Probe(ctx, id); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			res.State = "timeout"
+		}
+		res.Error = err.Error()
+	} else {
+		res.State = "up"
+		if p, ok := d.peers.Get(id); ok {
+			res.RTTMs = float64(p.RTT) / float64(time.Millisecond)
+		}
+	}
+	d.publish("peer:probe", res)
 }
 
 // stalePeerTTL is how long a peer that has never connected may stay in the
@@ -684,13 +711,17 @@ func (d *Daemon) pruneStalePeers(ctx context.Context) {
 				}
 				d.peers.Remove(p.ID)
 				d.routes.RemoveDirect(p.ID)
-				d.eng.DropSession(p.ID)
+				if e := d.engine(); e != nil {
+					e.DropSession(p.ID)
+				}
 				removed = true
 				d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", p.ID)})
 			}
 			if removed {
 				// One rewrite per pass, not one per removed peer.
 				d.persistPeers()
+				d.emitPeerChanged()
+				d.emitRouteChanged()
 			}
 		}
 	}

@@ -27,6 +27,9 @@ func Run(ctx context.Context, configPath string) error {
 	if err := conf.CheckPermissions(configPath); err != nil {
 		return err
 	}
+	if err := checkSystemOwnership(configPath); err != nil {
+		return err
+	}
 	keyPath := filepath.Join(filepath.Dir(configPath), "identity.key")
 	id, err := identity.Load(keyPath)
 	if err != nil {

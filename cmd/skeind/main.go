@@ -24,6 +24,9 @@ Usage:
 
 The same commands exist in the skein binary: skein run, skein install-service,
 skein uninstall-service.
+
+The desktop app installs the service with the system config (skein-helper
+init/import); run -c with a user config is the dev path.
 `
 
 func main() {

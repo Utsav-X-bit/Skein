@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=Skein
+Comment=Skein mesh VPN desktop
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/skein-desktop %u
+Terminal=false
+Type=Application
+Icon=skein-desktop
+Categories=Utility;
+StartupWMClass=skein-desktop
+
+ 

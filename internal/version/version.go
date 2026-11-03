@@ -10,6 +10,10 @@ import (
 // revision that Info appends, so every commit produces a different string.
 const Version = "0.1.0-dev"
 
+// Protocol is the desktop/daemon control protocol version. A desktop build
+// refuses a daemon whose protocol differs.
+const Protocol = 1
+
 // Info returns Version plus the commit and build time that go build embeds
 // from the working tree. A build without VCS metadata (module zip, tests)
 // reports the release line alone.
