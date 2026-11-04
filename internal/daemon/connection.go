@@ -455,6 +455,17 @@ func (d *Daemon) closeDevicesLocked() {
 // teardownDataPlane stops the engine and removes the dataplane, leaving the
 // firewall rules in place.
 func (d *Daemon) teardownDataPlane() {
+	// Remove addresses/routes BEFORE closing the engine and devices:
+	// closing either deletes the adapter, so a later netsh remove
+	// fails with "interface not found" (M9 §2c: every shutdown
+	// logged that warning). A remove failure stays a warning; the
+	// devices are closed regardless.
+	cfg := d.config()
+	addresses, routes := overlayPrefixes(cfg)
+	if err := netcfg.Remove(cfg.Node.Interface, addresses, routes); err != nil {
+		log.Printf("skein: warning: removing network configuration: %v", err)
+	}
+
 	d.dataPlaneMu.Lock()
 	eng := d.eng
 	d.eng = nil
@@ -466,12 +477,6 @@ func (d *Daemon) teardownDataPlane() {
 	}
 	d.closeDevicesLocked()
 	d.dataPlaneMu.Unlock()
-
-	cfg := d.config()
-	addresses, routes := overlayPrefixes(cfg)
-	if err := netcfg.Remove(cfg.Node.Interface, addresses, routes); err != nil {
-		log.Printf("skein: warning: removing network configuration: %v", err)
-	}
 }
 
 // overlayPrefixes lists the overlay addresses and routes for the config.

@@ -300,12 +300,33 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		ov.HEvent = connectEvent
 		err = windows.ConnectNamedPipe(h, ov)
 		if err == windows.ERROR_IO_PENDING {
-			_, werr := windows.WaitForSingleObject(connectEvent, windows.INFINITE)
-			if werr == nil {
-				var n uint32
-				werr = windows.GetOverlappedResult(h, ov, &n, false)
+			// Bounded poll, not INFINITE: Close() disconnects
+			// the pending handle, but a disconnect does not
+			// reliably wake an overlapped ConnectNamedPipe
+			// wait, and an INFINITE wait here stuck service
+			// stops (M9 §2c: STOP_PENDING forever with no
+			// client connected). Polling guarantees the loop
+			// notices ctx/done within 100ms even if the
+			// disconnect is missed.
+			for {
+				r, _ := windows.WaitForSingleObject(connectEvent, 100)
+				if r != uint32(windows.WAIT_TIMEOUT) {
+					var n uint32
+					err = windows.GetOverlappedResult(h, ov, &n, false)
+					break
+				}
+				select {
+				case <-ctx.Done():
+					windows.CloseHandle(connectEvent)
+					windows.CloseHandle(h)
+					return
+				case <-p.done:
+					windows.CloseHandle(connectEvent)
+					windows.CloseHandle(h)
+					return
+				default:
+				}
 			}
-			err = werr
 		}
 		windows.CloseHandle(connectEvent)
 		p.mu.Lock()
