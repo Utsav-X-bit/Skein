@@ -7,8 +7,11 @@ import (
 	"errors"
 )
 
-func isWindowsService() (bool, error) { return false, nil }
+// Variables (not plain functions) so tests can stub the launch-mode
+// decision; see service_windows.go. Production code never reassigns
+// them.
+var isWindowsService = func() (bool, error) { return false, nil }
 
-func runAsService(_ func(context.Context) error) error {
+var runAsService = func(_ func(context.Context) error) error {
 	return errors.New("not a Windows service")
 }

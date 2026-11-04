@@ -60,9 +60,13 @@ var runSystemHelper = func(verb string, args ...string) ([]byte, error) {
 // a variable so tests can substitute a token without a helper binary.
 var mintSystemToken = func(verb string) (string, error) {
 	raw, err := runSystemHelper("bootstrap", "--verb", verb)
-	if err != nil {
-		return "", err
-	}
+	// The helper's fail() contract is JSON-on-stdout plus a non-zero
+	// exit, so a failed mint still carries its error in raw. The old
+	// code returned the bare exec error here and swallowed the
+	// helper's message (M9 §2c: a Windows bootstrap failure surfaced
+	// only as "exit status 1", hiding the real cause). Parse the
+	// envelope first; fall back to the exec error only when the
+	// output is not a helper envelope at all.
 	var env struct {
 		OK          bool   `json:"ok"`
 		Error       string `json:"error"`
@@ -71,6 +75,9 @@ var mintSystemToken = func(verb string) (string, error) {
 		Verb        string `json:"verb"`
 	}
 	if jerr := json.Unmarshal(raw, &env); jerr != nil {
+		if err != nil {
+			return "", err
+		}
 		return "", fmt.Errorf("helper bootstrap: invalid JSON: %w", jerr)
 	}
 	if !env.OK {

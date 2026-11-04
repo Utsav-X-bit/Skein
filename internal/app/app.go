@@ -33,7 +33,17 @@ func Run(ctx context.Context, configPath string) error {
 	if err != nil {
 		if configPath == SystemConfigPath() {
 			if st, serr := bootstrap.Load(BootstrapStatePath()); serr == nil && st.Valid() {
-				return RunBootstrap(ctx, configPath)
+				// M9 §2c: this branch previously returned
+				// RunBootstrap directly, bypassing the service
+				// wrapper below. A service-launched bootstrap
+				// daemon then never called
+				// StartServiceCtrlDispatcher, so the SCM timed out
+				// the start (1053) even though the daemon was
+				// serving the bootstrap pipe. Both daemon modes
+				// must go through the same service decision.
+				return runWithService(ctx, func(ctx context.Context) error {
+					return RunBootstrap(ctx, configPath)
+				})
 			}
 		}
 		if configPath == SystemConfigPath() {
@@ -86,6 +96,19 @@ func Run(ctx context.Context, configPath string) error {
 
 	log.Printf("skein daemon %s starting as %016x", version.Version, id.ID)
 	return runFn(ctx)
+}
+
+// runWithService runs fn directly, or via the Windows service
+// wrapper when this process was launched by the SCM. A
+// service-launched process that never reports to the SCM times out
+// its start (SCM 1053), so every daemon mode — normal and bootstrap
+// — must route through here. A failed launch-mode check falls back
+// to a direct run, matching the normal path's historical guard.
+func runWithService(ctx context.Context, fn func(context.Context) error) error {
+	if asService, err := isWindowsService(); err == nil && asService {
+		return runAsService(fn)
+	}
+	return fn(ctx)
 }
 
 // checkSystemDevTCP implements the Step 5 service-path rule: the

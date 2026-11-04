@@ -13,9 +13,13 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/service"
 )
 
-func isWindowsService() (bool, error) { return svc.IsWindowsService() }
+// isWindowsService and runAsService are variables (not plain
+// functions) so tests can stub the launch-mode decision and the SCM
+// handshake without a real Windows service manager. Production code
+// never reassigns them.
+var isWindowsService = func() (bool, error) { return svc.IsWindowsService() }
 
-func runAsService(run func(context.Context) error) error {
+var runAsService = func(run func(context.Context) error) error {
 	// A Windows service has no console. Persist daemon logs so startup
 	// failures are diagnosable from ProgramData.
 	if f, err := os.OpenFile(filepath.Join(SystemDir(), "skein.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {

@@ -11,6 +11,7 @@ package app
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -179,6 +180,15 @@ func RunBootstrap(ctx context.Context, configPath string) error {
 	out, err := bs.Serve(ctx)
 	bs.Close()
 	if err != nil {
+		// A stop/shutdown during bootstrap serve is a clean stop,
+		// not a service failure: the normal path (d.Run via
+		// connLoop) likewise returns nil on ctx cancellation, and
+		// the service handler maps any non-nil run return to a
+		// failure exit. Only a genuine context error is
+		// translated; unrelated errors still propagate.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 	// The bootstrap wrote config + identity; the normal path's

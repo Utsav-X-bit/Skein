@@ -259,3 +259,41 @@ func TestSystemPathCommandsRedirectToSystem(t *testing.T) {
 	// only proves the system path no longer reaches it.
 	var _ = errors.New
 }
+
+// A failed helper mint still carries its JSON error on stdout; the
+// CLI must surface that error, not the bare exec error. M9 §2c: a
+// Windows bootstrap failure surfaced only as "exit status 1",
+// hiding the real sc-start 1053 cause.
+func TestMintSystemTokenSurfacesHelperJSONOnFailure(t *testing.T) {
+	oldHelper := runSystemHelper
+	t.Cleanup(func() { runSystemHelper = oldHelper })
+
+	runSystemHelper = func(verb string, args ...string) ([]byte, error) {
+		return []byte(`{"error":"bootstrap: service start: sc start: exit status 1053","ok":false,"remediation":"check the service state"}`), errors.New("exit status 1")
+	}
+	_, err := mintSystemToken("init")
+	if err == nil || !strings.Contains(err.Error(), "1053") || !strings.Contains(err.Error(), "check the service state") {
+		t.Fatalf("helper JSON error not surfaced: err=%v", err)
+	}
+	if err.Error() == "exit status 1" {
+		t.Fatal("bare exec error returned instead of the helper envelope")
+	}
+
+	// Non-envelope output falls back to the exec error unchanged.
+	runSystemHelper = func(verb string, args ...string) ([]byte, error) {
+		return []byte(`not json`), errors.New("exit status 1")
+	}
+	_, err = mintSystemToken("init")
+	if err == nil || err.Error() != "exit status 1" {
+		t.Fatalf("non-envelope fallback: err=%v", err)
+	}
+
+	// Success still returns the token.
+	runSystemHelper = func(verb string, args ...string) ([]byte, error) {
+		return []byte(`{"ok":true,"token":"tok-123","verb":"init"}`), nil
+	}
+	tok, err := mintSystemToken("init")
+	if err != nil || tok != "tok-123" {
+		t.Fatalf("mint success: tok=%q err=%v", tok, err)
+	}
+}
