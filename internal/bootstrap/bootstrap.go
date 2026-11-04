@@ -273,7 +273,16 @@ func (m *Manager) Verify(caller, verb string, token []byte) error {
 		_ = writeState(m.path, st)
 		return errors.New("bootstrap: token verification failed")
 	}
-	if caller != st.Caller {
+	// Root may present any binding: this mirrors the normal API's
+	// "uid 0 implicit secret" rule. It is not a bypass — the token
+	// hash, verb, expiry, and single-use checks below still apply,
+	// and root can already mint its own token via the helper. Without
+	// it, the documented `sudo skein system init` flow is broken:
+	// the helper binds the token to SUDO_UID (the invoking user),
+	// but the sudo'd CLI posts as uid 0 — caught by the M9 §2b
+	// packaged-install test. A non-root caller must still match the
+	// binding exactly.
+	if caller != st.Caller && caller != "uid:0" {
 		return fail()
 	}
 	if verb != st.Verb {

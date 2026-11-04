@@ -98,6 +98,25 @@ func TestVerifyHappyAndRejectionMatrix(t *testing.T) {
 	}
 }
 
+// M9 §2b: the documented `sudo skein system init` flow failed at
+// token verification — the helper binds the token to SUDO_UID, but
+// the sudo'd CLI posts as uid 0. Root presents any binding (mirroring
+// the normal API's uid-0-implicit-secret rule); a non-root caller must
+// still match exactly.
+func TestVerifyRootPresentsAnyBinding(t *testing.T) {
+	dir := t.TempDir()
+	path, token := mintForTest(t, dir, "uid:1000", VerbInit)
+	defer clear(token)
+	mgr := NewManager(path)
+
+	if err := mgr.Verify("uid:0", VerbInit, token); err != nil {
+		t.Fatalf("root must verify a token bound to another uid: %v", err)
+	}
+	if err := mgr.Verify("uid:1001", VerbInit, token); err == nil {
+		t.Fatal("a non-root wrong uid must still fail")
+	}
+}
+
 func TestVerifyBurnsOnFifthFailure(t *testing.T) {
 	dir := t.TempDir()
 	path, token := mintForTest(t, dir, "uid:1000", VerbInit)
