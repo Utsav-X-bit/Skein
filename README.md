@@ -2,9 +2,16 @@
 
 [![ci](https://github.com/Utsav-X-bit/Skein/actions/workflows/ci.yml/badge.svg)](https://github.com/Utsav-X-bit/Skein/actions/workflows/ci.yml)
 
-Skein is a small userspace mesh VPN for 2–5 of your own machines on Linux and
-Windows. It builds an encrypted full mesh over plain UDP and can bridge an
-IPv4-only host to an IPv6-only host when a dual-stack member is online.
+Skein is a small, self-hosted mesh VPN for 2–5 of your own machines on
+Linux and Windows — a Computer Networks project built to answer one
+question end to end: **what does it actually take to get encrypted,
+authenticated packets from one of my machines to another, across NATs,
+across address families, with no server in the middle?**
+
+The name is the design: a *skein* is a small coil of thread, and here
+every peer is a thread woven into the same mesh. There is no hub, no
+coordinator, and no account. Every peer is equal, every peer can relay
+for others, and the mesh forms from the peers themselves.
 
 ```mermaid
 flowchart LR
@@ -18,87 +25,406 @@ flowchart LR
 
 `ndual` forwards opaque ciphertext: it never holds the `n4 ↔ n6` session keys.
 
+> Status: `0.1.0-dev`. The architecture below is implemented; live
+> Linux/Windows install, upgrade, and mesh verification is still in
+> progress (see `docs/engineering/M9-ACCEPTANCE.md`).
+
+## Contents
+
+- [What it is](#what-it-is)
+- [How it works, fundamentally](#how-it-works-fundamentally)
+- [Features](#features)
+- [Skein vs Tailscale and other mesh VPNs](#skein-vs-tailscale-and-other-mesh-vpns)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Firewall](#firewall)
+- [Limitations](#limitations)
+- [Future scope](#future-scope)
+- [Docs and layout](#docs-and-layout)
+
+## What it is
+
+Skein creates a private overlay network on top of the ordinary internet:
+
+- Each machine gets a **TUN interface** (`skein0` on Linux, `Skein` on
+  Windows) with a stable overlay address — IPv4 `10.144.144.0/24` and
+  IPv6 ULA `fd00:6d65:7368::/64` by default — so machines talk to each
+  other by overlay IP exactly as if they were on one LAN: `ssh
+  user@10.144.144.2` just works, with no per-service port forwards.
+- Every pair of machines negotiates its own **end-to-end encrypted
+  session**. Traffic between two peers is encrypted for those two peers
+  only, even when it crosses a third peer acting as a relay.
+- Peers **discover and route to each other themselves** — no central
+  server tells them where anyone is. Discovery, routing, NAT traversal,
+  and failure recovery are all part of the protocol, not an external
+  service.
+
+It is deliberately small: 2–5 nodes, routes of at most 4 links, one
+underlay port (default `11010`). That scope is what makes it feasible
+to implement, audit, and explain completely — which is the point of a
+networks project.
+
+## How it works, fundamentally
+
+The stack has four layers. Each one is a standard networking idea;
+Skein is the composition of them.
+
+### 1. The overlay: a TUN interface and two prefixes
+
+The daemon creates a TUN device and assigns it an address from each
+overlay prefix. The kernel routes overlay destinations into the TUN
+device; the daemon reads those packets, encrypts them, and sends them
+over the underlay (UDP, or TCP as a fallback). Incoming packets are
+decrypted and written back into TUN, and the kernel delivers them to
+local sockets. Applications never know the tunnel exists — they just
+use overlay IPs.
+
+MTU is 1280 by default. A 1280-byte inner packet becomes **1382 bytes
+over IPv6** or **1362 bytes over IPv4** on the wire (see the frame
+format below), so an underlay path with a smaller PMTU is unsupported:
+there is no PMTUD or fragmentation yet.
+
+### 2. The session: Noise IKpsk2 between every pair
+
+Each node has an X25519 identity key; the peer ID is derived from its
+public key, so a public key is self-certifying — if you know a peer's
+ID, you can verify you are talking to that peer and no one else.
+
+Pairs handshake with **`Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`**:
+
+- **IK**: the initiator already knows the responder's static public
+  key (from an invite or gossip), so the handshake authenticates both
+  sides immediately — no unauthenticated first flight.
+- **psk2**: a pre-shared key — the network secret from the join string
+  — is mixed into the handshake, so only members of the same network
+  can complete a handshake at all. Possession of the network secret is
+  membership.
+- The **epoch is bound into the prologue**, sessions install only after
+  an encrypted confirmation, and at one epoch the smaller attempt ID
+  (a 128-bit handshake identifier) wins, so simultaneous handshakes
+  converge instead of duplicating sessions.
+- Sessions **rekey every hour or 2³² packets**, with 64-packet replay
+  windows per key epoch. A session that goes silent is dropped, never
+  encrypted into.
+
+### 3. The frame: a 26-byte header, relay-mutable in exactly two fields
+
+```
+[type:1][to_next:8][to_final:8][from:8][ttl:1] payload
+```
+
+The header is authenticated as AEAD associated data **except**
+`to_next` and `ttl` — the only two fields a relay is allowed to
+change. Encrypted frames add `[epoch:4][counter:8]` and a 16-byte
+authentication tag. That is the whole relay contract in one sentence: a
+relay rewrites `to_next` (who to hand the frame to next) and decrements
+`ttl`, and cannot read, modify, or forge anything else. A relay sees
+peer IDs, frame sizes, and timing — that metadata leakage is inherent
+to relaying and is listed under [Limitations](#limitations).
+
+### 4. Discovery, routing, and NAT traversal — the mesh itself
+
+**Discovery.** A mesh forms without every pair exchanging invites.
+Peers learn each other from static config, `skein:1:` peer invites
+(identity + addresses, no secret), `skein:2:` network invites (which
+carry the secret), mDNS on the local link, and **authenticated STATE
+gossip**: every 5 seconds peers exchange signed state carrying overlay
+addresses, names, and public keys. A STUN probe (default
+`stun.l.google.com:19302`, optional) learns each node's public IPv4/IPv6
+so joiners dial the right place without editing configs.
+
+**Routing.** A bounded **distance-vector protocol with full paths and
+split horizon**: advertisements carry the whole path, routes longer
+than 4 links are rejected, and a peer never advertises a route back to
+the peer it learned it from. The route table keeps the cheapest
+validated path, and tries IPv6 first when it works. When a path dies,
+the session is dropped and the dialer retries UDP, then TCP on the same
+port, then the relayed route.
+
+**NAT traversal.** One side of every pair must be reachable — a public
+IPv4 with a forward, a public IPv6, or the same LAN — or the pair must
+be introduced by a relay:
+
+- **Direct** — dial the peer's advertised endpoint.
+- **Relayed** — both sides connect to any reachable peer (a cheap VPS
+  is enough); it forwards opaque ciphertext, as in the diagram above.
+- **Introductions (hole punching)** — a peer reachable only through a
+  relay asks the relay, which reports both observed endpoints; both
+  sides dial each other at once. This works for endpoint-independent
+  NAT; symmetric NAT keeps the relayed path.
+- **TCP fallback** — after two silent UDP attempts the dialer opens
+  TCP to the same port (set `listen_port = 443` to run both transports
+  on 443). TCP frames are written in one syscall with Nagle disabled
+  so the fallback does not collapse under delayed ACKs, and a datagram
+  from the peer clears the TCP preference again, so a working UDP path
+  always wins.
+
+**Liveness.** Keepalive every 15 s keeps NAT mappings open. 45 s
+without authenticated traffic marks a peer down, clears its cached
+endpoint, drops the session, and withdraws its routes; a configured
+dialer re-handshakes immediately instead of encrypting for a dead
+address. Handshake retries back off 1 s → 30 s and reset as soon as a
+route appears. A changed endpoint is only adopted after a
+challenge/response over the existing session, so an attacker cannot
+hijack a peer by announcing a new address.
+
+**Leaving.** There is no "remove this other peer": every peer is
+equal, anyone can invite, and a peer leaves itself (`skein system
+leave`) and gossips a **tombstone** so all other peers withdraw its
+routes. Leaving is graceful departure, not a ban — the leaver keeps
+its credential until a network-wide secret rotation, and rejoining
+needs a fresh invite. Rotation evicts only after the service restarts
+and every legitimate node rejoins with the new secret.
+
+### The control plane: one privileged daemon, one minimal helper
+
+A VPN cannot run as a normal app: creating the TUN device, assigning
+overlay addresses, installing routes, and opening firewall rules need
+root on Linux or Administrator/SYSTEM on Windows. Skein therefore
+splits privilege exactly once (ADR-001,
+[`docs/engineering/ADR-001.md`](docs/engineering/ADR-001.md)):
+
+- **`skeind` — the daemon/service — is the only privileged actor.** It
+  owns the TUN device, routes, firewall, sessions, peers, and config
+  (single writer, cross-process lock), and serves the control API:
+  init/join/import, rotate, reset, leave, and self-update.
+- **`skein-helper` — a fixed-verb elevated helper** — keeps only
+  `bootstrap`, `install`, `uninstall`, `start`, `stop`, `restart`,
+  `status`, `grant-user`, `set-owner` (Windows), and `revoke-user`.
+  Every verb validates its inputs and returns one JSON object; secrets
+  travel on stdin or a GUI-created pipe, never argv.
+- **`skein` (CLI/TUI) and the desktop GUI are always unprivileged.**
+  They talk to the daemon over a root-owned Unix socket
+  (`/run/skein/control.sock`, 0660, `root:skein`) or a Windows named
+  pipe (`\\.\pipe\skein-control`, DACL SYSTEM/Administrators/granted
+  user), never through a shell. The daemon authenticates every caller
+  by kernel transport (Unix `SO_PEERCRED` uid, Windows pipe SID) and
+  authorises by role from the access file: `read` (status, peers,
+  routes, diagnostics), `mutate` (config patches, probes, invites,
+  firewall repair, leave), `secret` (network invites, rotate, reset,
+  update, grants). A bind failure is fatal — the daemon never runs
+  headless with a dead control plane.
+- **Bootstrap** is the one place no config, identity, or grant exists
+  yet, so it cannot go through the normal role-gated API. The helper
+  (elevated via pkexec/UAC/polkit) checks that no system config
+  exists, generates 256 bits with `crypto/rand`, and stores only the
+  SHA-256 hash — root-owned 0600, with the invoking uid/SID, a
+  10-minute expiry, and the verb it was minted for. The daemon starts
+  in bootstrap mode (control plane only — no TUN, no UDP port, no
+  mDNS, no firewall, not a mesh member) and accepts exactly one
+  `POST /api/v1/bootstrap/init|join|import` with the token in the JSON
+  body; verification order is transport → uid match → constant-time
+  hash → expiry → unused, and five failed attempts burn the token. On
+  success the token is marked used atomically before any config work,
+  the bootstrap caller is granted the `secret` role, the state file is
+  deleted, and the daemon switches in-process to normal mode.
+
 ## Features
 
-- **End-to-end `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`** between every pair of
-  nodes, with explicit nonces, 64-packet replay windows per key epoch, and a
-  fresh rekey every hour or 2³² packets.
-- **Dual overlay**: IPv4 `10.144.144.0/24` and IPv6 ULA `fd00:6d65:7368::/64`,
-  both configurable per node.
-- **One UDP port** (default `11010`), dual-stack socket with a paired-socket
-  fallback.
-- **Discovery**: static peers, `skein:1:…` invite strings, mDNS on the local
-  link, and authenticated state gossip carrying overlay addresses, names, and
-  self-certifying public keys, so a mesh forms without every pair exchanging
-  invites.
-- **Bounded routing**: distance vector with full paths, split horizon, and at
-  most four links. Relays rewrite only `to_next` and `ttl`.
-- **One privileged daemon, one minimal helper** (ADR-001, see
-  [`docs/engineering/ADR-001.md`](docs/engineering/ADR-001.md)): `skeind` is
-  the service binary and the only privileged actor — it owns the TUN device,
-  routes, firewall, sessions, peers, and config (single writer, cross-process
-  lock), and serves the control API, including init/join/import, rotate,
-  reset, leave, and self-update. `skein` is the unprivileged CLI/TUI and a
-  control-API client; it never writes system config directly and never spawns
-  a daemon. The desktop GUI is unprivileged always.
-- **Desktop control surface**: `skein-desktop` is a Wails app for onboarding,
-  peers, invites, activity, diagnostics, settings, firewall repair, and
-  service control. It talks to the daemon over a root-owned Unix socket or
-  Windows named pipe, never a shell, and verifies the daemon's server
-  identity on every dial.
-- **Fixed-verb privileged helper**: `skein-helper` keeps only `bootstrap`,
-  `install`, `uninstall`, `start`, `stop`, `restart`, `status`,
-  `grant-user`, `set-owner` (Windows), and `revoke-user`. Every verb
-  validates its inputs and returns one JSON object; secrets travel on stdin or
-  a GUI-created pipe, never argv. The removed verbs (`init`, `join`,
-  `import`, `rotate-secret`, `reset`, `update-daemon`) exit 1 and print the
-  daemon endpoint that replaces them (see [CLI](#cli)).
-- **Automatic firewall**: `skein run` opens the underlay port and trusts the
-  overlay interface (ufw, firewalld, raw iptables fallback, or Windows
-  Firewall), so any protocol works without extra rules. The desktop Security
-  page shows the manager, owned rules, and a repair action.
-- **Relay introductions**: a peer reachable only through a relay asks it for an
-  introduction, both sides dial each other's observed endpoint at once, and a
-  failed punch keeps the relayed path.
-- **TCP fallback**: every node listens on TCP on the same port; after two
-  silent UDP attempts the dialer switches to TCP.
-- **Self-maintaining config**: learned peers are written back to the TOML
-  atomically, so a restart keeps the mesh.
-- **Named nodes**: each node sets `node.name`; names travel in STATE gossip and
-  appear in the dashboard, `skein peers`, and the API.
-- **Mission-control dashboard**: `skein dashboard` adapts from compact to wide
-  terminals, renders only known route paths, and shows per-link throughput,
-  transport, RTT, jitter, and authenticated aggregate mesh activity.
+- **End-to-end `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`** between every
+  pair, with explicit nonces, 64-packet replay windows, and hourly /
+  2³²-packet rekeying.
+- **Dual overlay**: IPv4 `10.144.144.0/24` and IPv6 ULA
+  `fd00:6d65:7368::/64`, both configurable per node.
+- **One underlay port** (default `11010`), dual-stack socket with a
+  paired-socket fallback, plus TCP on the same port.
+- **Discovery without a server**: static peers, peer/network invites,
+  mDNS, authenticated STATE gossip, STUN.
+- **Bounded routing**: distance vector with full paths, split horizon,
+  at most four links; relays rewrite only `to_next` and `ttl`.
+- **Relay introductions** (hole punching) with relayed-path fallback.
+- **One privileged daemon, one minimal helper** (ADR-001); GUI and CLI
+  unprivileged; role-gated control API; single-use bootstrap tokens.
+- **Automatic firewall**: the daemon opens the underlay port and
+  trusts the overlay interface (ufw, firewalld, raw iptables fallback,
+  or Windows Firewall), so any protocol works without extra rules.
+  The desktop Security page shows the manager, owned rules, and a
+  repair action.
+- **Self-maintaining config**: learned peers are written back to the
+  TOML atomically, so a restart keeps the mesh.
+- **Named nodes**: `node.name` travels in STATE gossip and appears in
+  the dashboard, `skein peers`, and the API.
+- **Signed, operator-driven self-update**: staged ed25519 + SHA-256
+  manifest with `key_id` and signed `valid_until`; downgrades refused;
+  verified rollback restores the previous binary and config. No
+  automatic checks, no version feed.
+- **Mission-control dashboard**: `skein dashboard` adapts from compact
+  to wide terminals, renders only known route paths, and shows
+  per-link throughput, transport, RTT, jitter, and authenticated
+  aggregate mesh activity (byte deltas and link performance only —
+  never packet contents, overlay addresses, ports, or flow IDs).
 
-Version `0.1.0-dev`.
+## Skein vs Tailscale and other mesh VPNs
 
-## Install
+Tailscale is the reference point most people know: WireGuard-based,
+with a **coordination server** that authenticates users (usually via
+SSO), distributes keys and routes, and runs a global **DERP relay
+network**, plus MagicDNS, ACLs, exit nodes, and subnet routers. It is
+excellent, mature, and operated by a company. Skein makes the opposite
+trade on purpose.
+
+| | Skein | Tailscale (typical) |
+|---|---|---|
+| Control plane | None — peers gossip state to each other | Coordination server + account/SSO |
+| Relay network | Any reachable peer of yours (e.g. a cheap VPS) | Global DERP network run by the vendor |
+| Cryptography | Noise IKpsk2, custom wire format | WireGuard protocol |
+| Discovery | mDNS, gossip, STUN, invites | Coordination server |
+| DNS | None (use overlay IPs or your own DNS) | MagicDNS |
+| Access control | Control-plane roles per local uid/SID; one shared network secret | ACLs, SSO, device approval |
+| Exit nodes / subnet routes | No | Yes |
+| Platforms | Linux, Windows (desktop + CLI) | Linux, Windows, macOS, iOS, Android |
+| Scale | 2–5 nodes, routes ≤ 4 links | Thousands of nodes |
+| Trust | Nobody but your peers; no vendor sees metadata | Vendor operates coordination + DERP |
+
+**Where Skein wins:**
+
+- **No account, no server, no vendor.** Nothing about your mesh —
+  membership, routes, activity — is reported to anyone. A mesh works
+  entirely on a LAN with no internet at all (mDNS + gossip; STUN is
+  optional).
+- **Relay without a third party.** Any peer you already trust can be
+  the relay, and relaying is opaque by construction (two mutable
+  header fields, everything else AEAD-authenticated).
+- **Small and auditable.** The whole design — handshake, frame,
+  routing, discovery, privilege split — fits in one README and two
+  ADRs. There is no coordination protocol to trust blindly.
+- **Dual-stack bridging for free.** An IPv4-only host and an
+  IPv6-only host communicate through a dual-stack peer, end to end
+  encrypted, with no special configuration.
+
+**Where Skein lacks (honestly):**
+
+- **No global relay network.** If no peer of yours is reachable from
+  the internet, two symmetric-NAT peers cannot connect. Tailscale's
+  DERP network solves this by existing everywhere; Skein asks you to
+  provide one reachable peer.
+- **No DNS, exit nodes, or subnet routing.** You address peers by
+  overlay IP, and only overlay IPs are routed.
+- **No per-peer revocation.** One shared secret is membership; evicting
+  a peer means rotating the secret and rejoining every legitimate node.
+  Per-peer invites are future work, not a feature.
+- **No mobile clients, no SSO, no ACLs** beyond local control-plane
+  roles.
+- **Smaller scale and younger code.** Five nodes and four-link routes
+  are hard limits, and the implementation has not had Tailscale's
+  years of adversarial production use.
+
+## Installation
 
 Skein ships as five pieces:
 
 | File | Purpose |
 |---|---|
 | `skeind` | Privileged daemon / system service (the only privileged actor) |
-| `skein` | Unprivileged CLI, TUI dashboard, and control-API client (`skein run` is the dev path only) |
-| `skein-helper` | Elevated minimal helper used by the desktop (retained verbs only, see above) |
+| `skein` | Unprivileged CLI, TUI dashboard, and control-API client |
+| `skein-helper` | Elevated minimal helper (retained verbs only) |
 | `skein-desktop` | Wails desktop control surface (unprivileged) |
 | `wintun.dll` | Windows tunnel driver (Windows only) |
 
-Packaged installs are the supported path: the Linux package (nfpm) ships
-`skeind` at `/usr/local/bin/skeind`, `skein-helper` at
-`/usr/libexec/skein-helper`, the `skein` CLI, the systemd unit, the `skein`
-group (sysusers), the runtime directory (tmpfiles), and the polkit policy; the
-Windows installer (NSIS) ships the desktop, `skeind.exe`, `skein-helper.exe`,
-`skein.exe`, and `wintun.dll` into `C:\Program Files\Skein`. See
-[Packaging](#packaging) below.
+Packaged installs are the supported path. The Linux package (nfpm)
+ships `skeind` at `/usr/local/bin/skeind`, `skein-helper` at
+`/usr/libexec/skein-helper`, the `skein` CLI, the systemd unit, the
+`skein` group (sysusers), the runtime directory (tmpfiles), and the
+polkit policy. The Windows installer (NSIS) ships the desktop,
+`skeind.exe`, `skein-helper.exe`, `skein.exe`, and `wintun.dll` into
+`C:\Program Files\Skein`. See [Packaging](#packaging) below.
 
 ### Linux
 
+**Option A — packaged install (recommended).** Install the nfpm
+package for your distro; it places the binaries, unit, group, tmpfiles
+entry, and polkit policy above. Then create or join a network through
+the desktop, or from a terminal (see [Usage](#usage)) — the daemon,
+not the desktop and not the helper, writes the system config
+(`/etc/skein/skein.toml`) and identity, as the single writer.
+`skein-helper` must stay root-owned at `/usr/libexec/skein-helper`;
+the desktop invokes it with `pkexec` (or polkit). After bootstrap, the
+daemon grants your uid access to `/run/skein/control.sock` (0660,
+`root:skein`).
+
+**Option B — build from source, install the service manually.**
+
+```bash
+git clone https://github.com/Utsav-X-bit/Skein && cd Skein
+go build -trimpath -o skein ./cmd/skein
+go build -trimpath -o skeind ./cmd/skeind
+go build -trimpath -o skein-helper ./cmd/skein-helper
+(cd gui && wails3 build)          # -> gui/bin/skein-desktop (desktop only)
+```
+
+Then, as root, place the binaries where the packaged layout expects
+them and register the service through the helper:
+
+```bash
+sudo install -m 755 skeind /usr/local/bin/skeind
+sudo install -m 755 skein-helper /usr/libexec/skein-helper
+sudo install -m 755 skein /usr/local/bin/skein
+sudo skein-helper install
+sudo skein-helper status
+```
+
+Create or join a network with the system commands in
+[Usage](#usage). The firewall rules the daemon needs are applied by
+the daemon itself at startup; to apply them early (or repair them
+without starting the daemon), use the firewall script:
+
+```bash
+sudo ./scripts/firewall-linux.sh [--port 11010] [--interface skein0]
+sudo ./scripts/firewall-linux.sh --remove   # undo exactly those rules
+```
+
+The script detects ufw (active) → firewalld (running) → raw iptables
+in that order, mirroring the daemon's own detection, and prints the
+manager it used.
+
+### Windows
+
+**Option A — universal install script (recommended).** Build first
+(see [Building](#building)), then run one script from an elevated
+PowerShell, from the repository root. It copies the binaries into
+`C:\Program Files\Skein`, creates the firewall rules, registers the
+`skein` service through the helper, and verifies it:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
+
+Options: `-InstallDir` (default `C:\Program Files\Skein`),
+`-SourceDir` (default `dist\`), `-Port` (default `11010`),
+`-SkipFirewall`, `-SkipService`. Re-running it upgrades in place: it
+stops a running service, replaces the binaries, re-applies any missing
+rules, and re-registers the service. It never touches
+`%ProgramData%\Skein`, so reinstalls keep your config, identity, and
+network membership. Then create or join a network (see
+[Usage](#usage)).
+
+**Option B — packaged installer.** The NSIS installer
+(`gui/build/windows/nsis/project.nsi`) ships the same layout into
+`C:\Program Files\Skein` and fails the build if any required binary is
+missing. Uninstall runs the helper's `uninstall` verb first
+(stop-then-delete) and aborts without deleting anything if the helper
+fails, so no orphaned service is left behind; purge moves
+`%ProgramData%\Skein` to `.bak` instead of deleting it.
+
+**Option C — manual copy.** Copy `dist\*` plus
+`gui\bin\skein-desktop.exe` into `C:\Program Files\Skein`. The desktop
+looks for `skein-helper.exe` next to itself first, then at
+`C:\Program Files\Skein\skein-helper.exe`, so running the app from
+`dist` works when both binaries are there. `wintun.dll` must sit next
+to `skein.exe` and `skein-desktop.exe`.
+
+### Building
+
 **Prerequisites**
 
-- Go 1.26+
-- Wails 3 CLI: `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`
-- GTK4 + WebKitGTK 6.0 development packages
+| | Linux | Windows |
+|---|---|---|
+| Go | 1.26+ (`go.mod` requires 1.26.10) | 1.26+ |
+| Wails 3 CLI (desktop only) | `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0` | same |
+| UI toolkit | GTK4 + WebKitGTK 6.0 dev packages | WebView2 runtime (included with current Windows 10/11) |
+| Tunnel driver | kernel TUN (built in) | `wintun.dll` via `scripts/fetch-wintun.*` |
+| Privilege for install | root / sudo | Administrator |
 
 ```bash
 # Arch
@@ -114,65 +440,18 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 wails3 doctor
 ```
 
-**Build**
+**Build the binaries**
 
 ```bash
 git clone https://github.com/Utsav-X-bit/Skein && cd Skein
-go build -trimpath -o skein ./cmd/skein
-go build -trimpath -o skein-helper ./cmd/skein-helper
-(cd gui && wails3 build)          # -> gui/bin/skein-desktop
-```
-
-**Install (packaged)**
-
-Install the nfpm package for your distro; it places the binaries, unit,
-group, tmpfiles entry, and polkit policy above. Then create or join a
-network through the desktop, or from a terminal with the system commands
-below — the daemon, not the desktop and not the helper, writes the system
-config (`/etc/skein/skein.toml`) and identity, as the single writer.
-
-`skein-helper` must stay root-owned at `/usr/libexec/skein-helper`; the
-desktop invokes it with `pkexec` (or polkit). After bootstrap, the daemon
-grants your uid access to `/run/skein/control.sock` (0660, root:skein).
-
-**Build from source (dev layout)**
-
-```bash
 go build -trimpath -o skein ./cmd/skein
 go build -trimpath -o skeind ./cmd/skeind
 go build -trimpath -o skein-helper ./cmd/skein-helper
 (cd gui && wails3 build)          # -> gui/bin/skein-desktop
 ```
 
-**Service without the desktop**
-
-```bash
-# First node: the helper mints a single-use bootstrap token and starts the
-# daemon in bootstrap mode; the CLI posts it to the daemon bootstrap endpoint.
-sudo skein system init [--name NAME] [--port PORT] [--mtu MTU]
-# Joining node:
-sudo skein system join "skein:2:…"
-# Then: lifecycle via the helper, mesh operations via the daemon API:
-sudo skein system start|stop|restart
-skein system leave        # leave this node's own network (see Limits)
-skein system rotate       # rotate the network secret via the daemon, then helper restart
-```
-
-`install-service` (via the minimal helper) opens the underlay UDP port for
-IPv4 and IPv6 before the service starts; the overlay interface trust rule is
-added when the daemon starts. ufw and firewalld get family-neutral rules;
-without either, Skein appends its own iptables rules.
-
-### Windows
-
-**Prerequisites**
-
-- Go 1.26+
-- Wails 3 CLI: `go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`
-- WebView2 runtime (included with current Windows 10/11)
-- Administrator access for the service and firewall rules
-
-**Build** (PowerShell)
+**Windows** (PowerShell; `dist\` is the output directory the install
+script expects):
 
 ```powershell
 git clone https://github.com/Utsav-X-bit/Skein
@@ -188,73 +467,24 @@ cd ..
 .\scripts\fetch-wintun.cmd -Dest dist
 ```
 
-`fetch-wintun.cmd` downloads the pinned Wintun release, verifies its SHA-256,
-and installs `wintun.dll` plus its license. If scripts are blocked:
+`fetch-wintun.cmd` downloads the pinned Wintun release (0.14.1),
+verifies its SHA-256, and installs `wintun.dll` plus its license. If
+scripts are blocked:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\fetch-wintun.ps1 -Dest dist
 ```
 
-Or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually and copy
-`wintun/bin/amd64/wintun.dll` into `dist`.
+Or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually
+and copy `wintun/bin/amd64/wintun.dll` into `dist`.
 
-**Install**
+**Git Bash note:** do not paste the PowerShell commands into Git
+Bash — backslashes escape the next character, so `.\cmd\skein`
+becomes `.cmd\skein`. Use forward slashes and install the Wails CLI
+into `$HOME/go/bin`. Use Windows Terminal or `winpty` for the
+animated TUI; MinTTY gets the static snapshot.
 
-```powershell
-$dst = 'C:\Program Files\Skein'
-New-Item -ItemType Directory -Force $dst | Out-Null
-Copy-Item dist\* $dst -Recurse
-Copy-Item gui\bin\skein-desktop.exe $dst
-```
-
-The desktop looks for `skein-helper.exe` next to itself first, then at
-`C:\Program Files\Skein\skein-helper.exe`, so running the app from `dist`
-works when both binaries are there. `wintun.dll` must sit next to `skein.exe`
-and `skein-desktop.exe`.
-
-**Service without the desktop**
-
-```powershell
-cd 'C:\Program Files\Skein'
-# First node / joining node: helper bootstrap token + daemon bootstrap endpoint.
-.\skein.exe system init
-.\skein.exe system join "skein:2:…"
-.\skein.exe system start
-sc start skein
-```
-
-`install-service` creates the underlay UDP rule immediately; the inbound and
-outbound overlay interface rules are created when the daemon starts. The
-desktop Security page can repair them.
-
-**Git Bash**
-
-Do not paste the PowerShell commands above into Git Bash: backslashes escape
-the next character, so `.\cmd\skein` becomes `.cmd\skein`. Use forward
-slashes and install the Wails CLI into `$HOME/go/bin`:
-
-```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
-export PATH="$PATH:$HOME/go/bin"
-
-go build -trimpath -o dist/skein.exe        ./cmd/skein
-go build -trimpath -o dist/skeind.exe       ./cmd/skeind
-go build -trimpath -o dist/skein-helper.exe ./cmd/skein-helper
-(cd gui && wails3 build)                    # -> gui/bin/skein-desktop.exe
-./scripts/fetch-wintun.cmd -Dest dist
-```
-
-If `wails3` is still not found, run `wails3 doctor` after restarting the shell,
-or use the PowerShell wrapper instead:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\test\windows\build.ps1
-```
-
-Use Windows Terminal or `winpty` for the animated TUI; MinTTY gets the static
-snapshot.
-
-## Quick start
+## Usage
 
 ### Desktop (GUI)
 
@@ -262,12 +492,12 @@ snapshot.
 
 1. Launch `skein-desktop` (Linux) or
    `C:\Program Files\Skein\skein-desktop.exe` (Windows).
-2. Choose **Create a network**. The defaults are usually enough; set a name if
-   you want peers to see it.
-3. Approve the UAC/`pkexec` prompt. The helper mints a single-use bootstrap
-   token and starts the daemon in bootstrap mode; the daemon writes the
-   config and identity as the single writer and then runs normally (see
-   [Bootstrap](#bootstrap)).
+2. Choose **Create a network**. The defaults are usually enough; set a
+   name if you want peers to see it.
+3. Approve the UAC/`pkexec` prompt. The helper mints a single-use
+   bootstrap token and starts the daemon in bootstrap mode; the daemon
+   writes the config and identity as the single writer and then runs
+   normally.
 4. Copy the join string shown by the app.
 
 **Other nodes**
@@ -277,22 +507,63 @@ snapshot.
 3. Approve the elevation prompt. The node bootstraps, joins, and starts
    automatically.
 
-If `/etc/skein` (Linux) or `C:\ProgramData\Skein` (Windows) already exists
-but the service is stopped, choose **Use an existing installation** instead of
-creating a new network. The Overview page shows peers and routes; Security
-shows the firewall manager and repair action.
+If `/etc/skein` (Linux) or `C:\ProgramData\Skein` (Windows) already
+exists but the service is stopped, choose **Use an existing
+installation** instead of creating a new network. The Overview page
+shows peers and routes; Security shows the firewall manager and repair
+action.
 
-### Terminal (TUI)
+### Terminal
 
-With the service installed, the TUI attaches over the control socket/pipe; no
-`-c` or `sudo` is needed:
+With the service installed, the CLI attaches over the control
+socket/pipe; no `-c` or `sudo` is needed for mesh commands (service
+lifecycle goes through the helper):
 
 ```bash
-skein dashboard
+# First node: the helper mints a single-use bootstrap token and starts
+# the daemon in bootstrap mode; the CLI posts it to the daemon bootstrap
+# endpoint.
+sudo skein system init [--name NAME] [--port PORT] [--mtu MTU]
+# Joining node:
+sudo skein system join "skein:2:…"
+# Then: lifecycle via the helper, mesh operations via the daemon API:
+sudo skein system start|stop|restart
+skein system leave        # leave this node's own network (see Limits)
+skein system rotate       # rotate the network secret via the daemon, then helper restart
 ```
 
-Without a service, run a dev daemon (dev-only; the system path is
-`skein system init|join` above):
+Windows (from `C:\Program Files\Skein`, elevated for `system` commands):
+
+```powershell
+.\skein.exe system init
+.\skein.exe system join "skein:2:…"
+.\skein.exe system start
+```
+
+### Everyday commands
+
+| Command | Purpose |
+|---|---|
+| `skein status [--json]` | Overlay addresses, peers, uptime, counters |
+| `skein peers [list\|add]` | Manage peers (no removal: a peer leaves itself) |
+| `skein routes [--json]` | Reachability table |
+| `skein probe <peer-id>` | Re-probe candidate endpoints |
+| `skein ping <overlay-ip>` | Ping through the overlay |
+| `skein invite` | Print `skein:1:<base64url>` (identity + addresses, no secret) |
+| `skein invite --network` | Print the `skein:2:` join string (contains the secret) |
+| `skein name [value]` | Show or set this node's name |
+| `skein dashboard` | Live TUI; attaches to the service socket/pipe |
+| `skein genkey` | Print the public key and node ID |
+| `skein version`, `skein -v` | Version plus the commit the binary was built from |
+
+Dashboard keys: `Tab`/`h`/`l` panels, `j`/`k` or arrows select,
+`Enter` inspector, `Space` pause motion, `?` help, `q` quit.
+`--no-motion` renders a static snapshot. If no daemon is answering,
+the dashboard reports that and does not start one: it never spawns a
+daemon. Under `sudo` the invoking user's config is used.
+
+**Dev-only path** (no service; the system path above is the supported
+one):
 
 ```bash
 skein init                                  # prints a join string
@@ -301,56 +572,19 @@ sudo skein run -c ~/.config/skein/skein.toml
 skein dashboard
 ```
 
-Join another node with `skein join "skein:2:…"` before starting its daemon.
-Dashboard keys: `Tab`/`h`/`l` panels, `j`/`k` or arrows select, `Enter`
-inspector, `Space` pause motion, `?` help, `q` quit. `--no-motion` renders a
-static snapshot.
+Join another node with `skein join "skein:2:…"` before starting its
+daemon. `skein run` is the dev path only; the service uses
+`/etc/skein` (Linux) or `%ProgramData%\Skein` (Windows).
 
-## Dashboard
-
-```bash
-./skein dashboard
-```
-
-With the desktop service installed, the dashboard attaches to
-`/run/skein/control.sock` on Linux or `\\.\pipe\skein-control` on Windows;
-no `-c` is needed. A stale per-user config no longer hides the service: the
-default-path client prefers the system control plane, while an explicit `-c`
-still selects a dev daemon.
-
-If no daemon is answering, the dashboard reports that and does not start
-one: it never spawns a daemon. Start the service (`skein system start`) or a
-dev daemon (`skein run -c …`) first, then run the dashboard. Under `sudo`
-the invoking user's config is used.
-
-The full-screen dashboard is a dense, btop-style network console. It uses a
-woven Skein infinity mark derived from `Logo.png` and reflows for compact,
-standard, wide, and short terminals. Its route map draws direct links and
-resolved relay paths; it does not invent peer-to-peer edges. Link motion
-appears only for measured local traffic or fresh, authenticated aggregate mesh
-activity.
-
-`Tab` (or `h`/`l`) changes panels; arrow keys (or `j`/`k`) select a peer;
-`Enter` opens its inspector; `Space` pauses decorative/activity motion; `?`
-opens the key reference; and `q` quits. The inspector reports current RX/TX
-speed and peak (byte-counter deltas), current/rolling RTT, jitter (the change
-between RTT samples), transport, hop/direct status, and freshness.
-
-Mesh activity gossip contains only bounded aggregate byte deltas, link
-performance, peer IDs, and route IDs—never packet contents, overlay addresses,
-ports, or flow identifiers. Remote samples expire quickly and are labelled as
-stale rather than extrapolated. `--no-motion` (or `SKEIN_NO_MOTION=1`) renders
-a static snapshot; non-TTY output is always static. Set `SKEIN_ASCII=1` for an
-ASCII version of the Skein mark on terminals without reliable Unicode.
-
-## Naming nodes
+### Naming nodes
 
 ```bash
-./skein name "utsav-laptop"     # show or set this node's name
+skein name "utsav-laptop"     # show or set this node's name
 ```
 
-The name is advertised in STATE gossip, so every peer displays it instead of a
-peer ID. A peer can also be given a local hint before first contact:
+The name is advertised in STATE gossip, so every peer displays it
+instead of a peer ID. A peer can also be given a local hint before
+first contact:
 
 ```toml
 [[peer]]
@@ -389,232 +623,34 @@ stun_server = "stun.l.google.com:19302"      # optional override
 ```
 
 The desktop/service config is `/etc/skein/skein.toml` on Linux and
-`C:\ProgramData\Skein\skein.toml` on Windows, root/Administrator-owned; the
-helper writes `api.socket` or `api.pipe` and disables the dev TCP listener.
-`api.listen` + `api.token` are for a user-run dev daemon only. The system
-socket is `0660 root-owned` with a per-uid ACL; the Windows pipe DACL grants
-SYSTEM, Administrators, and the chosen user.
-
-Unknown keys are rejected. The daemon refuses a config readable by group or
-others, and the X25519 key lives in `<config dir>/identity.key` with owner-only
-permissions.
+`C:\ProgramData\Skein\skein.toml` on Windows, root/Administrator-owned;
+the helper writes `api.socket` or `api.pipe` and disables the dev TCP
+listener. `api.listen` + `api.token` are for a user-run dev daemon
+only. Unknown keys are rejected. The daemon refuses a config readable
+by group or others, and the X25519 key lives in `<config
+dir>/identity.key` with owner-only permissions.
 
 Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 
-## CLI
-
-| Command | Purpose |
-|---|---|
-| `skein init` | Dev-only: create a user-owned identity, config, network secret, API token |
-| `skein run` | Run the daemon (root / Administrator); the service uses `/etc/skein` |
-| `skein reset [--purge] [--keep-identity]` | Leave the mesh: back up or remove the config and identity, then re-init or join |
-| `skein setup [--remove]` | Allow UDP `listen_port` and all traffic on the overlay interface (ufw, firewalld, iptables, Windows Firewall) |
-| `skein install-service` | Register the system service |
-| `skein uninstall-service` | Remove the service and its firewall rules |
-| `skein genkey` | Print the public key and node ID |
-| `skein invite` | Print `skein:1:<base64url>` (identity + addresses, no secret) |
-| `skein invite --network` | Print the `skein:2:` join string (contains the secret) |
-| `skein join <invite>` | Configure this node from a network invite |
-| `skein name [value]` | Show or set this node's name |
-| `skein dashboard` | Live TUI; attaches to the service socket/pipe or starts a dev daemon |
-| `skein status [--json]` | Overlay addresses, peers, uptime, counters |
-| `skein peers [list\|add]` | Manage peers (no removal: a peer leaves itself with `skein system leave`) |
-| `skein routes [--json]` | Reachability table |
-| `skein probe <peer-id>` | Re-probe candidate endpoints |
-| `skein ping <overlay-ip>` | Ping through the overlay |
-| `skein version`, `skein -v` | Version plus the commit the binary was built from |
-
-| `skein system init\|join\|import` | Bootstrap a system install (helper token + daemon bootstrap endpoint) |
-| `skein system reset [--purge] [--keep-identity]` | Reset via the daemon API (secret role) |
-| `skein system leave` | Leave this node's own network (no peer removal: see Limits) |
-| `skein system rotate` | Rotate the network secret via the daemon, then helper restart |
-| `skein system start\|stop\|restart` | Service lifecycle via the minimal helper |
-| `skein install-service`, `skein uninstall-service` | Register/remove the system service via the minimal helper |
-
-`setup`, `install-service`, `uninstall-service`, and `reset` are also available
-through `skein-helper` with fixed arguments; the desktop uses the helper so no
-shell is involved. Helper verbs (retained only): `bootstrap`, `install`,
-`uninstall`, `start`, `stop`, `restart`, `status`, `grant-user`,
-`set-owner`, `revoke-user`. Removed helper verbs (`init`, `join`, `import`,
-`rotate-secret`, `reset`, `update-daemon`) exit 1 with the daemon endpoint
-that replaces them.
-
-## Bootstrap
-
-First configuration of a system install is the one place where no config,
-identity, or grant exists yet, so it cannot go through the normal
-role-gated API. The mechanism, approved as ADR-001 §4:
-
-1. The minimal helper (elevated via pkexec/UAC/polkit) checks that no system
-   config exists, generates 256 bits with `crypto/rand`, and stores only the
-   SHA-256 hash — root-owned 0600, with the invoking uid/SID, a 10-minute
-   expiry, and the verb it was minted for (`init`, `join`, or `import`).
-   It installs and starts the daemon, and returns the plaintext token once
-   in stdout JSON to the invoking GUI/CLI. The token is held in memory
-   only: never logged, never written to disk in plaintext.
-2. The daemon starts in bootstrap mode: control socket/pipe only — no TUN,
-   no UDP port, no mDNS, no firewall, not a mesh member. It accepts exactly
-   one `POST /api/v1/bootstrap/init|join|import` with the token in the JSON
-   body (never in a URL or argv), verified in order: kernel transport
-   (bearer/dev-TCP callers get 403 even with a valid token), uid/SID match,
-   constant-time hash match, expiry, unused. Five failed attempts burn the
-   token.
-3. On success the token is marked used atomically before any config work,
-   the daemon writes config and identity as the sole writer, grants the
-   bootstrap caller the `secret` role, deletes the state file, and switches
-   in-process to normal mode. A configured daemon answers
-   `POST /api/v1/system/init` with 409, not by re-running bootstrap.
-
-Explicitly rejected: unauthenticated bootstrap from any local uid,
-long-lived bootstrap passwords, plaintext tokens on disk, and bearer-token
-bootstrap over a dev TCP port.
-
-## Control-plane roles
-
-The daemon authenticates every control-plane caller by kernel transport
-(Unix `SO_PEERCRED` uid, Windows pipe SID) and authorises by role from the
-access file (`/etc/skein/access` on Linux; the access file on Windows):
-`read` (status, peers, routes, logs, diagnostics), `mutate` (config patches,
-connection, probes, peer invites, firewall repair, leave), `secret`
-(network invites, rotate, reset, update check/apply, grants reload, and the
-system init/import endpoints), and `bootstrap` (bootstrap endpoints only,
-granted only by the bootstrap flow itself — never from the access file).
-Legacy bare uid/SID lines in the access file map to `read`, not `mutate`.
-The dev TCP listener (`api.listen` + bearer token) exists only for
-non-system dev configs and is refused for the system path; the system
-control plane is the single Unix socket (0660, root:skein) or Windows
-named pipe, and a bind failure is fatal — the daemon never runs headless
-with a dead control plane.
-
-### Global flags
-
-| Flag | Meaning |
-|---|---|
-| `-c, --config <path>` | Explicit config. Without it, client commands prefer the installed service control plane; otherwise the user config dir is used. |
-| `--json` | Machine-readable output for `status`, `peers`, `routes`. |
-| `--no-color` | Disable ANSI colour. |
-| `--no-motion` | Static dashboard (same as `SKEIN_NO_MOTION=1`). |
-
-### Environment
-
-| Variable | Meaning |
-|---|---|
-| `SKEIN_NO_MOTION=1` | Render the dashboard as a static snapshot. |
-| `SKEIN_ASCII=1` | ASCII Skein mark for terminals without reliable Unicode. |
-| `SKEIN_NO_TRAY=1` | Start the desktop without a tray icon (diagnostics). |
-| `SKEIN_HELPER` | Override the helper path — honoured only in dev (`-tags skeindev`) builds; release GUI/CLI builds ignore it and all other security variables (`SKEIN_CONTROL_SOCKET`, `SKEIN_CONTROL_PIPE`, `SKEIN_DAEMON_IMAGE`, `SKEIN_HELPER_NO_PKEXEC`). Never ship a skeindev build. |
-| `SKEIN_NO_FIREWALL` (daemon) | Honoured only in dev (`-tags skeindev`) builds: when set (any non-empty value), the daemon skips the firewall `Ensure` step after the TUN device exists. Release builds ignore it, like all other security variables. Never ship a skeindev build. |
-| `SKEIN_STATE_FILE` (daemon) | Honoured only in dev (`-tags skeindev`) builds: overrides the persisted paused-state path (default `/var/lib/skein/state.json` on Linux, `%ProgramData%\Skein\state.json` on Windows). Release builds ignore it; the daemon's own tests use the in-process `stateFileOverride` seam instead, and the netns harness builds its daemons with `-tags skeindev` for the same reason. On a packaged install leave it unset. |
-| `SKEIN_DEBUG=1` | Per-frame receive/forward/drop diagnostics on the daemon. |
-| `SKEIN_TUN_PROBE=1` | Root-only TUN kernel round-trip test. |
-| `SKEIN_NETNS_PREFIX` | Namespace prefix used by `test/netns/run.sh`. |
-
-Exit codes: `0` success, `1` runtime or API error, `2` usage error.
-
-## API
-
-The desktop and CLI use the same JSON API over the service control plane:
-
-- **Linux**: `unix:///run/skein/control.sock`, `0660 root-owned` plus a per-uid
-  ACL; the daemon authenticates the caller with `SO_PEERCRED`.
-- **Windows**: `\\.\pipe\skein-control`, DACL SYSTEM/Administrators/granted
-  user; the server impersonates the client and checks the token SID.
-- **Dev TCP**: `api.listen` + `Authorization: Bearer <token>`; loopback only,
-  browser `Origin` requests rejected, no CORS headers.
-
-Body limit 16 KiB, strict JSON, unknown fields rejected. Mutations are audited
-without secrets and rate-limited per caller. Errors use
-`{code,message,remediation,details,request_id}`.
-
-| Method | Path |
-|---|---|
-| `GET` | `/api/v1/capabilities` |
-| `GET` | `/api/v1/status` |
-| `GET` | `/api/v1/identity` |
-| `GET` / `PATCH` | `/api/v1/config` (secrets redacted; patch allowlist) |
-| `POST` | `/api/v1/connection` (`connect` / `disconnect`) |
-| `GET` / `POST` | `/api/v1/peers` (no peer-removal endpoint: a peer leaves itself, below) |
-| `POST` | `/api/v1/peers/{id}/probe` |
-| `GET` | `/api/v1/routes` |
-| `GET` | `/api/v1/activities` |
-| `POST` | `/api/v1/invites/peer`, `/api/v1/invites/network` (network invite: `secret` role) |
-| `GET` | `/api/v1/logs?since=&limit=` |
-| `GET` | `/api/v1/events` (SSE; `Last-Event-ID` replay) |
-| `GET` | `/api/v1/diagnostics` |
-| `GET` | `/api/v1/security` |
-| `GET` | `/api/v1/firewall` |
-| `POST` | `/api/v1/firewall/repair` |
-| `POST` | `/api/v1/bootstrap/init\|join\|import` (bootstrap mode only, token in JSON body) |
-| `POST` | `/api/v1/system/leave` (`mutate` role; this node's own departure) |
-| `POST` | `/api/v1/system/rotate-secret`, `/api/v1/system/reset` (`secret` role) |
-| `POST` | `/api/v1/system/init\|join\|import` (configured daemon: init always 409; join/import are the normal-mode counterparts) |
-| `GET` / `POST` | `/api/v1/system/update/check`, `/api/v1/system/update/apply` (`secret` role) |
-| `POST` | `/api/v1/system/grants/reload` (`secret` role) |
-
-Full contract: [`docs/gui-api.md`](docs/gui-api.md).
-
-## Packaging
-
-- **Linux (nfpm, `gui/build/linux/nfpm/nfpm.yaml`)**: ships `skein-desktop`
-  (`/usr/local/bin/skein-desktop`), `skeind` (`/usr/local/bin/skeind`),
-  `skein-helper` (`/usr/libexec/skein-helper`), `skein`
-  (`/usr/local/bin/skein`), the systemd unit
-  (`/usr/lib/systemd/system/skein.service`, `ExecStart=/usr/local/bin/skeind
-  run -c /etc/skein/skein.toml`), the `skein` group (sysusers, `g skein -`),
-  the runtime directory (tmpfiles, `/run/skein 0750 root skein`), and the
-  polkit policy (`/usr/share/polkit-1/actions/org.skein.helper.policy`).
-  The unit and the shipped template agree on `ExecStart`; upgrades adopt the
-  new binary through `RegisterDaemon` without rewriting the unit, and
-  `<binary>.old` plus a timestamped config backup are kept on every upgrade.
-  Uninstall never purges config by default (Linux keeps `/etc/skein` and
-  `/var/lib/skein/backups`); purge is the daemon reset endpoint, not the
-  helper.
-- **Windows (NSIS, `gui/build/windows/nsis/project.nsi`)**: ships the
-  desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, `wintun.dll`, and
-  the Wintun licence into `C:\Program Files\Skein`. The build fails if any
-  required binary is missing. Uninstall runs the helper's `uninstall` verb
-  first (stop-then-delete) and aborts without deleting anything if the
-  helper fails, so no orphaned service is left behind; purge moves
-  `%ProgramData%\Skein` to `.bak` instead of deleting it.
-- **Wintun**: version 0.14.1, SHA-256-pinned in `scripts/fetch-wintun.sh`
-  (`.ps1`/`.cmd` wrappers for Windows). The packaged NSIS install places the
-  DLL in the admin-only install directory; a portable/zip layout in a
-  user-writable directory is not a blessed install (see the M9 checklist in
-  `docs/engineering/M9-ACCEPTANCE.md`).
-- **Self-update**: operator-driven, never automatic. The operator stages a
-  signed manifest (ed25519 + SHA-256, `key_id` + signed `valid_until`,
-  basename-only binary under the staging directory); the daemon's
-  `GET /api/v1/system/update/check` verifies it and refuses downgrades (the
-  new version must be strictly greater — a genuine downgrade is a package
-  reinstall, not an update), and `POST /api/v1/system/update/apply`
-  launches a detached apply process with verified rollback: on failure the
-  previous binary and config are restored and the `.old`/config backups are
-  never deleted. The GUI About/Updates screen drives check/apply; there is
-  no version-feed endpoint and no automatic check.
-- Content assertions: `scripts/packaging-assert.sh` parses both manifests
-  and fails if a shipped file, the install directory, the uninstall order,
-  or the purge behaviour drifts; `scripts/collapse-gates.sh` enforces the
-  collapse invariants (single writer, no daemon spawn from GUI/CLI, no
-  removed helper verb called from GUI/CLI, no removed endpoint, no secret
-  logging). Both run in CI.
-
-## Firewall and any protocol
+## Firewall
 
 `skein run` opens what it needs at startup, idempotently:
 
-- **Linux** — with `ufw` active it allows `<port>/udp`, all traffic on the
-  overlay interface, and the matching route rules; with `firewalld` it adds the
-  port and puts the interface in the trusted zone; otherwise it appends
-  `INPUT`/`OUTPUT`/`FORWARD` accepts for the interface and underlay port.
+- **Linux** — with `ufw` active it allows `<port>/udp`, all traffic on
+  the overlay interface, and the matching route rules; with `firewalld`
+  it adds the port and puts the interface in the trusted zone;
+  otherwise it appends `INPUT`/`OUTPUT`/`FORWARD` accepts for the
+  interface and underlay port.
 - **Windows** — it creates `Skein underlay` (inbound UDP on the port),
-  `Skein overlay` (all inbound traffic on the interface), and `Skein overlay
-  out` (all outbound traffic on the interface) firewall rules.
+  `Skein overlay` (all inbound traffic from the overlay prefix),
+  `Skein overlay out` (all outbound traffic to the overlay prefix),
+  and the v6 pair — scoped by prefix, because `netsh` cannot scope a
+  rule to a named interface.
 
-The desktop Security page reports the detected manager, the owned rule set,
-config/identity ownership and modes, socket ACL, update signature, and a
-**Repair rules** action. “5 managed” is the expected set, not a live audit of
-every kernel rule. A systemd sandbox must allow `/run/ufw.lock` for `ufw status`
-to work; the shipped unit does.
+The desktop Security page reports the detected manager, the owned rule
+set, config/identity ownership and modes, socket ACL, update signature,
+and a **Repair rules** action. A systemd sandbox must allow
+`/run/ufw.lock` for `ufw status` to work; the shipped unit does.
 
 Because the overlay interface is trusted, every protocol works without
 per-service rules:
@@ -624,45 +660,23 @@ ssh user@10.144.144.2
 python3 -m http.server 8000 --bind 10.144.144.1
 ```
 
-The only underlay requirement is that **one side of each pair is reachable** on
-the UDP port: a public IPv4 with a forward, a public IPv6, or the same LAN.
-SSH and every other protocol travel inside the tunnel and never need their own
-router forward.
+The only underlay requirement is that **one side of each pair is
+reachable** on the UDP port: a public IPv4 with a forward, a public
+IPv6, or the same LAN. SSH and every other protocol travel inside the
+tunnel and never need their own router forward.
 
-## Reliability
+**Manual firewall setup** (pre-seed a host, or repair after an external
+firewall reset, without starting the daemon):
 
-- Keepalive every 15 s keeps NAT mappings open.
-- 45 s without authenticated traffic marks the peer down, clears the cached
-  endpoint, drops the session, and withdraws its routes; a configured dialer
-  re-handshakes immediately instead of encrypting for a dead address.
-- Handshake retries back off 1 s → 30 s and reset as soon as a route appears.
-- A changed endpoint is only adopted after a challenge/response over the
-  existing session.
-- When a path dies, the session is dropped and the dialer retries UDP, then TCP
-  on the same port, then the relayed route.
+```bash
+# Linux: detects ufw -> firewalld -> iptables, mirroring the daemon
+sudo ./scripts/firewall-linux.sh [--port 11010] [--interface skein0]
 
-## Reaching peers behind NAT
+# Windows: the install script creates the same rules the daemon manages
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
 
-One side of every pair must be reachable, or introduced by a relay:
-
-- **Direct** — a public IPv4 with a UDP forward, a public IPv6, or the same LAN.
-  A node probes a STUN server over both families (`discovery.stun`) and
-  advertises the public IPv4 and IPv6 next to its LAN addresses, so joiners
-  dial the right place without editing configs. Set `node.public_addr` when
-  the external port differs from `listen_port`, or `stun = false` to disable
-  the probes (the `SKEIN_NO_STUN` environment variable does the same).
-- **Relayed** — both sides connect to any reachable peer (a cheap VPS is
-  enough); it forwards opaque ciphertext.
-- **Introductions** — a node that only reaches a peer through a relay asks the
-  relay, which reports both observed endpoints; both sides dial at once. This
-  works for endpoint-independent NAT; symmetric NAT keeps the relayed path.
-- **UDP blocked** — after two silent UDP attempts the dialer opens TCP to the
-  same port, and TCP frames are written in one syscall with Nagle disabled so
-  the fallback does not collapse under delayed ACKs. A datagram from the peer
-  clears the preference again, so a working UDP path always wins. Set
-  `listen_port = 443` to make both transports use 443.
-
-### Examples
+## Reaching peers behind NAT — examples
 
 | A | B | C | Result |
 |---|---|---|---|
@@ -670,56 +684,113 @@ One side of every pair must be reachable, or introduced by a relay:
 | CGNAT v4 + public v6 | public v4 + public v6 | CGNAT v4 | A↔B direct over IPv6; C dials B over IPv4; A↔C relayed through B |
 | CGNAT v4 + public v6 | public v4 + public v6 | CGNAT v4 + no v6 | same, with C dialing B and B forwarding |
 
-Candidates include every interface address (v4 and v6), so the dialer tries
-IPv6 first when it works; the route table then keeps the cheapest validated
-path. IPv6 needs UDP `<port>` open on the listener's host firewall, which the
-daemon configures automatically.
+Candidates include every interface address (v4 and v6), so the dialer
+tries IPv6 first when it works; the route table then keeps the cheapest
+validated path. IPv6 needs UDP `<port>` open on the listener's host
+firewall, which the daemon configures automatically.
 
-Not implemented: TLS camouflage and a global DERP-style relay network. STUN
-is implemented (`discovery.stun`); the probes learn the public IPv4/IPv6.
+Not implemented: TLS camouflage and a global DERP-style relay network.
+STUN is implemented (`discovery.stun`); the probes learn the public
+IPv4/IPv6.
 
-## How it works
+## Packaging
 
-```
-[type:1][to_next:8][to_final:8][from:8][ttl:1] payload
-```
+- **Linux (nfpm, `gui/build/linux/nfpm/nfpm.yaml`)**: ships
+  `skein-desktop` (`/usr/local/bin/skein-desktop`), `skeind`
+  (`/usr/local/bin/skeind`), `skein-helper`
+  (`/usr/libexec/skein-helper`), `skein` (`/usr/local/bin/skein`),
+  the systemd unit (`/usr/lib/systemd/system/skein.service`,
+  `ExecStart=/usr/local/bin/skeind run -c /etc/skein/skein.toml`),
+  the `skein` group (sysusers, `g skein -`), the runtime directory
+  (tmpfiles, `/run/skein 0750 root skein`), and the polkit policy
+  (`/usr/share/polkit-1/actions/org.skein.helper.policy`). The unit
+  and the shipped template agree on `ExecStart`; upgrades adopt the
+  new binary through `RegisterDaemon` without rewriting the unit, and
+  `<binary>.old` plus a timestamped config backup are kept on every
+  upgrade. Uninstall never purges config by default (Linux keeps
+  `/etc/skein` and `/var/lib/skein/backups`); purge is the daemon
+  reset endpoint, not the helper.
+- **Windows (NSIS, `gui/build/windows/nsis/project.nsi`)**: ships the
+  desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, `wintun.dll`,
+  and the Wintun licence into `C:\Program Files\Skein`. The build
+  fails if any required binary is missing. Uninstall runs the
+  helper's `uninstall` verb first (stop-then-delete) and aborts without
+  deleting anything if the helper fails, so no orphaned service is left
+  behind; purge moves `%ProgramData%\Skein` to `.bak` instead of
+  deleting it.
+- **Wintun**: version 0.14.1, SHA-256-pinned in
+  `scripts/fetch-wintun.sh` (`.ps1`/`.cmd` wrappers for Windows). The
+  packaged NSIS install places the DLL in the admin-only install
+  directory; a portable/zip layout in a user-writable directory is not
+  a blessed install.
+- **Self-update**: operator-driven, never automatic. The operator
+  stages a signed manifest (ed25519 + SHA-256, `key_id` + signed
+  `valid_until`, basename-only binary under the staging directory);
+  the daemon's `GET /api/v1/system/update/check` verifies it and
+  refuses downgrades (the new version must be strictly greater — a
+  genuine downgrade is a package reinstall, not an update), and `POST
+  /api/v1/system/update/apply` launches a detached apply process with
+  verified rollback: on failure the previous binary and config are
+  restored and the `.old`/config backups are never deleted. The GUI
+  About/Updates screen drives check/apply; there is no version-feed
+  endpoint and no automatic check.
+- Content assertions: `scripts/packaging-assert.sh` parses both
+  manifests and fails if a shipped file, the install directory, the
+  uninstall order, or the purge behaviour drifts;
+  `scripts/collapse-gates.sh` enforces the collapse invariants (single
+  writer, no daemon spawn from GUI/CLI, no removed helper verb called
+  from GUI/CLI, no removed endpoint, no secret logging). Both run in CI.
 
-The 26-byte header is authenticated as AEAD associated data except the
-relay-mutable `to_next` and `ttl`. Encrypted frames add `[epoch:4][counter:8]`
-and a 16-byte tag, so a 1280-byte inner packet becomes **1382 bytes over IPv6**
-or **1362 bytes over IPv4** — 54 bytes of protocol overhead.
+## Limitations
 
-Handshakes are Noise IKpsk2 with a 128-bit attempt ID and the epoch bound into
-the prologue. A session is installed only after an encrypted confirmation; at
-one epoch the smaller attempt ID wins, and higher epochs always supersede.
-Relays forward both handshake messages and opaque data.
-
-Peer down after 45 s of silence, keepalive every 15 s, state sync every 5 s,
-handshake backoff 1→30 s.
-
-## Limits
-
-- Two symmetric-NAT peers still need a reachable relay peer; there is no
-  global relay network.
-- The TCP fallback is plain TCP, not TLS; it defeats UDP blocking but not
-  deep-packet inspection.
-- IPv4-only ↔ IPv6-only needs a dual-stack member; no common family, no path.
-- More than five nodes or routes longer than four links are unsupported.
-- No PMTUD or fragmentation; a dual-stack underlay path below 1382 bytes of
-  PMTU is unsupported.
+- Two symmetric-NAT peers still need a reachable relay peer; there is
+  no global relay network.
+- The TCP fallback is plain TCP, not TLS; it defeats UDP blocking but
+  not deep-packet inspection.
+- IPv4-only ↔ IPv6-only needs a dual-stack member; no common family,
+  no path.
+- More than five nodes or routes longer than four links are
+  unsupported.
+- No PMTUD or fragmentation; a dual-stack underlay path below 1382
+  bytes of PMTU is unsupported.
 - One shared secret, no per-peer revocation. The join string contains
   that secret, so anyone holding it can join the network. There is no
-  "remove this other peer": every peer is equal, anyone can invite, and a
-  peer leaves itself (`skein system leave`) and gossips a tombstone so other
-  peers withdraw its routes (see [How it works](#how-it-works) and
-  `docs/protocol.md`). Leaving is graceful departure, not a ban — the leaver
-  keeps its credential until a network-wide secret rotation, and rejoining
-  needs a fresh invite. Rotation evicts only after the service restarts and
-  every legitimate node rejoins with the new secret.
+  "remove this other peer": every peer is equal, anyone can invite,
+  and a peer leaves itself and gossips a tombstone (see [How it
+  works](#how-it-works-fundamentally) and `docs/protocol.md`). Leaving
+  is graceful departure, not a ban — the leaver keeps its credential
+  until a network-wide secret rotation, and rejoining needs a fresh
+  invite. Rotation evicts only after the service restarts and every
+  legitimate node rejoins with the new secret.
 - The control API authenticates the caller by kernel transport and
-  authorises by role (see [Control-plane roles](#control-plane-roles)); a
-  process running as a granted uid can use only its role's endpoints.
-  Relays can observe peer IDs, sizes, and timing.
+  authorises by role; a process running as a granted uid can use only
+  its role's endpoints. Relays can observe peer IDs, sizes, and timing.
+- No DNS, exit nodes, subnet routing, or mobile clients (see the
+  comparison above).
+
+## Future scope
+
+Near term, in rough order of value:
+
+- **Per-peer invites and revocation** (the deferred F-01): replace the
+  single shared secret with per-peer credentials so one peer can be
+  evicted without rejoining the whole network. Needs its own ADR and
+  live-mesh verification.
+- **Larger meshes**: link-state routing to replace distance vector,
+  lifting the 5-node / 4-link caps without losing loop-freedom.
+- **PMTUD and fragmentation**: probe the underlay path MTU and
+  fragment inner packets, instead of requiring a 1382-byte PMTU.
+- **Camouflaged fallback**: TLS or QUIC transport for the TCP fallback
+  so it survives deep-packet inspection, not just UDP blocking.
+- **Global relay option**: an opt-in, self-hostable DERP-style relay
+  for peers with no reachable member — without making it mandatory.
+- **DNS, exit nodes, subnet routes**: overlay DNS resolution, a
+  designated egress peer, and advertising LAN prefixes behind a peer.
+- **Mobile clients** (Android/iOS) and a headless-first onboarding
+  flow for servers.
+- **Measurement**: reproducible throughput/latency/convergence
+  benchmarks against WireGuard and Tailscale on the same hardware
+  (see `docs/measurements.md` for the current method).
 
 ## Testing
 
@@ -731,25 +802,26 @@ SKEIN_TUN_PROBE=1 sudo -E env "PATH=$PATH" \
   go test ./internal/tun -run TestTUNWriteRead -v    # TUN kernel round-trip
 ```
 
-TUI smoke: `skein dashboard` with the service running should attach over the
-socket/pipe and quit with `q`. Windows: build with
-`test/windows/build.ps1`, then run `test/windows/run-all.ps1 -Bin .\dist`
-from an elevated PowerShell (see [`test/windows/README.md`](test/windows/README.md)).
+TUI smoke: `skein dashboard` with the service running should attach
+over the socket/pipe and quit with `q`. Windows: build with
+`test/windows/build.ps1`, then run `test/windows/run-all.ps1 -Bin
+.\dist` from an elevated PowerShell (see
+[`test/windows/README.md`](test/windows/README.md)).
 
-## Docs
+## Docs and layout
 
-- [`docs/protocol.md`](docs/protocol.md) — wire format, handshake, routing,
-  discovery, configuration.
-- [`docs/measurements.md`](docs/measurements.md) — what was measured and how to
-  reproduce it.
+- [`docs/protocol.md`](docs/protocol.md) — wire format, handshake,
+  routing, discovery, configuration.
+- [`docs/measurements.md`](docs/measurements.md) — what was measured
+  and how to reproduce it.
 - [`docs/gui-api.md`](docs/gui-api.md) — desktop/daemon API contract.
-- [`docs/superpowers/specs/`](docs/superpowers/specs) — design spec.
-- [`docs/superpowers/plans/`](docs/superpowers/plans) — implementation plan.
-
-## Layout
+- [`docs/engineering/ADR-001.md`](docs/engineering/ADR-001.md) — the
+  one-daemon/one-helper collapse.
+- [`docs/engineering/M9-ACCEPTANCE.md`](docs/engineering/M9-ACCEPTANCE.md)
+  — the machine-verification checklist.
 
 ```
-cmd/skein                 daemon, TUI dashboard, and CLI in one binary
+cmd/skein                 CLI, TUI dashboard, and control-API client
 cmd/skeind                thin daemon wrapper
 cmd/skein-helper          fixed-verb elevated helper for the desktop
 gui/                      Wails desktop app, services, frontend, packaging
@@ -757,7 +829,7 @@ internal/identity         X25519 keys, peer IDs, invites
 internal/conf             TOML schema, defaults, validation
 internal/wire             bounded frame codec
 internal/session          Noise handshakes, epochs, replay windows
-internal/link             UDP transport
+internal/link             UDP/TCP transport
 internal/tun, internal/netcfg   TUN creation, addresses, routes, MTU
 internal/peer, internal/path    peer table, candidate probing
 internal/route            bounded distance-vector routing
@@ -771,8 +843,7 @@ internal/firewall         automatic ufw/firewalld/iptables/Windows rules
 internal/service          systemd and Windows service installation
 internal/pipeconn         Windows named-pipe transport
 internal/activity         bounded authenticated mesh telemetry
+scripts/                  install-windows.ps1, firewall-linux.sh, CI gates
 test/netns, test/windows  runtime harnesses
-docs/gui-api.md           desktop/daemon API contract
+docs/                     protocol, measurements, API contract, ADRs
 ```
-
-~CheckPoint-1
