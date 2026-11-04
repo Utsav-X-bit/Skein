@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // scCmd runs sc.exe without flashing a console window in the GUI.
@@ -68,13 +69,9 @@ func rewrite(executable, configPath string) error {
 // failure aborts before the delete, so a service that refuses to stop
 // is never left half-deleted. Linux already stopped first via
 // systemctl disable --now, so only the Windows backend changes here.
-// Compile-only on this VM: the real stop-then-delete cycle is on the
-// user's Windows-machine checklist.
 func uninstall() error {
-	if out, err := scCmd("stop", Name).CombinedOutput(); err != nil {
-		if !strings.Contains(string(out), "1062") && !strings.Contains(string(out), "1060") {
-			return fmt.Errorf("service: sc stop before delete: %w: %s", err, out)
-		}
+	if err := stopAndWait(); err != nil {
+		return fmt.Errorf("service: sc stop before delete: %w", err)
 	}
 	out, err := scCmd("delete", Name).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "1060") {
@@ -90,15 +87,56 @@ func start() error {
 	return nil
 }
 
-func stop() error {
+// stopAndWait stops the service and does not return until the SCM
+// reports it STOPPED (or missing). A bare `sc stop` returns as soon
+// as the control is accepted, while the service is still
+// STOP_PENDING — and a binPath rewrite or delete issued in that
+// window fails or races the stopping service. Worse, a stop issued
+// while the service is already transitioning fails with 1061
+// ("cannot accept control messages at this time"), which the old
+// code treated as fatal even though the service was on its way to
+// stopped (M9 §2c: the packaged upgrade died exactly this way on a
+// live service that stopped cleanly moments later). So 1061 is not
+// an error here: it means a transition is already in progress, and
+// the wait below watches it land. If the service comes back to
+// RUNNING during the wait (failure-action restart), stop is
+// re-issued; the deadline bounds the whole attempt.
+func stopAndWait() error {
 	if out, err := scCmd("stop", Name).CombinedOutput(); err != nil {
-		// 1062: already stopped.
-		if strings.Contains(string(out), "1062") {
+		// 1062: already stopped. 1060: no such service.
+		if strings.Contains(string(out), "1062") || strings.Contains(string(out), "1060") {
 			return nil
 		}
-		return fmt.Errorf("service: sc stop: %w: %s", err, out)
+		// 1061: transition in progress — fall through to the wait.
+		if !strings.Contains(string(out), "1061") {
+			return fmt.Errorf("service: sc stop: %w: %s", err, out)
+		}
 	}
-	return nil
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		st, err := status()
+		if err != nil {
+			return err
+		}
+		switch st.State {
+		case StateStopped, StateMissing:
+			return nil
+		case StateRunning, StateStarting:
+			if out, err := scCmd("stop", Name).CombinedOutput(); err != nil {
+				if !strings.Contains(string(out), "1062") && !strings.Contains(string(out), "1061") && !strings.Contains(string(out), "1060") {
+					return fmt.Errorf("service: sc stop: %w: %s", err, out)
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("service: timed out waiting for %s to stop (last state %s)", Name, st.State)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func stop() error {
+	return stopAndWait()
 }
 
 func restart() error {
