@@ -201,7 +201,12 @@ Section "uninstall"
     # instead; ProgramData is a system variable, identical for every
     # user, so this is correct for machine installs.
     ReadEnvStr $R9 "ProgramData"
-    MessageBox MB_YESNO "Remove Skein configuration and identity in %ProgramData%\Skein? Choose No to keep it (you can reinstall later without rejoining). Choosing Yes moves it to %ProgramData%\Skein.bak instead of deleting it." IDYES doPurge IDNO noPurge
+    # /SD IDNO is load-bearing, not cosmetic: without a silent-mode
+    # default, a silent (/S) uninstall ends at this question (M9
+    # §2d: instrumented uninstall section reached the MessageBox
+    # and executed nothing after it, exit 0, files intact). The
+    # default is No (keep config), matching uninstall-without-purge.
+    MessageBox MB_YESNO "Remove Skein configuration and identity in %ProgramData%\Skein? Choose No to keep it (you can reinstall later without rejoining). Choosing Yes moves it to %ProgramData%\Skein.bak instead of deleting it." /SD IDNO IDYES doPurge IDNO noPurge
     doPurge:
         IfFileExists "$R9\Skein" purgeCheckBak purgeNone
     purgeNone:
