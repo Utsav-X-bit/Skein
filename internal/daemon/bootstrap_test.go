@@ -164,6 +164,30 @@ func mustAddr(t *testing.T, s string) netip.Addr {
 	return a
 }
 
+// M9 §2b: under `sudo skein system init` the token is bound to the
+// invoking user (uid 1000) but the CLI posts as uid 0. The secret
+// grant must follow the binding, not the peer — before this fix the
+// test network's access file read `0:secret` and the user could not
+// revoke. Root still verifies (see bootstrap.Verify), but the grant
+// goes to the human.
+func TestBootstrapGrantFollowsTokenBindingNotPeer(t *testing.T) {
+	f := newBootstrapFixture(t, bootstrap.VerbInit)
+	rootCaller := api.Caller{UID: 0, Transport: api.TransportKernel}
+	rec := f.call(t, "POST", "/api/v1/bootstrap/init", rootCaller,
+		`{"token":`+jsonStr(f.token)+`,"name":"bootnode","stun":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("init as root poster = %d: %s", rec.Code, rec.Body.String())
+	}
+	acc, _ := os.ReadFile(f.accPath)
+	if string(acc) != "1000:secret\n" {
+		t.Fatalf("access file = %q, want bound caller granted secret", acc)
+	}
+	out, ok := f.bs.Outcome()
+	if !ok || out.CallerID != "uid:1000" {
+		t.Fatalf("outcome ok=%v caller=%q, want uid:1000", ok, out.CallerID)
+	}
+}
+
 func TestBootstrapRejectionMatrix(t *testing.T) {
 	t.Run("wrong token", func(t *testing.T) {
 		f := newBootstrapFixture(t, bootstrap.VerbInit)

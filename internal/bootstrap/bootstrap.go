@@ -257,6 +257,22 @@ func (m *Manager) Delete() error {
 // is deleted and ErrExpired is returned. A used token returns
 // ErrUsed without counting an attempt (it is already dead).
 // The token bytes are the caller's to zero; Verify never logs them.
+// Caller returns the caller the minted token is bound to, for the
+// daemon to grant the secret role to. The grant must follow the
+// binding, not the socket peer: under `sudo skein system init` the
+// token is bound to SUDO_UID but the CLI posts as uid 0, and granting
+// the peer would leave root holding secret while the human holds
+// nothing (M9 §2b finding).
+func (m *Manager) Caller() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, err := Load(m.path)
+	if err != nil {
+		return "", err
+	}
+	return st.Caller, nil
+}
+
 func (m *Manager) Verify(caller, verb string, token []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

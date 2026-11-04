@@ -284,6 +284,19 @@ func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token 
 			return BootstrapResult{}, http.StatusForbidden, errors.New("bootstrap: token verification failed")
 		}
 	}
+	// The secret grant follows the token's bound caller, not the
+	// socket peer. Under `sudo skein system init` the peer is uid 0
+	// while the token is bound to the invoking user; granting the peer
+	// would leave root holding secret and the human holding nothing
+	// (M9 §2b: the test network's access file read `0:secret` and the
+	// user could not revoke). The bound caller is also what the
+	// in-process transition grants via the outcome below, so file and
+	// live table agree.
+	grantID, err := b.mgr.Caller()
+	if err != nil {
+		return BootstrapResult{}, http.StatusInternalServerError, err
+	}
+	callerID = grantID
 	cfg, id, err := b.build(ctx, verb, req)
 	if err != nil {
 		return BootstrapResult{}, http.StatusBadRequest, err
@@ -313,7 +326,7 @@ func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token 
 
 // commit writes identity + config through the single writer, applies
 // root ownership (matching the helper's writeRoot invariant), grants
-// the bootstrap caller the secret role in the access file, and
+// the token's bound caller the secret role in the access file, and
 // deletes the state file — in that order, so a grant is never
 // recorded for a bootstrap that did not persist, and a spent token
 // never lingers after a successful bootstrap.
