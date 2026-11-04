@@ -124,12 +124,13 @@ func MintBootstrap(verb string) (string, error) {
 		return "", fmt.Errorf("bootstrap: service start: %w", err)
 	}
 	deadline := time.Now().Add(15 * time.Second)
+waitRunning:
 	for {
 		st, err := service.ReadStatus()
 		if err == nil {
 			switch st.State {
 			case service.StateRunning:
-				return token, nil
+				break waitRunning
 			case service.StateStopped, service.StateError:
 				return "", fmt.Errorf("bootstrap: service did not stay running (state: %s)", st.State)
 			}
@@ -142,6 +143,17 @@ func MintBootstrap(verb string) (string, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	// The service reports Running as soon as systemd execs the daemon,
+	// but the bootstrap endpoint only exists once the daemon binds the
+	// control socket/pipe — and the CLI posts immediately after this
+	// returns. A token returned before the plane exists is unusable
+	// (M9 §2b failure: dial unix /run/skein/control.sock: no such
+	// file). Wait for the plane itself, on a second bounded deadline,
+	// so every client (CLI, GUI) gets a token it can actually post.
+	if err := waitBootstrapPlane(time.Now().Add(15 * time.Second)); err != nil {
+		return "", fmt.Errorf("bootstrap: control plane did not appear: %w", err)
+	}
+	return token, nil
 }
 
 // RunBootstrap runs an unconfigured daemon in bootstrap mode and
