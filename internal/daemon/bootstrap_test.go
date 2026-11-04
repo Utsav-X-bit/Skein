@@ -321,7 +321,13 @@ func TestBootstrapImportHappyPathAndSymlinkRefused(t *testing.T) {
 	// listen in Default() requires a token, so use a socket
 	// transport for the source (bootstrap overwrites it anyway).
 	srcCfg.API.Listen = ""
+	// The source socket is overwritten by bootstrap anyway; it only
+	// needs to pass validation, and "/run/..." is not absolute on
+	// Windows.
 	srcCfg.API.Socket = "/run/skein/control.sock"
+	if runtime.GOOS == "windows" {
+		srcCfg.API.Socket = filepath.Join(srcDir, "control.sock")
+	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		t.Fatal(err)

@@ -12,8 +12,4 @@ func openPipeSession(string) (*pipeSession, error) {
 
 type pipeSession struct{}
 
-func (s *pipeSession) readRequest() ([]byte, error) {
-	return nil, errors.New("--pipe is the Windows channel")
-}
-
 func (s *pipeSession) writeResult([]byte) error { return nil }

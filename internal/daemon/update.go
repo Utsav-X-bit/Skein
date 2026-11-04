@@ -228,13 +228,6 @@ func (realUpdateService) Rollback(reg service.Registration, configPath string) e
 
 func (realUpdateService) Start() error { return service.Start() }
 
-func (d *Daemon) updateSvc() updateService {
-	if d.updateSvcOverride != nil {
-		return d.updateSvcOverride
-	}
-	return realUpdateService{}
-}
-
 func (d *Daemon) updateLauncher() func(exe string, args []string, logPath string) error {
 	if d.updateLauncherOverride != nil {
 		return d.updateLauncherOverride

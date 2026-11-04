@@ -76,3 +76,19 @@ func root(path string) error {
 func grantUser(_, _ string) error {
 	return errors.New("fileperm: on Unix, socket access is granted with a setfacl ACL, not file ownership")
 }
+
+func dirAdminOnly(dir string) (bool, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().Perm()&0o022 == 0, nil
+}
+
+func noWorldAccess(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().Perm()&0o077 == 0, nil
+}

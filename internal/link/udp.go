@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -33,8 +34,9 @@ type received struct {
 // ListenUDP binds the underlay socket. It prefers one dual-stack socket and
 // falls back to paired IPv4/IPv6 sockets on the same port.
 func ListenUDP(port uint16) (*UDP, error) {
+	cfg := udpListenConfig()
 	wildcard := net.JoinHostPort("", fmt.Sprintf("%d", port))
-	if pc, err := net.ListenPacket("udp", wildcard); err == nil {
+	if pc, err := cfg.ListenPacket(context.Background(), "udp", wildcard); err == nil {
 		uc := pc.(*net.UDPConn)
 		if local, ok := uc.LocalAddr().(*net.UDPAddr); ok && local.IP.To4() == nil {
 			// IPv6 wildcard: Go binds this dual-stack when the OS allows it.
@@ -42,13 +44,13 @@ func ListenUDP(port uint16) (*UDP, error) {
 		}
 		// The wildcard resolved to IPv4; add an IPv6 socket on the same port.
 		bound := uc.LocalAddr().(*net.UDPAddr).Port
-		if v6, err := net.ListenPacket("udp6", fmt.Sprintf("[::]:%d", bound)); err == nil {
+		if v6, err := cfg.ListenPacket(context.Background(), "udp6", fmt.Sprintf("[::]:%d", bound)); err == nil {
 			return newUDP([]*net.UDPConn{uc, v6.(*net.UDPConn)}), nil
 		}
 		return newUDP([]*net.UDPConn{uc}), nil
 	}
 
-	pc4, err4 := net.ListenPacket("udp4", fmt.Sprintf("0.0.0.0:%d", port))
+	pc4, err4 := cfg.ListenPacket(context.Background(), "udp4", fmt.Sprintf("0.0.0.0:%d", port))
 	if err4 != nil {
 		return nil, fmt.Errorf("bind UDP port %d: %w", port, err4)
 	}
@@ -86,6 +88,11 @@ func (u *UDP) readLoop(conn *net.UDPConn) {
 	for {
 		n, _, _, from, err := conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
+			if isTruncationError(err) {
+				// A datagram larger than the buffer is dropped, not
+				// fatal: the loop keeps serving later datagrams.
+				continue
+			}
 			select {
 			case <-u.closed:
 				return
@@ -158,6 +165,9 @@ func (u *UDP) Recv(buf []byte) (int, netip.AddrPort, error) {
 	oob := make([]byte, 0)
 	n, _, flags, from, err := u.conns[0].ReadMsgUDPAddrPort(buf, oob)
 	if err != nil {
+		if isTruncationError(err) {
+			return 0, netip.AddrPort{}, ErrTruncated
+		}
 		return 0, netip.AddrPort{}, err
 	}
 	if flags&msgTrunc != 0 {

@@ -141,9 +141,12 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 	}
 
 	// A UDP frame from the peer proves the datagram path works, so the
-	// fallback preference must be dropped again.
+	// fallback preference must be dropped again. The reply must go out
+	// as a raw datagram: Switch.Send routes by peer address and would
+	// prefer the live TCP connection (SendToIP), so it can never
+	// exercise the UDP-clearing path it is meant to test.
 	aAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.Port())
-	if err := b.Send(aAddr, payload); err != nil {
+	if err := b.udp.Send(aAddr, payload); err != nil {
 		t.Fatalf("udp reply: %v", err)
 	}
 	if _, _, err := a.Recv(buf); err != nil {

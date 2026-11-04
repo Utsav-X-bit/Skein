@@ -457,6 +457,12 @@ func (f *setupRunner) run(name string, args ...string) (string, error) {
 }
 
 func TestSetupConfiguresTheFirewall(t *testing.T) {
+	// ufw-specific: the fake runner only speaks ufw, and the
+	// Windows firewall path has no unit-test double. Windows setup
+	// is covered by the M9 live-install checks instead.
+	if runtime.GOOS == "windows" {
+		t.Skip("ufw-specific setup test")
+	}
 	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32))
 	path := writeConfig(t, "127.0.0.1:1", token)
 	f := &setupRunner{}

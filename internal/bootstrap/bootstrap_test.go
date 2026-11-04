@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 func mintForTest(t *testing.T, dir, caller, verb string) (string, []byte) {
@@ -45,7 +48,14 @@ func TestMintStateFileIsHashOnly(t *testing.T) {
 	if d := time.Until(st.ExpiresAt); d < 9*time.Minute || d > TTL {
 		t.Fatalf("expiry is not ~10 minutes: %v from now", d)
 	}
-	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+	// Windows mode bits are synthesised (always 0666): assert the
+	// DACL instead — no well-known non-administrator may access it.
+	if runtime.GOOS == "windows" {
+		ok, err := fileperm.NoWorldAccess(path)
+		if err != nil || !ok {
+			t.Fatalf("state file world access: ok=%v err=%v", ok, err)
+		}
+	} else if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
 		t.Fatalf("state file mode %o, want 0600", info.Mode().Perm())
 	}
 	clear(token)

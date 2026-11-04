@@ -74,10 +74,6 @@ type Daemon struct {
 	// what the detached apply process writes to the state file).
 	// Guarded by sysMu.
 	updateState *api.UpdateState
-	// updateSvcOverride is the service-manager surface for update
-	// apply / rollback. Production leaves it nil (real service
-	// package); tests swap it for a fake.
-	updateSvcOverride updateService
 	// updateLauncherOverride spawns the detached apply process.
 	// Nil means the platform spawnDetached. Tests swap it for a
 	// recorder.

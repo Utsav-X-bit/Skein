@@ -26,3 +26,16 @@ func Root(path string) error { return root(path) }
 // service-only DACL writer with the single interactive user added. On Unix it
 // is unsupported: socket access is granted with an ACL, not file ownership.
 func GrantUser(path, user string) error { return grantUser(path, user) }
+
+// DirAdminOnly reports whether dir's DACL grants write-like access
+// only to administrators (SYSTEM, Administrators, TrustedInstaller).
+// On Unix it reports whether the directory is not group- or
+// other-writable. The service uses it to accept daemon parents
+// outside %ProgramFiles% that are still admin-only.
+func DirAdminOnly(dir string) (bool, error) { return dirAdminOnly(dir) }
+
+// NoWorldAccess reports whether no well-known non-administrator
+// principal (Everyone, Authenticated Users, Users) has any access to
+// path. On Unix it reports whether the mode grants nothing to group
+// or other. Tests use it where Windows mode bits are meaningless.
+func NoWorldAccess(path string) (bool, error) { return noWorldAccess(path) }

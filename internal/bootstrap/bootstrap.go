@@ -42,6 +42,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 const (
@@ -204,6 +206,11 @@ func writeState(statePath string, st State) error {
 		return fmt.Errorf("bootstrap: write state: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("bootstrap: write state: %w", err)
+	}
+	// Chmod is a no-op on Windows, so restrict the DACL explicitly:
+	// creator + SYSTEM + Administrators, nothing else.
+	if err := fileperm.Restrict(name); err != nil {
 		return fmt.Errorf("bootstrap: write state: %w", err)
 	}
 	return os.Rename(name, statePath)

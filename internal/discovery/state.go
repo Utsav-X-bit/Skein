@@ -615,7 +615,7 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 	if s.Origin != from {
 		return fmt.Errorf("discovery: state origin %016x does not match sender %016x", s.Origin, from)
 	}
-	if s.Expires.Before(m.now()) {
+	if !s.Expires.After(m.now()) {
 		return errors.New("discovery: state is expired")
 	}
 	m.mu.Lock()

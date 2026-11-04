@@ -465,7 +465,12 @@ func (a pipeAddr) String() string  { return a.name }
 // CurrentSID returns the primary user SID of the calling process. The helper
 // persists it in the access file so the daemon admits it.
 func CurrentSID() (string, error) {
-	tok := windows.Token(windows.CurrentProcess())
+	// A process pseudo-handle is not a token: GetTokenUser on it
+	// fails with ERROR_INVALID_HANDLE. Open the real process token.
+	var tok windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &tok); err != nil {
+		return "", err
+	}
 	defer tok.Close()
 	user, err := tok.GetTokenUser()
 	if err != nil {
@@ -545,10 +550,15 @@ func matchServerImage(image, expectedImage string) bool {
 // (`\Device\HarddiskVolumeN`) from a path, if present, so a
 // drive-stripped directory expectation can be prefix-matched.
 func driveStripped(path string) string {
-	if !strings.HasPrefix(path, `\Device\`) {
+	// Callers pass an already-lowercased image, but compare
+	// case-insensitively anyway: the previous `\Device\` literal
+	// never matched a lowercased path, so every NT-device-path
+	// directory expectation failed.
+	path = strings.ToLower(path)
+	if !strings.HasPrefix(path, `\device\`) {
 		return path
 	}
-	rest := strings.TrimPrefix(path, `\Device\`)
+	rest := strings.TrimPrefix(path, `\device\`)
 	if i := strings.Index(rest, `\`); i >= 0 {
 		return rest[i:]
 	}

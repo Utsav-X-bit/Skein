@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
@@ -43,7 +45,14 @@ func TestWriteRoundTripsAndRejectsInvalid(t *testing.T) {
 	if got.Node.Name != "first" {
 		t.Fatalf("name = %q, want first", got.Node.Name)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+	// Windows mode bits are synthesised (always 0666): assert the
+	// DACL instead — configstore already calls fileperm.Restrict.
+	if runtime.GOOS == "windows" {
+		ok, err := fileperm.NoWorldAccess(path)
+		if err != nil || !ok {
+			t.Fatalf("config world access: ok=%v err=%v", ok, err)
+		}
+	} else if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, err = %v, want 0600", info.Mode(), err)
 	}
 

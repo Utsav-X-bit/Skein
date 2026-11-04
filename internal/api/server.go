@@ -160,12 +160,6 @@ func (s *Server) Handler() http.Handler {
 
 type handlerFunc func(http.ResponseWriter, *http.Request)
 
-// wrap registers a read route: the least-privilege default. Prefer
-// wrapRole with an explicit role for any new route.
-func (s *Server) wrap(next handlerFunc) http.HandlerFunc {
-	return s.wrapRole(RoleRead, next)
-}
-
 // wrapRole is the single transport-layer authorisation gate. It
 // authenticates (kernel caller or bearer token), rejects browser
 // origins, sends no CORS headers, caps concurrent requests, then checks

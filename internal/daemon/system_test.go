@@ -13,12 +13,14 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/route"
 	"github.com/Utsav-X-bit/skein/internal/service"
@@ -420,9 +422,23 @@ func newSignedManifest(t *testing.T, stagingDir, version string) (string, string
 	return writeManifest(t, stagingDir, m), staged
 }
 
+// updateStagingDir returns a staging directory whose parent passes
+// the daemon-parent ACL check: on Windows it gets an admin-only
+// DACL, since a plain temp dir is user-writable.
+func updateStagingDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		if err := fileperm.Root(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
 func TestUpdateCheckAcceptsNewerAndRejectsDowngrade(t *testing.T) {
 	d, dir := newSystemDaemon(t)
-	staging := t.TempDir()
+	staging := updateStagingDir(t)
 	d.SetUpdateStagingDir(staging)
 	manifest, _ := newSignedManifest(t, staging, "0.2.0")
 	res, err := d.UpdateCheck(context.Background(), manifest)
@@ -449,7 +465,7 @@ func TestUpdateCheckAcceptsNewerAndRejectsDowngrade(t *testing.T) {
 
 func TestUpdateVerifyRejectsBadSignatureBadHashExpiredAndSymlink(t *testing.T) {
 	d, _ := newSystemDaemon(t)
-	staging := t.TempDir()
+	staging := updateStagingDir(t)
 	d.SetUpdateStagingDir(staging)
 	manifest, staged := newSignedManifest(t, staging, "0.2.0")
 
@@ -532,7 +548,7 @@ func TestUpdateVerifyRejectsBadSignatureBadHashExpiredAndSymlink(t *testing.T) {
 // new key afterwards, drop the old key in a later binary.
 func TestUpdateKeyRotationOverlapAndRetirement(t *testing.T) {
 	d, _ := newSystemDaemon(t)
-	staging := t.TempDir()
+	staging := updateStagingDir(t)
 	if err := os.Chmod(staging, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +695,7 @@ func TestApplyUpdateSuccessWritesAppliedState(t *testing.T) {
 
 func TestUpdateApplyEndpointLaunchesDetachedOnly(t *testing.T) {
 	d, _ := newSystemDaemon(t)
-	staging := t.TempDir()
+	staging := updateStagingDir(t)
 	d.SetUpdateStagingDir(staging)
 	manifest, staged := newSignedManifest(t, staging, "0.2.0")
 	var launched []string

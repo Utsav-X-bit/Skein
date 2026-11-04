@@ -4,8 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 // fakeBackend records registrations in memory so RegisterDaemon /
@@ -65,6 +68,15 @@ func mkBin(t *testing.T, parent, name, content string, dirMode os.FileMode) stri
 	if err := os.Chmod(dir, dirMode); err != nil {
 		t.Fatal(err)
 	}
+	// Translate the Unix mode intent to Windows: a restricted parent
+	// gets an admin-only DACL (so the new parent-ACL check accepts
+	// it), while a deliberately group/other-writable parent keeps
+	// its inherited user-write DACL (so the check rejects it).
+	if runtime.GOOS == "windows" && dirMode&0o022 == 0 {
+		if err := fileperm.Root(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
 	p := filepath.Join(dir, name)
 	if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
@@ -74,9 +86,18 @@ func mkBin(t *testing.T, parent, name, content string, dirMode os.FileMode) stri
 
 func TestValidateDaemonPathMatrix(t *testing.T) {
 	root := t.TempDir()
-	valid := mkBin(t, root, "skeind", "v1", 0o755)
+	valid := mkBin(t, root, daemonBaseName(), "v1", 0o755)
 	if err := ValidateDaemonPath(valid); err != nil {
 		t.Fatalf("valid skeind rejected: %v", err)
+	}
+	// On Windows the parent-ACL check reports a non-admin parent in
+	// its own words, not the Unix mode-check wording, and a missing
+	// file reports the Windows "cannot find the path" text.
+	writableWant := "writable by group/other"
+	missingWant := "no such file"
+	if runtime.GOOS == "windows" {
+		writableWant = "is not admin-only"
+		missingWant = "cannot find the path"
 	}
 	cases := []struct {
 		name string
@@ -84,10 +105,10 @@ func TestValidateDaemonPathMatrix(t *testing.T) {
 		want string // substring of the error
 	}{
 		{"relative", "skeind", "not absolute"},
-		{"missing", filepath.Join(root, "nope", "skeind"), "no such file"},
+		{"missing", filepath.Join(root, "nope", "skeind"), missingWant},
 		{"wrong basename skein", mkBin(t, root, "skein", "v1", 0o755), "basename must be skeind"},
 		{"wrong basename helper", mkBin(t, root, "skein-helper", "v1", 0o755), "basename must be skeind"},
-		{"world-writable parent", mkBin(t, root, "skeind", "v1", 0o777), "writable by group/other"},
+		{"world-writable parent", mkBin(t, root, daemonBaseName(), "v1", 0o777), writableWant},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -116,8 +137,8 @@ func TestResolveDaemonPathSearchExcludesHelperDirAndPATH(t *testing.T) {
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	pkg := mkBin(t, root, "skeind", "package", 0o755)
-	helper := mkBin(t, root, "skeind", "PLANTED", 0o755)
+	pkg := mkBin(t, root, daemonBaseName(), "package", 0o755)
+	helper := mkBin(t, root, daemonBaseName(), "PLANTED", 0o755)
 	// The planted binary lives in a "helper" directory that is
 	// never in packageDirs, and PATH points at it too.
 	helperDir := filepath.Dir(helper)
@@ -131,7 +152,7 @@ func TestResolveDaemonPathSearchExcludesHelperDirAndPATH(t *testing.T) {
 		t.Fatalf("ResolveDaemonPath = %q, want package %q (helper-dir/PATH plant must never win)", got, pkg)
 	}
 	// Explicit world-writable candidate is rejected even when named.
-	bad := mkBin(t, root, "skeind", "planted", 0o777)
+	bad := mkBin(t, root, daemonBaseName(), "planted", 0o777)
 	if _, err := ResolveDaemonPath(bad); err == nil {
 		t.Fatalf("explicit world-writable candidate accepted")
 	}
@@ -147,8 +168,8 @@ func TestRegisterDaemonInstallUpgradeAndRollback(t *testing.T) {
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	binA := mkBin(t, root, "skeind", "binary-A", 0o755)
-	binB := mkBin(t, root, "skeind", "binary-B", 0o755)
+	binA := mkBin(t, root, daemonBaseName(), "binary-A", 0o755)
+	binB := mkBin(t, root, daemonBaseName(), "binary-B", 0o755)
 	cfgPath := filepath.Join(root, "skein.toml")
 	if err := os.WriteFile(cfgPath, []byte("config-v1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -213,8 +234,8 @@ func TestRegisterDaemonFailedUpgradeKeepsOldRegistrationAndBackups(t *testing.T)
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	binA := mkBin(t, root, "skeind", "binary-A", 0o755)
-	binB := mkBin(t, root, "skeind", "binary-B", 0o755)
+	binA := mkBin(t, root, daemonBaseName(), "binary-A", 0o755)
+	binB := mkBin(t, root, daemonBaseName(), "binary-B", 0o755)
 	cfgPath := filepath.Join(root, "skein.toml")
 	if err := os.WriteFile(cfgPath, []byte("config-v1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -249,8 +270,8 @@ func TestRegisterDaemonRefusesMissingPreviousBinary(t *testing.T) {
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	binA := mkBin(t, root, "skeind", "binary-A", 0o755)
-	binB := mkBin(t, root, "skeind", "binary-B", 0o755)
+	binA := mkBin(t, root, daemonBaseName(), "binary-A", 0o755)
+	binB := mkBin(t, root, daemonBaseName(), "binary-B", 0o755)
 	cfgPath := filepath.Join(root, "skein.toml")
 	if err := os.WriteFile(cfgPath, []byte("config-v1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -276,8 +297,8 @@ func TestRollbackDaemonRestoresBinaryFromOldCopy(t *testing.T) {
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	binA := mkBin(t, root, "skeind", "binary-A", 0o755)
-	binB := mkBin(t, root, "skeind", "binary-B", 0o755)
+	binA := mkBin(t, root, daemonBaseName(), "binary-A", 0o755)
+	binB := mkBin(t, root, daemonBaseName(), "binary-B", 0o755)
 	cfgPath := filepath.Join(root, "skein.toml")
 	if err := os.WriteFile(cfgPath, []byte("config-v1"), 0o600); err != nil {
 		t.Fatal(err)
@@ -309,8 +330,8 @@ func TestRegisterDaemonHelperDirPlantNeverRegistered(t *testing.T) {
 	f := &fakeBackend{}
 	useFake(t, f)
 	root := t.TempDir()
-	pkg := mkBin(t, root, "skeind", "package", 0o755)
-	planted := mkBin(t, root, "skeind", "PLANTED", 0o755)
+	pkg := mkBin(t, root, daemonBaseName(), "package", 0o755)
+	planted := mkBin(t, root, daemonBaseName(), "PLANTED", 0o755)
 	packageDirs = []string{pkg}
 	cfgPath := filepath.Join(root, "skein.toml")
 	if err := os.WriteFile(cfgPath, []byte("config-v1"), 0o600); err != nil {

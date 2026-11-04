@@ -9,9 +9,25 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// waitNamedPipeProc is kernel32's WaitNamedPipeW: x/sys/windows does
+// not wrap it. It waits until a pipe instance is listening.
+var waitNamedPipeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("WaitNamedPipeW")
+
+func waitNamedPipe(name *uint16, timeoutMs uint32) error {
+	r1, _, errno := waitNamedPipeProc.Call(uintptr(unsafe.Pointer(name)), uintptr(timeoutMs))
+	if r1 == 0 {
+		if errno != nil {
+			return errno
+		}
+		return errors.New("wait named pipe failed")
+	}
+	return nil
+}
 
 // Dial opens the named pipe as a client instance.
 func Dial(name string) (net.Conn, error) {
@@ -27,15 +43,31 @@ func Dial(name string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := windows.CreateFile(
-		name16,
-		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		0, // no sharing: a single writer/reader pair per instance
-		nil,
-		windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OVERLAPPED,
-		0,
-	)
+	// The daemon's accept loop keeps one listening instance: between
+	// consuming it and creating the replacement, a concurrent dial
+	// gets ERROR_PIPE_BUSY. That window is normal, so wait for a
+	// listening instance and retry instead of failing the client.
+	var h windows.Handle
+	for attempt := 0; attempt < 5; attempt++ {
+		h, err = windows.CreateFile(
+			name16,
+			windows.GENERIC_READ|windows.GENERIC_WRITE,
+			0, // no sharing: a single writer/reader pair per instance
+			nil,
+			windows.OPEN_EXISTING,
+			windows.FILE_FLAG_OVERLAPPED,
+			0,
+		)
+		if err == nil {
+			break
+		}
+		if err != windows.ERROR_PIPE_BUSY {
+			break
+		}
+		if werr := waitNamedPipe(name16, 1000); werr != nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pipeconn: open %s: %w", name, err)
 	}
