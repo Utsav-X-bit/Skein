@@ -220,7 +220,12 @@ type peerSpec struct {
 
 func build(t *testing.T, out, pkg string) {
 	t.Helper()
-	cmd := exec.Command("go", "build", "-o", out, pkg)
+	// The harness is a dev tool: its daemons are built with
+	// -tags skeindev so SKEIN_STATE_FILE isolation (above) works.
+	// Release builds ignore that variable by design (daemon env.go),
+	// and a release-built harness would share the host's
+	// /var/lib/skein/state.json across namespaces.
+	cmd := exec.Command("go", "build", "-tags", "skeindev", "-o", out, pkg)
 	cmd.Dir = moduleRoot(t)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

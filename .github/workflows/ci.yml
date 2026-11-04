@@ -32,11 +32,9 @@ jobs:
       # M8 (F-21): known-vulnerability scan, pinned — not @latest, so a
       # tool upgrade can never silently change what CI accepts. Pin
       # verified resolvable via the module proxy on 2026-11-04.
-      # KNOWN FIRST-RUN FAILURE (M8 report §6): under the repo's current
-      # go1.26.0 toolchain this step reports 28 reachable stdlib
-      # vulnerabilities, all fixed by go1.26.10. Bump the toolchain to
-      # >= 1.26.10 (go.mod) before expecting this step green — verified
-      # locally on 2026-11-04: go1.26.10 reports 0 reachable findings.
+      # RESOLVED 2026-11-04 (post-M8 decision): go.mod now requires
+      # go1.26.10, under which this step reports 0 reachable findings
+      # locally (3 unreachable module findings remain, non-gating).
       # Do not weaken this step to make the first run pass.
       - name: Vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

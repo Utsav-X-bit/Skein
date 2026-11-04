@@ -27,8 +27,11 @@ import (
 func TestConnErrorKeepsControlPlaneAlive(t *testing.T) {
 	// Keep the persisted paused flag out of the system path: the
 	// retry path writes it when it settles, and this test must not
-	// touch /var/lib/skein on the host.
-	t.Setenv("SKEIN_STATE_FILE", filepath.Join(t.TempDir(), "state.json"))
+	// touch /var/lib/skein on the host. Via the test-only override
+	// seam (env.go): release builds ignore SKEIN_STATE_FILE, so
+	// t.Setenv would no longer redirect it.
+	stateFileOverride = filepath.Join(t.TempDir(), "state.json")
+	t.Cleanup(func() { stateFileOverride = "" })
 	// Occupy a UDP port on both families, so link.Listen fails
 	// deterministically regardless of wildcard resolution.
 	wild, err := net.ListenPacket("udp", ":0")
@@ -170,7 +173,10 @@ func TestConnErrorKeepsControlPlaneAlive(t *testing.T) {
 // cannot mutate. The dataplane is forced into ConnError (occupied
 // port) so Run stays blocked in the test without a live mesh.
 func TestDevTCPServesGatedHandler(t *testing.T) {
-	t.Setenv("SKEIN_STATE_FILE", filepath.Join(t.TempDir(), "state.json"))
+	// Test-only override seam (env.go): release builds ignore
+	// SKEIN_STATE_FILE, so t.Setenv would no longer redirect it.
+	stateFileOverride = filepath.Join(t.TempDir(), "state.json")
+	t.Cleanup(func() { stateFileOverride = "" })
 	wild, err := net.ListenPacket("udp", ":0")
 	if err != nil {
 		t.Fatal(err)

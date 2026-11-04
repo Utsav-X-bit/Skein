@@ -39,7 +39,10 @@ const (
 // persistent state directory (StateDirectory=skein), not the ephemeral
 // runtime directory.
 func stateFile() string {
-	if p := os.Getenv("SKEIN_STATE_FILE"); p != "" {
+	if stateFileOverride != "" {
+		return stateFileOverride
+	}
+	if p := securityEnv("SKEIN_STATE_FILE"); p != "" {
 		return p
 	}
 	if runtime.GOOS == "windows" {
@@ -317,7 +320,7 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		// rules without blocking the dataplane or the control API.
 		cfg := d.config()
 		go func() {
-			if os.Getenv("SKEIN_NO_FIREWALL") != "" {
+			if firewallDisabled() {
 				return
 			}
 			if err := firewall.Ensure(firewall.Config{

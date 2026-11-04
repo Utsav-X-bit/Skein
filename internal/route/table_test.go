@@ -123,6 +123,36 @@ func TestWithdrawalOnDirectLinkLoss(t *testing.T) {
 	}
 }
 
+// M4 follow-up (direct unit test, previously only exercised via the
+// tombstone path): WithdrawDestination removes the direct route AND
+// every advertisement offering the destination, leaves other
+// destinations untouched, and is a no-op for an unknown destination.
+func TestWithdrawDestinationRemovesDirectAndAdvertised(t *testing.T) {
+	tbl := NewTable(peerA)
+	mustDirect(t, tbl, peerD, time.Millisecond)
+	mustDirect(t, tbl, peerB, time.Millisecond)
+	mustMerge(t, tbl, peerB, adv(1, time.Millisecond, peerB, peerD))
+	mustMerge(t, tbl, peerB, adv(1, time.Millisecond, peerB, peerC))
+	if _, ok := tbl.Lookup(peerD); !ok {
+		t.Fatal("missing direct route before withdrawal")
+	}
+	if _, ok := tbl.Lookup(peerC); !ok {
+		t.Fatal("missing advertised route before withdrawal")
+	}
+	tbl.WithdrawDestination(peerD)
+	if _, ok := tbl.Lookup(peerD); ok {
+		t.Fatal("direct route survived WithdrawDestination")
+	}
+	if _, ok := tbl.Lookup(peerC); !ok {
+		t.Fatal("unrelated advertised route lost by WithdrawDestination")
+	}
+	// Unknown destination: no-op, no panic, table unchanged.
+	tbl.WithdrawDestination(peerE)
+	if _, ok := tbl.Lookup(peerC); !ok {
+		t.Fatal("unrelated route lost by no-op WithdrawDestination")
+	}
+}
+
 func TestPathLoopAndSelfAreRejected(t *testing.T) {
 	tbl := NewTable(peerA)
 	mustDirect(t, tbl, peerB, time.Millisecond)

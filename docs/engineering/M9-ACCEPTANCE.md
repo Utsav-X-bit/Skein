@@ -222,3 +222,34 @@ for 4–5 nodes including a mixed Linux ↔ Windows mesh. Any FAILED item
 keeps the verdict at NOT RELEASE READY with the item named. A
 PARTIALLY VERIFIED item must name exactly which sub-test passed and
 which is still open.
+
+## 5. Decisions taken 2026-11-04 (post-M8, user-delegated)
+
+- **Go toolchain: bumped to go1.26.10 (go.mod).** The §2a gating item
+  is satisfied as a change; the §2a CI run itself is still pending.
+  Local govulncheck under go1.26.10: 0 reachable, 3 unreachable
+  module findings (non-gating).
+- **Daemon env vars: dev-gated, not blessed as operator variables.**
+  Release builds ignore `SKEIN_NO_FIREWALL` and `SKEIN_STATE_FILE`
+  (`internal/daemon/env*.go`, mirroring M6); dev builds honour them.
+  Blessing was rejected: a firewall-disable switch reachable through
+  the service's environment is the F-04 hole, not an operator feature.
+  Consequences handled in-tree: daemon tests use the
+  `stateFileOverride` seam, the netns harness builds its daemons with
+  `-tags skeindev`. Machine proof (packaged install leaves both unset;
+  a planted value is ignored by a release daemon) remains a §2b item.
+- **F-01 per-peer invites: DEFERRED to a post-M9 product milestone.**
+  A per-peer credential model (issuance, revocation distribution,
+  migration from the shared secret, under the equal-peer constraint
+  with no owner) needs its own ADR and design, and any implementation
+  now would be unverifiable on the VM (no live mesh). Rotation stays
+  the supported eviction mechanism, with its three conditions
+  (restart, every legitimate node rejoins, departed peer does not
+  obtain the new join).
+- **M4 follow-ups: only the direct `WithdrawDestination` unit test is
+  implemented now** (pure, VM-verifiable). Deferred to post-M9 ADRs,
+  because each changes behaviour that needs live-mesh verification:
+  wire-level dialer-flag exchange (wire-format change), epoch-counter
+  persistence (new persisted state + migration), receive-side epoch
+  TTL (session semantics), authenticated UDP fallback clearing
+  (dataplane semantics).

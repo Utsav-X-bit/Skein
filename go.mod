@@ -1,6 +1,6 @@
 module github.com/Utsav-X-bit/skein
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/BurntSushi/toml v1.6.0
