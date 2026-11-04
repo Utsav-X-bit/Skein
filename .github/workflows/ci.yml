@@ -132,3 +132,20 @@ jobs:
         with:
           go-version-file: go.mod
       - run: sudo -E env "PATH=$PATH" ./test/netns/run.sh
+
+  test-windows:
+    # M9: added only after the batch-4 fixes verified green on a real
+    # Windows machine (service/daemon/bootstrap/configstore/cli plus
+    # api/link/integration and every other internal/cmd package).
+    # Minimal on purpose: internal + cmd only, no GUI packages (those
+    # need the Wails toolchain) and no -race (the ubuntu job covers
+    # race). Windows runners run as admin, matching the elevated runs
+    # the privilege-gated tests need.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -count=1 ./internal/... ./cmd/...
