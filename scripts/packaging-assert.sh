@@ -61,6 +61,12 @@ if [ -n "$helper_line" ] && [ -n "$rmdir_line" ] && [ "$helper_line" -gt "$rmdir
 fi
 printf '%s' "$unsec" | grep -q 'MessageBox MB_YESNO' || note "NSIS uninstall: purge question missing"
 printf '%s' "$unsec" | grep -q 'Skein.bak' || note "NSIS uninstall: purge-to-.bak backup missing"
+# $PROGRAMDATA is not an NSIS constant: makensis warning 6000
+# compiles it to empty, which silently disabled the purge branch
+# (M9 §2c). The uninstall section must resolve ProgramData via
+# ReadEnvStr instead.
+printf '%s' "$unsec" | grep -q '"\$PROGRAMDATA' && note "NSIS uninstall: \$PROGRAMDATA is not an NSIS constant (use ReadEnvStr)"
+printf '%s' "$unsec" | grep -q 'ReadEnvStr.*ProgramData' || note "NSIS uninstall: ProgramData not resolved via ReadEnvStr"
 printf '%s' "$unsec" | grep -q 'RMDir /r "\$PROGRAMDATA\\Skein"' \
 	&& note "NSIS uninstall: silent RMDir of %ProgramData%\\Skein (purge must move to .bak, never delete)"
 printf '%s' "$unsec" | grep -q 'Abort' || note "NSIS uninstall: no Abort on helper-uninstall failure"

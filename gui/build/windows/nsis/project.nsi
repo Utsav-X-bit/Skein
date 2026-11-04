@@ -193,19 +193,27 @@ Section "uninstall"
         DetailPrint "Warning: skein-helper.exe not found in $INSTDIR; service uninstall skipped. If 'sc query skein' still shows the service, remove it by hand (sc stop skein, then sc delete skein)."
     helperDone:
 
+    # $PROGRAMDATA is NOT an NSIS constant: makensis warning 6000
+    # compiles it to empty, which silently disabled this whole purge
+    # branch (M9 §2c: the "Yes" answer always reported "No Skein
+    # configuration found" and no move ever happened). Resolve the
+    # real all-users application-data directory from the environment
+    # instead; ProgramData is a system variable, identical for every
+    # user, so this is correct for machine installs.
+    ReadEnvStr $R9 "ProgramData"
     MessageBox MB_YESNO "Remove Skein configuration and identity in %ProgramData%\Skein? Choose No to keep it (you can reinstall later without rejoining). Choosing Yes moves it to %ProgramData%\Skein.bak instead of deleting it." IDYES doPurge IDNO noPurge
     doPurge:
-        IfFileExists "$PROGRAMDATA\Skein" purgeCheckBak purgeNone
+        IfFileExists "$R9\Skein" purgeCheckBak purgeNone
     purgeNone:
         DetailPrint "No Skein configuration found at %ProgramData%\Skein; nothing to purge"
         Goto purgeDone
     purgeCheckBak:
-        IfFileExists "$PROGRAMDATA\Skein.bak" purgeBlocked purgeMove
+        IfFileExists "$R9\Skein.bak" purgeBlocked purgeMove
     purgeBlocked:
         MessageBox MB_OK "A backup already exists at %ProgramData%\Skein.bak, so the configuration was left in place rather than overwriting that backup. Remove or rename the old backup first if you want to purge."
         Goto noPurge
     purgeMove:
-        Rename "$PROGRAMDATA\Skein" "$PROGRAMDATA\Skein.bak"
+        Rename "$R9\Skein" "$R9\Skein.bak"
         DetailPrint "Skein configuration moved to %ProgramData%\Skein.bak"
         Goto purgeDone
     noPurge:
