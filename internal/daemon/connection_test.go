@@ -57,6 +57,12 @@ func TestRedactorScrubsSecrets(t *testing.T) {
 	if out := r.apply("using " + b64); strings.Contains(out, b64) {
 		t.Fatalf("secret leaked: %s", out)
 	}
+	// M6: the redactor covers both base64 forms; a planted secret
+	// in the standard form (with padding) must be scrubbed too.
+	b64std := base64.StdEncoding.EncodeToString(secret)
+	if out := r.apply("using " + b64std); strings.Contains(out, b64std) {
+		t.Fatalf("secret leaked (std base64): %s", out)
+	}
 	if out := r.apply("join with skein:2:abcDEF_123 now"); !strings.Contains(out, "skein:<redacted>") {
 		t.Fatalf("join string leaked: %s", out)
 	}

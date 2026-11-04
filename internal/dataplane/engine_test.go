@@ -207,6 +207,74 @@ func TestDirectHandshakeAndData(t *testing.T) {
 	}
 }
 
+// TestExpiredSessionFailsClosed is the M4 P7 (F-04) regression test: an
+// epoch past RekeyInterval must not keep carrying traffic while rekey
+// fails. On the old code SendOverlayPacket sealed with the active session
+// regardless of Expired(), so an expired key carried traffic indefinitely.
+func TestExpiredSessionFailsClosed(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, b, true)
+	pkt := ipv4Packet(a.overlay, b.overlay, []byte("hello"))
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("first send = %v, want ErrNoSession", err)
+	}
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	// Age the session past the 1h epoch lifetime via the engine clock.
+	a.eng.SetClock(func() time.Time { return time.Now().Add(2 * time.Hour) })
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired send = %v, want ErrExpired", err)
+	}
+	if got := a.eng.Counters().TxPackets; got != 1 {
+		t.Fatalf("TxPackets = %d, want 1 (expired packet must not be sent)", got)
+	}
+	// Restoring the clock restores traffic: expiry pauses, it does not kill.
+	a.eng.SetClock(time.Now)
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatalf("send after clock restore: %v", err)
+	}
+}
+
+// TestHandshakeRacesRouteAndDirect is the M4 P6 (F-08, route-only
+// starvation) regression test: a stale relay route must not block direct
+// dialing. On the old code sendHandshake sent only via the route when
+// one existed, so a dead relay route starved direct candidates until the
+// route expired.
+func TestHandshakeRacesRouteAndDirect(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	c := n.addNode(t, "10.144.144.3", "192.0.2.3:11010")
+	n.know(t, a, b, true)
+	// A-B direct session, so B is a usable next hop for A's route table.
+	if err := a.eng.SendOverlayPacket(ipv4Packet(a.overlay, b.overlay, []byte("ab"))); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("A->B first send = %v", err)
+	}
+	// A knows C directly (candidate) but also has a stale route via B;
+	// B has no route to C and cannot forward.
+	n.know(t, a, c, true)
+	merge(t, a.eng.routes, b.id, route.Advertisement{
+		Destination: c.id, Cost: 2 * time.Millisecond, Hops: 1,
+		Path: []uint64{b.id, c.id}, Seq: 1, Expires: time.Now().Add(time.Minute),
+	})
+	pkt := ipv4Packet(a.overlay, c.overlay, []byte("direct"))
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("A->C first send = %v", err)
+	}
+	if !a.eng.sessions.HasSession(c.id) || !c.eng.sessions.HasSession(a.id) {
+		t.Fatal("handshake did not complete via the direct candidate despite the stale relay route")
+	}
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatalf("A->C send: %v", err)
+	}
+	if got := c.tun.last(); !bytes.Equal(got, pkt) {
+		t.Fatalf("delivered packet = %x, want %x", got, pkt)
+	}
+}
+
 func TestRelayForwardsOpaqueCiphertext(t *testing.T) {
 	n := newTestNet(t)
 	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")

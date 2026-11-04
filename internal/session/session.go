@@ -373,6 +373,12 @@ type peerState struct {
 	sendAttempt   [AttemptSize]byte
 	recv          map[uint32]*Session
 	lastInstalled time.Time
+	// begun is the highest epoch this manager has begun for this peer.
+	// It makes Begin strictly monotonic even when a handshake never
+	// installs (M4 F-03): a restarted node that re-dials after failed
+	// handshakes climbs toward, then past, the peer's active epoch,
+	// instead of reusing one stale epoch forever.
+	begun uint32
 }
 
 // Manager owns per-peer handshakes and established sessions.
@@ -392,11 +398,27 @@ func NewManager(local identity.Identity, psk []byte) (*Manager, error) {
 	if len(psk) != identity.KeySize {
 		return nil, fmt.Errorf("network secret must be %d bytes", identity.KeySize)
 	}
+	// M4 F-03: epochs are per-pair monotonic counters starting at 1, as
+	// protocol.md documents — not wall-clock seconds. Wall-clock epochs
+	// made the "smaller attempt wins" tie-break almost never apply (two
+	// daemons started seconds apart had different base epochs), leaked
+	// start time, and made a clock-stepped restart pick a lower epoch
+	// than its peer's active epoch, leaving an asymmetric session that
+	// only the 45 s timeout could heal. A counter cannot rewind on a
+	// clock jump; restart recovery is via Begin climbing past the
+	// peer's active epoch (see peerState.begun) and via consider
+	// accepting a lower epoch once the current key has expired.
+	// Persistence across daemon restarts is deliberately NOT claimed
+	// here: a restarted manager starts at 1 again and climbs by
+	// re-dialing, which converges because epochs are now small
+	// counters, not 1.79e9-scale timestamps. Persisting the counter
+	// in configstore is recorded as machine/CI follow-up in the M4
+	// report.
 	return &Manager{
 		local:     local,
 		psk:       append([]byte(nil), psk...),
 		peers:     make(map[uint64]*peerState),
-		baseEpoch: uint32(time.Now().Unix()),
+		baseEpoch: 1,
 	}, nil
 }
 
@@ -528,10 +550,14 @@ func (m *Manager) Begin(peerID uint64) (attempt [AttemptSize]byte, payload []byt
 	}
 	if ps.send != nil && ps.send.Epoch >= epoch {
 		epoch = ps.send.Epoch + 1
-		if epoch == 0 {
-			epoch = 1
-		}
 	}
+	if ps.begun >= epoch {
+		epoch = ps.begun + 1
+	}
+	if epoch == 0 {
+		epoch = 1
+	}
+	ps.begun = epoch
 	ps.mu.Unlock()
 
 	hs, err := NewHandshake(m.local, ps.public, m.psk, true, attempt, epoch)
@@ -718,11 +744,23 @@ func (m *Manager) SealReady(peerID uint64, attempt [AttemptSize]byte, ad, plaint
 // installs it when the attempt matches. Because the session is not yet
 // installed, every ready session for the epoch is tried.
 func (m *Manager) HandleConfirm(peerID uint64, epoch uint32, counter uint64, ad, ciphertext []byte) error {
+	_, err := m.HandleConfirmInstalled(peerID, epoch, counter, ad, ciphertext)
+	return err
+}
+
+// HandleConfirmInstalled is HandleConfirm plus the installed verdict. A
+// confirmation that decrypts but loses the tie-break (same epoch, larger
+// attempt) or is superseded by a higher epoch is a valid confirmation of a
+// session that was NOT installed: it must not fire peer_up or move the
+// active endpoint (audit F-05), and it must not mark an unverified peer
+// verified on the strength of a losing session. Callers that only need the
+// error use HandleConfirm; the dataplane uses this form.
+func (m *Manager) HandleConfirmInstalled(peerID uint64, epoch uint32, counter uint64, ad, ciphertext []byte) (bool, error) {
 	m.mu.Lock()
 	ps, ok := m.peers[peerID]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("peer %016x is not registered", peerID)
+		return false, fmt.Errorf("peer %016x is not registered", peerID)
 	}
 
 	type candidate struct {
@@ -748,11 +786,14 @@ func (m *Manager) HandleConfirm(peerID uint64, epoch uint32, counter uint64, ad,
 			continue
 		}
 		ps.mu.Lock()
-		if ps.consider(c.sess, c.attempt) {
+		installed := ps.consider(c.sess, c.attempt)
+		if installed {
 			ps.install(c.sess, c.attempt)
 		}
-		firstContact := !ps.verified
-		ps.verified = true
+		firstContact := installed && !ps.verified
+		if installed {
+			ps.verified = true
+		}
 		pub := append([]byte(nil), ps.public...)
 		ps.mu.Unlock()
 		if firstContact {
@@ -761,9 +802,9 @@ func (m *Manager) HandleConfirm(peerID uint64, epoch uint32, counter uint64, ad,
 				fn(peerID, pub)
 			}
 		}
-		return nil
+		return installed, nil
 	}
-	return ErrNotConfirmed
+	return false, ErrNotConfirmed
 }
 
 // consider reports whether candidate should replace the active send session.

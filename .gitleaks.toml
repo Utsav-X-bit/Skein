@@ -1,0 +1,23 @@
+# Gitleaks allowlist — test fixtures only (M8).
+#
+# The three files below contain two fixture tokens (a test network_secret
+# in test TOML/Go test strings and a sample join string in the Windows
+# smoke script) that already existed at baseline f6bc79b — verified
+# identical, by value hash, in the untouched baseline clone. They are
+# test fixtures, not live credentials, and no phase of this branch
+# introduced them.
+#
+# Scope note, stated honestly: a path allowlist exempts these files from
+# every rule, not just generic-api-key, so a real secret added to one of
+# these fixture files later would not be caught by this scan. That is
+# accepted because (a) these files are test fixtures reviewed as such,
+# (b) every other file in the tree is still gated, and (c) the
+# alternative — a reporting-only scan — gates nothing at all. If a
+# fixture value ever becomes a live credential, remove it from the
+# fixture and from this allowlist together, rotate it first, then scrub.
+[allowlist]
+paths = [
+  '''internal/conf/config_test\.go''',
+  '''testdata/config/.*\.toml''',
+  '''test/windows/smoke\.ps1''',
+]

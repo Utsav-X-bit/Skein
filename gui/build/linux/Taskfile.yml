@@ -109,6 +109,14 @@ tasks:
       - task: create:rpm
       - task: create:aur
 
+  # Step 11 note: AppImage stays GUI-only BY DESIGN. It cannot
+  # install a system service (no root install, no unit, no helper
+  # in /usr/libexec), so an AppImage build must never be presented
+  # as a full Skein install: a desktop that cannot bootstrap is a
+  # broken install, not a portable one. If a future AppImage task
+  # is asked to include service installation, it must fail with a
+  # clear message instead of shipping one. This task intentionally
+  # has no build:system-binaries dep.
   create:appimage:
     summary: Creates an AppImage
     dir: build/linux/appimage
@@ -126,10 +134,30 @@ tasks:
       DESKTOP_FILE: '../{{.APP_NAME}}.desktop'
       OUTPUT_DIR: '../../../bin'
 
+  # Step 11: build the Linux system binaries (daemon, minimal
+  # helper, CLI) into gui/bin, where nfpm.yaml's contents entries
+  # expect them (./bin/skeind, ./bin/skein-helper, ./bin/skein).
+  # Runs from the repo root module, not from gui/ (gui has no
+  # go.mod of its own).
+  build:system-binaries:
+    summary: Builds skeind, skein-helper and skein for Linux
+    dir: '{{.ROOT_DIR}}/..'
+    cmds:
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skeind" ./cmd/skeind
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skein-helper" ./cmd/skein-helper
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skein" ./cmd/skein
+    env:
+      GOOS: linux
+      GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_ENABLED: "0"
+    vars:
+      ARCH: '{{.ARCH | default ARCH}}'
+
   create:deb:
     summary: Creates a deb package
     deps:
       - task: build
+      - task: build:system-binaries
     cmds:
       - task: generate:dotdesktop
       - task: generate:deb
@@ -138,6 +166,7 @@ tasks:
     summary: Creates a rpm package
     deps:
       - task: build
+      - task: build:system-binaries
     cmds:
       - task: generate:dotdesktop
       - task: generate:rpm
@@ -146,6 +175,7 @@ tasks:
     summary: Creates a arch linux packager package
     deps:
       - task: build
+      - task: build:system-binaries
     cmds:
       - task: generate:dotdesktop
       - task: generate:aur

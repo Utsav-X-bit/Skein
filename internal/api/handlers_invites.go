@@ -5,7 +5,7 @@ import "net/http"
 // postPeerInvite generates a skein:1: peer invite. It carries no network
 // secret: it is an introduction, not membership.
 func (s *Server) postPeerInvite(w http.ResponseWriter, r *http.Request) {
-	if !s.allowMutation() {
+	if !s.allowMutation(CallerFrom(r.Context()).ID()) {
 		writeError(w, r, http.StatusTooManyRequests, ErrCodeRateLimited, "too many changes at once", "wait a moment and retry", nil)
 		return
 	}
@@ -24,7 +24,7 @@ func (s *Server) postPeerInvite(w http.ResponseWriter, r *http.Request) {
 // postNetworkInvite generates a skein:2: join string. It carries the network
 // secret and a snapshot of the overlay addresses in use.
 func (s *Server) postNetworkInvite(w http.ResponseWriter, r *http.Request) {
-	if !s.allowMutation() {
+	if !s.allowMutation(CallerFrom(r.Context()).ID()) {
 		writeError(w, r, http.StatusTooManyRequests, ErrCodeRateLimited, "too many changes at once", "wait a moment and retry", nil)
 		return
 	}

@@ -186,6 +186,49 @@ func (t *Table) MergeAdvertisement(from uint64, adv Advertisement) error {
 	return nil
 }
 
+// ReconcileOrigin withdraws advertisements from an origin that a newer
+// STATE omitted (M4 F-08). Each STATE is a full snapshot of the origin's
+// routes, so a destination present in an older STATE but absent from a
+// newer one (higher seq) has been withdrawn at the origin and must stop
+// being used here promptly — not after the 90 s advertisement TTL.
+// Advertisements at or above seq are untouched (a trimmed route in a
+// single oversized STATE is re-advertised by the next one; the flap
+// window is one STATE interval, ~5 s, and is preferable to a 90 s stale
+// route). Callers must only reconcile after the STATE's seq check has
+// passed, so a stale STATE can never withdraw a newer route.
+func (t *Table) ReconcileOrigin(from uint64, seq uint64, present map[uint64]bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dests, ok := t.advert[from]
+	if !ok {
+		return
+	}
+	changed := false
+	for dest, adv := range dests {
+		if !present[dest] && adv.Seq < seq {
+			delete(dests, dest)
+			changed = true
+		}
+	}
+	if changed {
+		t.recompute()
+	}
+}
+
+// WithdrawDestination removes every route to dest: the direct link, if
+// any, and all advertisements offering it (M4 P8 tombstone application).
+// It is how a departed peer stops being a destination, not just a next
+// hop, on the node that learns the tombstone.
+func (t *Table) WithdrawDestination(dest uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.direct, dest)
+	for _, advs := range t.advert {
+		delete(advs, dest)
+	}
+	t.recompute()
+}
+
 // Lookup returns the resolved route to destination.
 // Lookup returns the current route. The Path slice aliases table state and
 // must not be modified by the caller.

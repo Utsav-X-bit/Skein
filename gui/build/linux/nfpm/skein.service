@@ -1,0 +1,42 @@
+# Skein mesh VPN — vendor unit template, installed by the package to
+# /usr/lib/systemd/system/skein.service.
+#
+# This file is a TEMPLATE, not the live unit. The live unit is generated
+# by the minimal helper's install verb (service.RegisterDaemon,
+# internal/service/service_linux.go unitFor) at
+# /etc/systemd/system/skein.service, which systemd reads in preference
+# to this file. The two must agree on ExecStart: the registered daemon
+# binary is always /usr/local/bin/skeind (Step 6 — never a versioned
+# directory, never the helper, never `skein`), so a package upgrade
+# that replaces /usr/local/bin/skeind automatically adopts the new
+# binary with no unit rewrite and no stale path.
+#
+# Restart=on-failure is safe here only because an unconfigured daemon
+# exits 0 (internal/app/app.go Run: no system config and no valid
+# bootstrap token is a clean exit, not a crash), so an installed-but-
+# not-yet-bootstrapped service does not restart-loop. A configured
+# daemon that crashes does restart, with a 2s backoff.
+#
+# postinstall.sh deliberately does NOT enable or start this unit:
+# first start happens via GUI bootstrap (helper bootstrap verb mints
+# the token, then the daemon is started into bootstrap mode).
+[Unit]
+Description=Skein mesh VPN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/skeind run -c /etc/skein/skein.toml
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=skein
+RuntimeDirectory=skein
+ReadWritePaths=/etc/skein /var/lib/skein /run/skein -/etc/ufw -/etc/firewalld -/run/ufw -/run/ufw.lock -/var/lib/ufw -/run/xtables.lock
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

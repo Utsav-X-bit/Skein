@@ -10,7 +10,7 @@ type connectionRequest struct {
 // postConnection pauses or resumes the dataplane. The service keeps running;
 // only the TUN/link/routes are affected.
 func (s *Server) postConnection(w http.ResponseWriter, r *http.Request) {
-	if !s.allowMutation() {
+	if !s.allowMutation(CallerFrom(r.Context()).ID()) {
 		writeError(w, r, http.StatusTooManyRequests, ErrCodeRateLimited, "too many changes at once", "wait a moment and retry", nil)
 		return
 	}

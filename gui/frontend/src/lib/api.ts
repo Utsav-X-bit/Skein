@@ -8,8 +8,12 @@ import * as DiagnosticsService from "../../bindings/github.com/Utsav-X-bit/skein
 import * as FirewallService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/firewallservice";
 import * as ServiceService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/serviceservice";
 import * as HistoryService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/historyservice";
+// M7: UpdateService is exported so About can use its bound method
+// (Check). CheckManifest/Apply/ReloadGrants are NOT in the checked-in
+// binding yet; see lib/bindings.ts guards — do not call them directly.
+import * as UpdateService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/updateservice";
 
-export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService };
+export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService };
 
 export type { Connection, Status, Peer, Route, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
 
@@ -23,4 +27,19 @@ export function errText(e: unknown): string {
 export function isOffline(e: unknown): boolean {
   const s = errText(e).toLowerCase();
   return s.includes("daemon not connected") || s.includes("no such file") || s.includes("connection refused") || s.includes("connect:");
+}
+
+// errKind is the frontend's best-effort mapping of the Step 8
+// three-state classification onto the error strings the Wails
+// bindings deliver (the Go/CLI classification in internal/ctlerr is
+// authoritative; the frontend only has the rendered string). It
+// returns "" when the kind cannot be told, so callers never invent
+// a remediation from an unrecognised message.
+export function errKind(e: unknown): "" | "Daemon offline" | "Access denied" | "Not recognised" | "Config locked" {
+  const s = errText(e).toLowerCase();
+  if (s.includes("daemon not connected") || s.includes("daemon offline") || s.includes("connection refused") || s.includes("no such file")) return "Daemon offline";
+  if (s.includes("access denied") || s.includes("forbidden") || s.includes("role required")) return "Access denied";
+  if (s.includes("unauthenticated") || s.includes("unauthorized") || s.includes("did not recognise")) return "Not recognised";
+  if (s.includes("config locked") || s.includes("423")) return "Config locked";
+  return "";
 }

@@ -6,14 +6,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 )
 
 func runHelperJSON(ctx context.Context, verb string, payload any, args ...string) ([]byte, error) {
-	path := os.Getenv("SKEIN_HELPER")
-	if path == "" {
-		path = defaultHelperPath()
-	}
+	// M6 (F-04): helperPath() ignores SKEIN_HELPER in release builds.
+	path := helperPath()
 	cmd := helperCommand(ctx, path, append([]string{verb}, args...)...)
 	if payload != nil {
 		raw, err := json.Marshal(payload)

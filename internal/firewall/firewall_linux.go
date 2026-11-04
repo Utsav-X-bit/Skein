@@ -120,17 +120,44 @@ func ensureInterface(cfg Config) error {
 }
 
 func remove(cfg Config) error {
+	// Step 7 (Agent C reset-orphans-rules fix): removal errors
+	// are no longer discarded wholesale. A rule that is already
+	// absent is not an error (its runner output says so); any
+	// other failure is returned, so the daemon's reset endpoint
+	// can report it in FirewallError instead of claiming a
+	// clean reset while rules remain.
+	var errs []string
+	keep := func(err error) {
+		if err == nil {
+			return
+		}
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "could not find") || strings.Contains(msg, "not found") {
+			return
+		}
+		errs = append(errs, err.Error())
+	}
 	switch Manager() {
 	case "ufw":
+		// --force first: without it, `ufw delete` prompts
+		// interactively, and a daemon-side remove can hang
+		// instead of removing the rule.
 		for _, r := range ufwRules(cfg) {
-			_, _ = runner("ufw", append([]string{"delete"}, r.args...)...)
+			_, err := runner("ufw", append([]string{"--force", "delete"}, r.args...)...)
+			keep(err)
 		}
 	case "firewalld":
-		_, _ = runner("firewall-cmd", "--permanent", fmt.Sprintf("--remove-port=%d/udp", cfg.Port))
-		_, _ = runner("firewall-cmd", "--permanent", "--zone=trusted", fmt.Sprintf("--remove-interface=%s", cfg.Interface))
-		_, _ = runner("firewall-cmd", "--reload")
+		_, err := runner("firewall-cmd", "--permanent", fmt.Sprintf("--remove-port=%d/udp", cfg.Port))
+		keep(err)
+		_, err = runner("firewall-cmd", "--permanent", "--zone=trusted", fmt.Sprintf("--remove-interface=%s", cfg.Interface))
+		keep(err)
+		_, err = runner("firewall-cmd", "--reload")
+		keep(err)
 	case "iptables":
 		iptablesRemove(cfg)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("firewall: remove: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }

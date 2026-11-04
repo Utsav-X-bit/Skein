@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -96,15 +95,6 @@ type dashboard struct {
 	width     int
 	height    int
 	presenter framePresenter
-
-	configPath  string
-	recovering  bool
-	lastRecover time.Time
-	recoverErr  error
-	stopping    bool
-
-	child     *exec.Cmd
-	childDone chan error
 }
 
 func newDashboard(cfg conf.Config, out io.Writer, color, motion bool) *dashboard {
@@ -205,7 +195,6 @@ func (d *dashboard) run(ctx context.Context) error {
 		case <-frames.C:
 			d.frame++
 			d.phase += frameInterval.Seconds()
-			d.maybeRecover(ctx)
 		}
 	}
 }
@@ -389,30 +378,6 @@ func (d *dashboard) ease() {
 	}
 }
 
-// maybeRecover restarts a daemon that went away while the dashboard is open.
-func (d *dashboard) maybeRecover(ctx context.Context) {
-	d.mu.Lock()
-	failed := d.fetchErr != nil
-	last := d.lastRecover
-	busy := d.recovering
-	d.mu.Unlock()
-	if !failed || busy || time.Since(last) < 5*time.Second {
-		return
-	}
-	d.mu.Lock()
-	d.recovering = true
-	d.lastRecover = time.Now()
-	path := d.configPath
-	d.mu.Unlock()
-	go func() {
-		err := d.ensureDaemon(ctx, path)
-		d.mu.Lock()
-		d.recovering = false
-		d.recoverErr = err
-		d.mu.Unlock()
-	}()
-}
-
 func (d *dashboard) draw() {
 	width, height := 100, 34
 	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
@@ -469,7 +434,9 @@ func (d *dashboard) viewLocked() view {
 		event: d.event, eventAt: d.eventAt, frame: d.frame, phase: d.phase,
 		activities: append([]activityDTO(nil), d.activities...), metrics: cloneMetrics(d.metrics), ui: d.ui,
 		motion: d.motion, err: d.fetchErr, lastFetch: d.lastFetch,
-		recoverErr: d.recoverErr,
+		// Step 9: the old recoverErr hint is gone with the spawn path;
+		// a disconnected dashboard shows fetchErr and its poll
+		// retries instead.
 	}
 }
 
@@ -486,7 +453,6 @@ type view struct {
 	phase      float64
 	motion     bool
 	err        error
-	recoverErr error
 	lastFetch  time.Time
 	activities []activityDTO
 	metrics    map[string]linkMetrics

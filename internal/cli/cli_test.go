@@ -485,7 +485,7 @@ func TestSetupConfiguresTheFirewall(t *testing.T) {
 	if !strings.Contains(out, "removed") {
 		t.Fatalf("remove output = %q", out)
 	}
-	if !strings.Contains(strings.Join(f.calls, "\n"), "ufw delete allow in on skein0") {
+	if !strings.Contains(strings.Join(f.calls, "\n"), "ufw --force delete allow in on skein0") {
 		t.Fatalf("remove calls = %v", f.calls)
 	}
 }
@@ -618,13 +618,29 @@ func TestResetWithNothingToRemove(t *testing.T) {
 
 func TestDaemonContactErrorSuggestsStartingIt(t *testing.T) {
 	err := daemonContactError(errors.New("dial tcp 127.0.0.1:11011: connect: connection refused"))
-	for _, want := range []string{"not running", "systemctl", "dashboard"} {
+	// Step 8: the dashboard no longer starts a daemon, so the hint
+	// names the service commands instead of the dashboard.
+	for _, want := range []string{"not running", "systemctl", "skein system start"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q lacks %q", err, want)
 		}
 	}
+	if strings.Contains(err.Error(), "skein dashboard") {
+		t.Fatalf("error %q still offers the dashboard as a daemon starter", err)
+	}
 	other := daemonContactError(errors.New("i/o timeout"))
 	if strings.Contains(other.Error(), "not running") {
 		t.Fatal("a timeout was reported as a stopped daemon")
+	}
+}
+
+func TestPeersRmPointsAtLeave(t *testing.T) {
+	// Step 12 (ADR-002): the removal action is deleted; the error
+	// must point at `skein system leave`, not at a dead endpoint.
+	// cmdPeers answers before touching the client, so a bare client
+	// suffices and no daemon is contacted.
+	err := cmdPeers(context.Background(), &client{}, []string{"rm", "0123456789abcdef"}, false, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "skein system leave") {
+		t.Fatalf("rm error = %v, want a pointer to `skein system leave`", err)
 	}
 }

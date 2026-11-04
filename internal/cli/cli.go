@@ -23,8 +23,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/app"
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/configstore"
+	"github.com/Utsav-X-bit/skein/internal/ctlerr"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
@@ -40,6 +43,19 @@ const (
 	defaultIPv6Prefix = "fd00:6d65:7368::/64"
 )
 
+// rejectSystemConfigWrite is the Step 3 rule for CLI system-path
+// writes (plan §4.2), completed in Step 8: the daemon owns the system
+// config, and the CLI reaches it only through the system commands
+// (helper bootstrap + daemon API). Failing here, with that pointer,
+// is deliberate — silently writing behind a running daemon was the
+// bug this rule removes.
+func rejectSystemConfigWrite(configPath string) error {
+	if filepath.Clean(configPath) == filepath.Clean(app.SystemConfigPath()) {
+		return fmt.Errorf("refusing to write the system config %s directly: it is owned by the daemon; use `skein system init|join` or the desktop app instead", configPath)
+	}
+	return nil
+}
+
 const usage = `skein — Skein mesh VPN command line
 
 Usage:
@@ -52,11 +68,21 @@ Usage:
   skein [-c <config>] setup [--remove]      allow the firewall for the underlay and overlay
   skein [-c <config>] reset [--purge] [--keep-identity] [--force]
                                             leave the mesh: back up or remove config and identity
-  skein [-c <config>] install-service       register the system service
-  skein [-c <config>] uninstall-service     remove the system service
-  skein [-c <config>] dashboard             live mesh status; starts the daemon if needed
+  skein [-c <config>] install-service       register the system service (via the minimal helper)
+  skein [-c <config>] uninstall-service [--purge]
+                                            remove the system service (via the minimal helper)
+  skein [-c <config>] dashboard             live mesh status; the daemon must already be running
+  skein system init [--name N] [--port P] [--mtu M]
+                                            bootstrap a system install (helper token + daemon API)
+  skein system join <invite>                bootstrap-join a system install
+  skein system import <path>                bootstrap-import a user config into a system install
+  skein system reset [--purge] [--keep-identity]
+                                            daemon reset, then helper stop (no --force)
+  skein system leave                        leave this node's own network
+  skein system rotate                       rotate the network secret via the daemon, then helper restart
+  skein system start|stop|restart           service lifecycle via the minimal helper
   skein [-c <config>] status [--json]
-  skein [-c <config>] peers [list|add <invite>|rm <peer-id>] [--json]
+  skein [-c <config>] peers [list|add <invite>] [--json]
   skein [-c <config>] routes [--json]
   skein [-c <config>] probe <peer-id>
   skein [-c <config>] ping <overlay-ip>
@@ -130,36 +156,63 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "install-service":
-		if err := app.InstallService(path); err != nil {
+		// Step 8: a thin wrapper over the minimal helper's install
+		// verb. The direct app.InstallService path is gone for
+		// system use; -c is accepted but the service always uses
+		// the system config.
+		if _, err := runSystemHelper("install"); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
 		fmt.Printf("skein service installed\n  start: systemctl start %s (Linux) or sc start %s (Windows)\n", service.Name, service.Name)
 		return 0
 	case "uninstall-service":
-		if err := app.UninstallService(path); err != nil {
+		purge := false
+		for _, arg := range rest[1:] {
+			if arg == "--purge" {
+				purge = true
+			} else {
+				fmt.Fprintf(stderr, "skein: unknown uninstall-service flag %q\n", arg)
+				return 2
+			}
+		}
+		args := []string{}
+		if purge {
+			args = append(args, "--purge")
+		}
+		if _, err := runSystemHelper("uninstall", args...); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
 		fmt.Println("skein service removed")
 		return 0
+	case "system":
+		if code := runSystemCommand(ctx, rest[1:], stdout, stderr); code != 0 {
+			return code
+		}
+		return 0
 	case "dashboard", "top":
-		cfg, resolvedPath, err := loadOnlineConfig(path, opts.explicit)
+		cfg, _, err := loadOnlineConfig(path, opts.explicit)
 		if err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
 			return 1
 		}
-		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
-		d := newDashboard(cfg, stdout, !opts.noColor, motion)
-		d.configPath = resolvedPath
+		// Step 8: the dashboard never spawns a daemon. It probes
+		// the control API once; if unreachable it prints the
+		// remediation and exits non-zero. Starting the daemon
+		// belongs to the service manager, not the TUI.
 		dashCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := d.ensureDaemon(dashCtx, resolvedPath); err != nil {
-			fmt.Fprintf(stderr, "skein: %v\n", err)
+		probeCtx, cancel := context.WithTimeout(dashCtx, 1500*time.Millisecond)
+		reachable := clientFor(cfg, 3*time.Second).reachable(probeCtx)
+		cancel()
+		if !reachable {
+			fmt.Fprintf(stderr, "skein: daemon not running — start the service: `skein system start` / `systemctl start skein` / `Start-Service skein`, or dev: `skein run -c %s` in another terminal\n", path)
 			return 1
 		}
+		motion := !opts.noMotion && os.Getenv("SKEIN_NO_MOTION") == ""
+		d := newDashboard(cfg, stdout, !opts.noColor, motion)
 		runCtx, cancel := context.WithCancel(dashCtx)
-		defer d.closeChild()
 		defer cancel()
 		if err := d.run(runCtx); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
@@ -180,6 +233,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "skein: unknown reset flag %q\n", arg)
 				return 2
 			}
+		}
+		// Step 8: a system-path reset is a daemon-API operation,
+		// not a local file move. The dev-path reset below stays
+		// local under the configstore lock.
+		if filepath.Clean(path) == filepath.Clean(app.SystemConfigPath()) {
+			fmt.Fprintf(stderr, "skein: the system config is daemon-owned; use `skein system reset` instead\n")
+			return 1
 		}
 		if err := cmdReset(path, purge, keepIdentity, force, stdout); err != nil {
 			fmt.Fprintf(stderr, "skein: %v\n", err)
@@ -332,6 +392,9 @@ func identityPath(configPath string) string {
 }
 
 func cmdInit(configPath string, stdout io.Writer) error {
+	if err := rejectSystemConfigWrite(configPath); err != nil {
+		return err
+	}
 	keyPath := identityPath(configPath)
 	if _, err := os.Stat(configPath); err == nil {
 		return fmt.Errorf("%s already exists; refusing to overwrite", configPath)
@@ -351,15 +414,24 @@ func cmdInit(configPath string, stdout io.Writer) error {
 	if _, err := rand.Read(psk); err != nil {
 		return err
 	}
-	token := make([]byte, identity.KeySize)
-	if _, err := rand.Read(token); err != nil {
-		return err
-	}
 
-	if err := identity.Save(keyPath, id); err != nil {
-		return err
-	}
+	// Identity is written below, under the configstore lock, together
+	// with the config (Step 3) — not here, where a racing init could
+	// interleave its key with this init's config.
+	// Step 8: a dev init no longer writes the legacy [api] listen +
+	// token block. The dev daemon is controlled over the kernel
+	// transport (Unix socket / Windows pipe) like the service
+	// daemon, so no bearer token exists to leak or to gate secret
+	// endpoints off (plan §8.2). Existing dev configs with
+	// listen+token keep working through clientFor's TCP fallback.
 	hostname := defaultName()
+	socket, pipe := devControlTransport(configPath)
+	apiBlock := ""
+	if socket != "" {
+		apiBlock = fmt.Sprintf("\nsocket = %q\n", socket)
+	} else {
+		apiBlock = fmt.Sprintf("\npipe = %q\n", pipe)
+	}
 	cfgText := fmt.Sprintf(`# Skein configuration. Edit overlay addresses before starting.
 [node]
 name                = %q
@@ -371,34 +443,37 @@ network_secret      = %q
 mtu                 = 1280
 interface           = %q
 
-[api]
-listen = "127.0.0.1:11011"
-token  = %q
-
+[api]%s
 [discovery]
 mdns = true
-`, hostname, base64.RawURLEncoding.EncodeToString(psk), conf.DefaultInterface(), base64.RawURLEncoding.EncodeToString(token))
+`, hostname, base64.RawURLEncoding.EncodeToString(psk), conf.DefaultInterface(), apiBlock)
 
-	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Step 3: identity + config go through configstore under one held
+	// lock, so two racing inits cannot interleave a key with the other
+	// init's config. WriteText validates the generated text and keeps
+	// its header comment byte-for-byte (Render would drop it).
+	store, err := configstore.Open(configPath)
 	if err != nil {
-		os.Remove(keyPath)
 		return err
 	}
-	if _, err := f.WriteString(cfgText); err != nil {
-		f.Close()
-		os.Remove(keyPath)
-		os.Remove(configPath)
+	defer store.Close()
+	if err := store.Lock(); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
+	writeErr := func() error {
+		if err := store.WriteIdentity(keyPath, id); err != nil {
+			return err
+		}
+		return store.WriteText([]byte(cfgText), true)
+	}()
+	unlockErr := store.Unlock()
+	if writeErr != nil {
 		os.Remove(keyPath)
 		os.Remove(configPath)
-		return err
+		return writeErr
 	}
-	if err := fileperm.Restrict(configPath); err != nil {
-		os.Remove(keyPath)
-		os.Remove(configPath)
-		return err
+	if unlockErr != nil {
+		return unlockErr
 	}
 	_ = fileperm.ChownToSudoUser(configPath)
 	_ = fileperm.ChownToSudoUser(keyPath)
@@ -419,7 +494,6 @@ mdns = true
 	joinCfg := conf.Default()
 	joinCfg.Node.NetworkSecret = psk
 	joinCfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
-	joinCfg.API.Token = token
 	join, err := encodeJoin(joinCfg, id, cands)
 	if err != nil {
 		return err
@@ -470,11 +544,17 @@ func cmdName(configPath string, args []string, stdout io.Writer) error {
 	if err := conf.Validate(cfg); err != nil {
 		return err
 	}
-	text, err := conf.Render(cfg)
+	if err := rejectSystemConfigWrite(configPath); err != nil {
+		return err
+	}
+	// Step 3: the fallback write (daemon unreachable) goes through
+	// configstore, under its brief lock — never a direct file write.
+	store, err := configstore.Open(configPath)
 	if err != nil {
 		return err
 	}
-	if err := writeConfigAtomic(configPath, text); err != nil {
+	defer store.Close()
+	if err := store.Write(cfg); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "name set to %q; start or restart the daemon to advertise it\n", name)
@@ -491,9 +571,18 @@ func cmdGenkey(configPath string, stdout io.Writer) error {
 		if id, err = identity.Generate(); err != nil {
 			return err
 		}
-		if err := identity.Save(keyPath, id); err != nil {
+		// Step 3: key creation goes through configstore too, so a
+		// genkey beside a running daemon fails locked instead of
+		// planting a key the next restart would silently adopt.
+		genStore, err := configstore.Open(configPath)
+		if err != nil {
 			return err
 		}
+		if err := genStore.WriteIdentity(keyPath, id); err != nil {
+			genStore.Close()
+			return err
+		}
+		genStore.Close()
 	} else if err != nil {
 		return err
 	}
@@ -609,6 +698,9 @@ func dedupeOverlays(addrs []netip.Addr, prefix netip.Prefix) []netip.Addr {
 // cmdJoin configures this node from a network invite: secret, overlay address,
 // and the inviter as a dialer peer.
 func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
+	if err := rejectSystemConfigWrite(configPath); err != nil {
+		return err
+	}
 	if daemonActive() {
 		return errors.New("the daemon is running and owns the config; stop it first (systemctl stop skein / Stop-Service skein)")
 	}
@@ -639,9 +731,17 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := identity.Save(keyPath, fresh); err != nil {
+		// Step 3: the fresh identity goes through configstore (same
+		// lock, same atomic pattern as the config written below).
+		joinStore, err := configstore.Open(configPath)
+		if err != nil {
 			return err
 		}
+		if err := joinStore.WriteIdentity(keyPath, fresh); err != nil {
+			joinStore.Close()
+			return err
+		}
+		joinStore.Close()
 		_ = fileperm.ChownToSudoUser(keyPath)
 	}
 	id, err := identity.Load(keyPath)
@@ -671,13 +771,8 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 		}
 		cfg.Node.OverlayIPv4 = addr
 	}
-	if len(cfg.API.Token) != 32 {
-		token := make([]byte, 32)
-		if _, err := rand.Read(token); err != nil {
-			return err
-		}
-		cfg.API.Token = token
-	}
+	// Step 8: a dev join uses the kernel control transport, not the
+	// legacy listen+token block (see devControlTransport).
 
 	inviter := conf.Peer{ID: inv.ID, PublicKey: inv.PublicKey, Addrs: inv.Addrs, Dialer: true}
 	merged := false
@@ -691,15 +786,27 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 	if !merged {
 		cfg.Peers = append(cfg.Peers, inviter)
 	}
+	// Step 8: dev transport for the joined config (kernel transport,
+	// no legacy listen+token block).
+	cfg.API.Listen = ""
+	cfg.API.Token = nil
+	cfg.API.Socket, cfg.API.Pipe = devControlTransport(configPath)
 	if err := conf.Validate(cfg); err != nil {
 		return err
 	}
 
-	text, err := conf.Render(cfg)
+	if err := conf.Validate(cfg); err != nil {
+		return err
+	}
+	// Step 3: the join write goes through configstore, under its brief
+	// lock. The Validate above mirrors what Render did; store.Write
+	// validates again before rendering.
+	joinCfgStore, err := configstore.Open(configPath)
 	if err != nil {
 		return err
 	}
-	if err := writeConfigAtomic(configPath, text); err != nil {
+	defer joinCfgStore.Close()
+	if err := joinCfgStore.Write(cfg); err != nil {
 		return err
 	}
 	_ = fileperm.ChownToSudoUser(keyPath)
@@ -803,15 +910,11 @@ func cmdPeers(ctx context.Context, c *client, args []string, jsonOut bool, stdou
 			return err
 		}
 		return c.doBody(ctx, http.MethodPost, "/api/v1/peers", body)
+	// Step 12 (ADR-002): no removal case — peer removal is deleted.
+	// The old removal action is answered below with a pointer to
+	// `skein system leave`, the only departure path.
 	case "rm":
-		if len(args) != 2 {
-			return errors.New("usage: skein peers rm <peer-id>")
-		}
-		id, err := parsePeerID(args[1])
-		if err != nil {
-			return err
-		}
-		return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/peers/%016x", id))
+		return errors.New("peer removal is removed: a peer leaves itself with `skein system leave`")
 	default:
 		return fmt.Errorf("unknown peers action %q", action)
 	}
@@ -833,9 +936,23 @@ type client struct {
 	http   *http.Client
 }
 
+// expectedDaemonImage returns the daemon image path clients verify the
+// server against (Step 2). Empty means the default rule: the server
+// image basename must be skein/skeind (Unix) or skein.exe/skeind.exe
+// (Windows). M6 (F-04): in a release build SKEIN_DAEMON_IMAGE is
+// ignored — an attacker-controlled value could otherwise point
+// verification at a planted daemon image. It selects which image
+// to expect — it never disables verification.
+func expectedDaemonImage() string {
+	return securityEnv("SKEIN_DAEMON_IMAGE")
+}
+
 // clientFor picks the control transport the config declares: the Unix
 // socket or Windows pipe first (kernel-verified caller identity, no bearer
-// token), then the dev-only loopback TCP listener.
+// token), then the dev-only loopback TCP listener. Step 2: every control
+// dial verifies the daemon's server identity before any request is
+// written; a failed verification fails the dial with no unverified
+// fallback.
 func clientFor(cfg conf.Config, timeout time.Duration) *client {
 	c := &client{http: &http.Client{Timeout: timeout}}
 	switch {
@@ -844,7 +961,15 @@ func clientFor(cfg conf.Config, timeout time.Duration) *client {
 		d := net.Dialer{}
 		c.http.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return d.DialContext(ctx, "unix", c.socket)
+				conn, err := d.DialContext(ctx, "unix", c.socket)
+				if err != nil {
+					return nil, err
+				}
+				if _, _, err := api.VerifyUnixServer(conn, expectedDaemonImage()); err != nil {
+					conn.Close()
+					return nil, err
+				}
+				return conn, nil
 			},
 		}
 	case cfg.API.Pipe != "":
@@ -853,6 +978,10 @@ func clientFor(cfg conf.Config, timeout time.Duration) *client {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				conn, err := pipeconn.Dial(c.pipe)
 				if err != nil {
+					return nil, err
+				}
+				if err := verifyClientPipe(conn); err != nil {
+					conn.Close()
 					return nil, err
 				}
 				_ = conn.SetDeadline(time.Now().Add(timeout))
@@ -900,19 +1029,60 @@ func (c *client) doBody(ctx context.Context, method, path string, body []byte) e
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return classifiedAPIError(resp.StatusCode, msg)
 	}
 	return nil
 }
 
-// errDaemonUnreachable marks transport failures, as opposed to an API error.
-var errDaemonUnreachable = errors.New("daemon unreachable")
+// doBodyWithResult is doBody for endpoints whose JSON result the caller
+// needs (system reset/leave/rotate, bootstrap). Errors are classified
+// the same way as doBody, so 401/403/control-down stay distinct.
+func (c *client) doBodyWithResult(ctx context.Context, method, path string, body []byte, out any) error {
+	var reader io.Reader
+	if body != nil {
+		reader = strings.NewReader(string(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	if err != nil {
+		return err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return daemonContactError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return classifiedAPIError(resp.StatusCode, msg)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
+}
+
+// reachable reports whether a daemon answers on the local API.
+func (c *client) reachable(ctx context.Context) bool {
+	var st statusDTO
+	return c.get(ctx, "/api/v1/status", &st) == nil
+}
+
+// errDaemonUnreachable marks transport failures, as opposed to an API
+// error. It is a ctlerr DaemonDown error, so KindOf distinguishes it
+// from 401/403 API errors everywhere the CLI reports it.
+var errDaemonUnreachable = ctlerr.NewDown(errors.New("daemon unreachable"))
 
 // daemonContactError adds a start hint when the local API is not listening.
 func daemonContactError(err error) error {
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "actively refused") {
-		return fmt.Errorf("%w: contact the daemon: %w\n  the daemon is not running; start it with: sudo systemctl start skein (Linux) or Start-Service skein (Windows), or run `skein dashboard`", errDaemonUnreachable, err)
+		return fmt.Errorf("%w: contact the daemon: %w\n  the daemon is not running; start it with: sudo systemctl start skein (Linux) or Start-Service skein (Windows), or run `skein system start`", errDaemonUnreachable, err)
 	}
 	return fmt.Errorf("%w: contact the daemon: %w", errDaemonUnreachable, err)
 }
@@ -932,7 +1102,7 @@ func (c *client) get(ctx context.Context, path string, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return classifiedAPIError(resp.StatusCode, msg)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
 }
@@ -1105,7 +1275,14 @@ func reportSetupError(err error, cfg conf.Config, stdout io.Writer) error {
 }
 
 // cmdSetup opens the firewall for the underlay port and the overlay interface.
+// Step 8 audit: for a system install the firewall is daemon-managed, so
+// a local setup against the system config would duplicate the daemon's
+// rules — it is refused and pointed at the service instead. Dev-path
+// setup stays local (it is the only firewall path a dev daemon has).
 func cmdSetup(configPath string, remove bool, stdout io.Writer) error {
+	if filepath.Clean(configPath) == filepath.Clean(app.SystemConfigPath()) {
+		return fmt.Errorf("the system install's firewall is managed by the daemon; use the service (skein system start/stop) instead of `skein setup`")
+	}
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
@@ -1163,6 +1340,19 @@ func cmdReset(configPath string, purge, keepIdentity, force bool, stdout io.Writ
 		fmt.Fprintf(stdout, "reset: nothing to remove in %s\n", dir)
 		return nil
 	}
+	// Step 3: hold the config lock while moving/removing, so a daemon
+	// starting in the same moment cannot re-create what reset deletes.
+	// (daemonActive above already refuses when a daemon is detected;
+	// the lock is the enforcement for the case it misses.)
+	resetStore, err := configstore.Open(configPath)
+	if err != nil {
+		return err
+	}
+	defer resetStore.Close()
+	if err := resetStore.Lock(); err != nil {
+		return err
+	}
+	defer resetStore.Unlock()
 
 	if purge {
 		paths := []string{configPath, tmp}
@@ -1239,35 +1429,4 @@ func printRouteTable(routes []routeDTO, peers []peerDTO, w io.Writer) error {
 		fmt.Fprintf(w, "%-26s  %-34s  %-8s  %d\n", clip(dest, 26), clip(strings.Join(path, " → "), 34), fmt.Sprintf("%.1fms", r.CostMs), r.Hops)
 	}
 	return nil
-}
-
-// writeConfigAtomic writes text beside path and renames it into place, so an
-// interrupted write never leaves a truncated config.
-func writeConfigAtomic(path string, text []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(text); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := fileperm.Restrict(name); err != nil {
-		return err
-	}
-	_ = fileperm.ChownToSudoUser(name)
-	return os.Rename(name, path)
 }

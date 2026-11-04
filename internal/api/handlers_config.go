@@ -5,7 +5,7 @@ import "net/http"
 // patchConfig applies an allowlisted partial update. Strict decoding rejects
 // everything outside the allowlist (api.*, network secret, peers, prefixes).
 func (s *Server) patchConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.allowMutation() {
+	if !s.allowMutation(CallerFrom(r.Context()).ID()) {
 		writeError(w, r, http.StatusTooManyRequests, ErrCodeRateLimited, "too many changes at once", "wait a moment and retry", nil)
 		return
 	}

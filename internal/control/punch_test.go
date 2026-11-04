@@ -119,6 +119,84 @@ func TestPunchDeliveryTriggersADial(t *testing.T) {
 	}
 }
 
+// TestPunchDeliveryWithForgedNonceIsRejected is the M4 P5 (F-07)
+// regression test: a delivery whose nonce does not match the nonce this
+// node sent to that relay for that target must not trigger any dial. On
+// the old code the nonce was never compared to anything, so any mesh
+// member could make any other member emit handshake msg1s to an arbitrary
+// address by forging a delivery.
+func TestPunchDeliveryWithForgedNonceIsRejected(t *testing.T) {
+	ctl, eng, a, c := punchFixture(t)
+	ctl.maybePunch(c.ID, a.ID, time.Now())
+	frames := eng.frames(wire.Punch)
+	if len(frames) != 1 {
+		t.Fatalf("expected one punch request, got %d", len(frames))
+	}
+	req, err := decodePunch(frames[0].body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := netip.MustParseAddrPort("198.51.100.9:11010")
+	var forged [16]byte
+	forged[0] = req.Nonce[0] ^ 0xff
+	ctl.HandleControl(a.ID, netip.MustParseAddrPort("203.0.113.5:11010"), wire.Punch,
+		encodePunch(punchRequest{Target: c.ID, Nonce: forged, Addr: addr, HasAddr: true}))
+	eng.mu.Lock()
+	punched := append([]punchCall(nil), eng.punched...)
+	eng.mu.Unlock()
+	if len(punched) != 0 {
+		t.Fatalf("forged-nonce delivery triggered dials: %v", punched)
+	}
+	// The genuine delivery, with the nonce this node actually sent, works.
+	ctl.HandleControl(a.ID, netip.MustParseAddrPort("203.0.113.5:11010"), wire.Punch,
+		encodePunch(punchRequest{Target: c.ID, Nonce: req.Nonce, Addr: addr, HasAddr: true}))
+	eng.mu.Lock()
+	punched = append([]punchCall(nil), eng.punched...)
+	eng.mu.Unlock()
+	if len(punched) == 0 {
+		t.Fatal("genuine delivery triggered no dial")
+	}
+}
+
+// TestPunchDeliveryFromNonRelayIsRejected: without an outstanding request,
+// a delivery is only honoured from the peer that is actually the route
+// next hop to the target — not from any authenticated member.
+func TestPunchDeliveryFromNonRelayIsRejected(t *testing.T) {
+	ctl, eng, a, _ := punchFixture(t)
+	addr := netip.MustParseAddrPort("198.51.100.9:11010")
+	ctl.HandleControl(a.ID, netip.MustParseAddrPort("203.0.113.5:11010"), wire.Punch,
+		encodePunch(punchRequest{Target: 0x9999, Addr: addr, HasAddr: true}))
+	eng.mu.Lock()
+	punched := append([]punchCall(nil), eng.punched...)
+	eng.mu.Unlock()
+	if len(punched) != 0 {
+		t.Fatalf("non-relay delivery triggered dials: %v", punched)
+	}
+}
+
+// TestPunchDeliveryLoopbackIsRejected: a delivered endpoint that is
+// loopback (or link-local) is never dialed, even with a valid nonce.
+func TestPunchDeliveryLoopbackIsRejected(t *testing.T) {
+	ctl, eng, a, c := punchFixture(t)
+	ctl.maybePunch(c.ID, a.ID, time.Now())
+	frames := eng.frames(wire.Punch)
+	if len(frames) != 1 {
+		t.Fatalf("expected one punch request, got %d", len(frames))
+	}
+	req, err := decodePunch(frames[0].body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl.HandleControl(a.ID, netip.MustParseAddrPort("203.0.113.5:11010"), wire.Punch,
+		encodePunch(punchRequest{Target: c.ID, Nonce: req.Nonce, Addr: netip.MustParseAddrPort("127.0.0.1:11010"), HasAddr: true}))
+	eng.mu.Lock()
+	punched := append([]punchCall(nil), eng.punched...)
+	eng.mu.Unlock()
+	if len(punched) != 0 {
+		t.Fatalf("loopback delivery triggered dials: %v", punched)
+	}
+}
+
 func TestPunchRequestIsIgnoredWithoutAnObservedTarget(t *testing.T) {
 	ctl, eng, a, c := punchFixture(t)
 	ctl.HandleControl(a.ID, netip.MustParseAddrPort("203.0.113.5:11010"), wire.Ping, []byte("ping"))
@@ -136,9 +214,22 @@ func TestPunchDeliveryTriesEveryCandidate(t *testing.T) {
 	f.peers.AddCandidate(f.peerID, candA, peer.SourceState)
 	f.peers.AddCandidate(f.peerID, candB, peer.SourceState)
 
+	// M4 F-07: the delivery must come from the route next hop to the
+	// target, so make 0x1111 that relay (direct link + advertisement).
+	relay := uint64(0x1111)
+	if err := f.routes.UpdateDirect(route.DirectLink{PeerID: relay, RTT: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.routes.MergeAdvertisement(relay, route.Advertisement{
+		Destination: f.peerID, Cost: time.Millisecond, Hops: 1,
+		Path: []uint64{relay, f.peerID}, Seq: 1, Expires: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	observed := netip.MustParseAddrPort("203.0.113.9:40000")
 	payload := encodePunch(punchRequest{Target: f.peerID, Addr: observed, HasAddr: true})
-	f.ctl.HandleControl(0x1111, netip.MustParseAddrPort("192.0.2.9:11010"), wire.Punch, payload)
+	f.ctl.HandleControl(relay, netip.MustParseAddrPort("192.0.2.9:11010"), wire.Punch, payload)
 
 	f.eng.mu.Lock()
 	punched := append([]punchCall(nil), f.eng.punched...)

@@ -82,6 +82,10 @@ type ConfigView struct {
 	ConfigPath        string   `json:"config_path,omitempty"`
 	Protocol          int      `json:"protocol"`
 	Peers             []string `json:"peers"`
+	// Departed is the ADR-002 leave flag (Step 7): true means this
+	// node left its network and will not rejoin until a fresh
+	// invite clears it.
+	Departed bool `json:"departed,omitempty"`
 	// Secrets are always reported as redacted.
 	NetworkSecret string `json:"network_secret"`
 	APIToken      string `json:"api_token"`

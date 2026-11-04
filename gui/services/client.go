@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -72,7 +71,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		if e.Message == "" {
 			e.Message = resp.Status
 		}
-		return &APIError{Code: e.Code, Message: e.Message, Remediation: e.Remediation}
+		// Step 8: keep the HTTP status on the error so callers can
+		// classify 401/403/423 distinctly (see errors.go) instead of
+		// collapsing them into one "failed" toast.
+		return &APIError{Code: e.Code, Status: resp.StatusCode, Message: e.Message, Remediation: e.Remediation}
 	}
 	if out == nil {
 		return nil
@@ -98,8 +100,11 @@ func (c *Client) stream(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
 // APIError is a daemon error with a stable code and remediation.
+// Status is the HTTP status (0 only when the error was constructed
+// locally, never from a daemon response); Kind() classifies it.
 type APIError struct {
 	Code        string
+	Status      int
 	Message     string
 	Remediation string
 }
@@ -111,8 +116,27 @@ func (e *APIError) Error() string {
 	return e.Message
 }
 
+// expectedDaemonImage returns the daemon image path clients verify the
+// server against (Step 2). Empty means the default rule: the server
+// image basename must be skein/skeind (Unix) or skein.exe/skeind.exe
+// (Windows). M6 (F-04): in a release build the SKEIN_DAEMON_IMAGE
+// variable is ignored — an attacker-controlled value could otherwise
+// point verification at a planted daemon image. A dev build
+// (-tags skeindev) may set it, and tests use daemonImageOverride;
+// it selects which image to expect, never to skip verification.
+func expectedDaemonImage() string {
+	if daemonImageOverride != "" {
+		return daemonImageOverride
+	}
+	return securityEnv("SKEIN_DAEMON_IMAGE")
+}
+
 func controlSocketPath() string {
-	if p := os.Getenv("SKEIN_CONTROL_SOCKET"); p != "" {
+	if controlSocketOverride != "" {
+		return controlSocketOverride
+	}
+	// M6 (F-04): release builds ignore SKEIN_CONTROL_SOCKET.
+	if p := securityEnv("SKEIN_CONTROL_SOCKET"); p != "" {
 		return p
 	}
 	return "/run/skein/control.sock"
@@ -121,7 +145,11 @@ func controlSocketPath() string {
 var _ = controlPipeName
 
 func controlPipeName() string {
-	if p := os.Getenv("SKEIN_CONTROL_PIPE"); p != "" {
+	if controlPipeOverride != "" {
+		return controlPipeOverride
+	}
+	// M6 (F-04): release builds ignore SKEIN_CONTROL_PIPE.
+	if p := securityEnv("SKEIN_CONTROL_PIPE"); p != "" {
 		return p
 	}
 	return `\\.\pipe\skein-control`

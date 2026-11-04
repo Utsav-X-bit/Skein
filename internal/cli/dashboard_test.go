@@ -180,18 +180,21 @@ func TestDashboardPlaceholdersWithoutData(t *testing.T) {
 	}
 }
 
-func TestDashboardShowsRecoveryHint(t *testing.T) {
+func TestDashboardShowsDisconnectBanner(t *testing.T) {
+	// Step 9: the spawn path and its recoverErr hint are gone. A
+	// disconnected dashboard shows only the disconnect banner
+	// (fetchErr + age); it must not resurrect a recovery hint
+	// that names an elevation flow that no longer exists.
 	d := testDashboard()
 	v := view{
-		err:        errors.New("connection refused"),
-		recoverErr: errors.New("the daemon is not running and starting it needs Administrator:\n  run an elevated prompt"),
+		err: errors.New("connection refused"),
 	}
 	out := strings.Join(d.build(v, 110), "\n")
 	if !strings.Contains(out, "disconnected from daemon") {
 		t.Fatalf("missing disconnect banner:\n%s", out)
 	}
-	if !strings.Contains(out, "needs Administrator") {
-		t.Fatalf("missing recovery hint:\n%s", out)
+	if strings.Contains(out, "needs Administrator") {
+		t.Fatalf("recovery hint resurrected:\n%s", out)
 	}
 }
 

@@ -63,6 +63,13 @@ type Node struct {
 	// PublicAddr is the address peers should dial when this node is reachable
 	// through a router port forward rather than on an interface address.
 	PublicAddr netip.AddrPort
+	// Departed is the ADR-002 leave tombstone, persisted in config so a
+	// restart does not silently rejoin: true means this node left its
+	// network itself (leave endpoint) and must not start its dataplane
+	// until it rejoins with a fresh invite (system join clears it) or
+	// is reset. It is NOT a ban and it does not revoke the credential:
+	// a departed node still holds its network secret until rotation.
+	Departed bool
 }
 
 // API describes the local control transports. Socket (Unix) or Pipe
@@ -106,6 +113,7 @@ type fileConfig struct {
 		Interface         string `toml:"interface"`
 		Name              string `toml:"name"`
 		PublicAddr        string `toml:"public_addr"`
+		Departed          *bool  `toml:"departed"`
 	} `toml:"node"`
 	API struct {
 		Listen string `toml:"listen"`
@@ -261,6 +269,9 @@ func Render(cfg Config) ([]byte, error) {
 	}
 	if cfg.Node.PublicAddr.IsValid() {
 		fmt.Fprintf(&b, "public_addr         = %q\n", cfg.Node.PublicAddr.String())
+	}
+	if cfg.Node.Departed {
+		b.WriteString("departed              = true\n")
 	}
 	b.WriteString("\n[api]\n")
 	if cfg.API.Socket != "" {
@@ -421,6 +432,9 @@ func parse(text string) (Config, error) {
 			return Config{}, fmt.Errorf("node.public_addr: %w", err)
 		}
 		cfg.Node.PublicAddr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	}
+	if fc.Node.Departed != nil {
+		cfg.Node.Departed = *fc.Node.Departed
 	}
 	if s := fc.Node.NetworkSecret; s != "" {
 		if cfg.Node.NetworkSecret, err = decodeSecret("node.network_secret", s); err != nil {

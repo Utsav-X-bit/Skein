@@ -11,11 +11,10 @@ import (
 )
 
 // defaultHelperPath prefers the helper shipped beside the desktop binary,
-// then the installed Program Files location.
+// then the installed Program Files location. M6 (F-04): it no longer
+// reads SKEIN_HELPER — callers must go through helperPath(), which
+// ignores that variable in release builds.
 func defaultHelperPath() string {
-	if p := os.Getenv("SKEIN_HELPER"); p != "" {
-		return p
-	}
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), "skein-helper.exe")
 		if _, err := os.Stat(p); err == nil {

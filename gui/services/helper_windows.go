@@ -9,7 +9,9 @@ import (
 	"fmt"
 )
 
-func runHelper(ctx context.Context, verb string, args ...string) error {
+// runHelper is a variable (not a func) so service-layer tests can
+// substitute a fake helper without UAC; see helper.go.
+var runHelper = func(ctx context.Context, verb string, args ...string) error {
 	raw, runErr := runHelperJSON(ctx, verb, nil, args...)
 	var env struct {
 		OK          bool   `json:"ok"`

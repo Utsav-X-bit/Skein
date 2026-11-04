@@ -23,15 +23,21 @@ const (
 	// Version 2 adds an optional human-readable name per peer record; version 3
 	// adds the peer's self-certifying public key so a mesh can form without
 	// every pair exchanging invites.
-	Version       = 4
-	minVersion    = 1
-	MaxPeers      = 5
-	MaxCandidates = 8
-	MaxRoutes     = 8
-	MaxActivity   = 8
-	MaxPath       = route.MaxHops
-	headerSize    = 1 + 8 + 8 + 4
-	maxStateBytes = 1400 - 54
+	Version = 4
+	// VersionDeparted (M4 P8) adds a departed-peer section. It is written
+	// only when a tombstone is actually being carried, so ordinary gossip
+	// stays at version 4 and pre-M4 nodes keep accepting it; a version 5
+	// STATE is rejected by pre-M4 decoders, which is the bounded cost
+	// of a leave announcement during a mixed-version rollout.
+	VersionDeparted = 5
+	minVersion      = 1
+	MaxPeers        = 5
+	MaxCandidates   = 8
+	MaxRoutes       = 8
+	MaxActivity     = 8
+	MaxPath         = route.MaxHops
+	headerSize      = 1 + 8 + 8 + 4
+	maxStateBytes   = 1400 - 54
 )
 
 // PeerRecord describes one node in a STATE payload.
@@ -60,10 +66,21 @@ type State struct {
 	Peers    []PeerRecord
 	Routes   []RouteRecord
 	Activity []activity.Record
+	// Departed lists peer IDs that have gracefully left the mesh (M4 P8,
+	// ADR-002). A departure announced by the departed peer itself
+	// (Origin == ID) is trusted immediately; a re-gossiped departure
+	// (Origin != ID) needs corroboration at the control layer. Departed
+	// is a tombstone, not a ban: the leaver still holds its credential
+	// until rotation, and rejoin requires a fresh invite.
+	Departed []uint64
 }
 
 // Encode serializes a bounded STATE payload.
 func Encode(s State) ([]byte, error) {
+	version := byte(Version)
+	if len(s.Departed) > 0 {
+		version = VersionDeparted
+	}
 	if s.Origin == 0 {
 		return nil, errors.New("discovery: origin must not be zero")
 	}
@@ -78,7 +95,7 @@ func Encode(s State) ([]byte, error) {
 	}
 
 	buf := make([]byte, 0, 256)
-	buf = append(buf, Version)
+	buf = append(buf, version)
 	buf = binary.BigEndian.AppendUint64(buf, s.Origin)
 	buf = binary.BigEndian.AppendUint64(buf, s.Seq)
 	ttl := time.Until(s.Expires)
@@ -185,6 +202,18 @@ func Encode(s State) ([]byte, error) {
 			buf = binary.BigEndian.AppendUint64(buf, id)
 		}
 	}
+	if version == VersionDeparted {
+		if len(s.Departed) > MaxPeers {
+			return nil, fmt.Errorf("discovery: %d departed peers exceeds %d", len(s.Departed), MaxPeers)
+		}
+		buf = append(buf, byte(len(s.Departed)))
+		for _, id := range s.Departed {
+			if id == 0 {
+				return nil, errors.New("discovery: departed peer ID must not be zero")
+			}
+			buf = binary.BigEndian.AppendUint64(buf, id)
+		}
+	}
 	if len(buf) > maxStateBytes {
 		return nil, fmt.Errorf("discovery: state is %d bytes, maximum is %d", len(buf), maxStateBytes)
 	}
@@ -197,7 +226,7 @@ func Decode(payload []byte) (State, error) {
 		return State{}, errors.New("discovery: state is truncated")
 	}
 	version := payload[0]
-	if version < minVersion || version > Version {
+	if version < minVersion || version > VersionDeparted {
 		return State{}, fmt.Errorf("discovery: unsupported state version %d", version)
 	}
 	off := 1
@@ -366,6 +395,24 @@ func Decode(payload []byte) (State, error) {
 			s.Activity = append(s.Activity, rec)
 		}
 	}
+	if version >= VersionDeparted {
+		if off >= len(payload) {
+			return State{}, errors.New("discovery: missing departed count")
+		}
+		count := int(payload[off])
+		off++
+		if count > MaxPeers || off+8*count > len(payload) {
+			return State{}, errors.New("discovery: invalid departed section")
+		}
+		for range count {
+			id := binary.BigEndian.Uint64(payload[off : off+8])
+			off += 8
+			if id == 0 {
+				return State{}, errors.New("discovery: departed peer ID is zero")
+			}
+			s.Departed = append(s.Departed, id)
+		}
+	}
 	if off != len(payload) {
 		return State{}, errors.New("discovery: trailing bytes in state")
 	}
@@ -377,6 +424,13 @@ func Decode(payload []byte) (State, error) {
 // by hop count and peer ID, and the payload is trimmed to fit one frame while
 // preserving the local record.
 func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, seq uint64, ttl time.Duration, now time.Time) (State, error) {
+	return BuildWithDeparted(peers, routes, records, nil, seq, ttl, now)
+}
+
+// BuildWithDeparted is Build plus the tombstones to gossip (M4 P8).
+// Departures are trimmed last: a tombstone is small (9 bytes) and losing
+// one silently would resurrect a departed peer's routes on recipients.
+func BuildWithDeparted(peers []PeerRecord, routes []RouteRecord, records []activity.Record, departed []uint64, seq uint64, ttl time.Duration, now time.Time) (State, error) {
 	if len(peers) == 0 {
 		return State{}, errors.New("discovery: at least the local peer record is required")
 	}
@@ -388,6 +442,7 @@ func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, 
 		Peers:    append([]PeerRecord(nil), peers...),
 		Routes:   append([]RouteRecord(nil), routes...),
 		Activity: append([]activity.Record(nil), records...),
+		Departed: append([]uint64(nil), departed...),
 	}
 	sortRoutes(s.Routes)
 	// The peer count is a hard limit; trim it before sacrificing routes so a
@@ -399,9 +454,16 @@ func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, 
 		if _, err := Encode(s); err == nil {
 			return s, nil
 		}
-		// Telemetry is least valuable, then routes, then peer hints.
+		// Telemetry is least valuable, then over-cap candidates, then
+		// routes, then peer hints. Candidates were the missing stage
+		// (M4 F-02): a host with >8 addresses previously produced no
+		// STATE at all, because Encode errors on >MaxCandidates and
+		// nothing ever trimmed them.
 		if len(s.Activity) > 0 {
 			s.Activity = s.Activity[:len(s.Activity)-1]
+			continue
+		}
+		if trimCandidates(&s) {
 			continue
 		}
 		if len(s.Routes) > 0 {
@@ -414,6 +476,67 @@ func Build(peers []PeerRecord, routes []RouteRecord, records []activity.Record, 
 		}
 		return State{}, errors.New("discovery: local record alone exceeds the state size limit")
 	}
+}
+
+// candidateRank orders endpoints for trimming: a public (global, non-private)
+// address is the one a remote peer can actually dial, so it survives ahead
+// of LAN addresses, which survive ahead of link-local/loopback. Invalid
+// endpoints (unspecified, multicast, port 0) are dropped outright — they
+// could never be dialed and Encode would reject the whole STATE for them.
+func candidateRank(c netip.AddrPort) int {
+	if !c.IsValid() || c.Port() == 0 || c.Addr().IsUnspecified() || c.Addr().IsMulticast() {
+		return 99
+	}
+	a := c.Addr()
+	if a.IsLoopback() || a.IsLinkLocalUnicast() {
+		return 2
+	}
+	if a.IsPrivate() {
+		return 1
+	}
+	return 0
+}
+
+// trimCandidates dedupes every peer record's candidates, drops invalid ones,
+// and caps each record at MaxCandidates, trimming hint peers before the
+// local record (peers[0]). It reports whether it changed anything.
+func trimCandidates(s *State) bool {
+	changed := false
+	// Hint peers first, local record last: the local record is the one
+	// every recipient needs most.
+	for idx := len(s.Peers) - 1; idx >= 0; idx-- {
+		rec := &s.Peers[idx]
+		seen := make(map[netip.AddrPort]bool, len(rec.Candidates))
+		kept := rec.Candidates[:0]
+		for _, c := range rec.Candidates {
+			c = netip.AddrPortFrom(c.Addr().Unmap(), c.Port())
+			if candidateRank(c) == 99 || seen[c] {
+				changed = true
+				continue
+			}
+			seen[c] = true
+			kept = append(kept, c)
+		}
+		rec.Candidates = kept
+		// Stable sort by rank, then address, so trimming is deterministic
+		// and a public candidate is never the one dropped for a LAN one.
+		for i := 1; i < len(rec.Candidates); i++ {
+			for j := i; j > 0; j-- {
+				a, b := rec.Candidates[j], rec.Candidates[j-1]
+				if candidateRank(a) < candidateRank(b) ||
+					(candidateRank(a) == candidateRank(b) && a.String() < b.String()) {
+					rec.Candidates[j], rec.Candidates[j-1] = b, a
+					continue
+				}
+				break
+			}
+		}
+		if len(rec.Candidates) > MaxCandidates {
+			rec.Candidates = rec.Candidates[:MaxCandidates]
+			changed = true
+		}
+	}
+	return changed
 }
 
 func sortRoutes(routes []RouteRecord) {
@@ -448,6 +571,10 @@ type Merger struct {
 	// (its hash is the peer ID), so a member cannot impersonate another ID.
 	OnPeer     func(id uint64, publicKey []byte) error
 	OnActivity func(origin, seq uint64, records []activity.Record, expires time.Time)
+	// OnDeparted reports tombstones carried by a STATE (M4 P8). The
+	// control layer decides trust (self-announced vs corroborated);
+	// the merger only delivers them, in STATE order.
+	OnDeparted func(origin, seq uint64, departed []uint64, expires time.Time)
 
 	localV4 netip.Addr
 	localV6 netip.Addr
@@ -547,7 +674,9 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 		}
 	}
 
+	present := make(map[uint64]bool, len(s.Routes))
 	for _, rec := range s.Routes {
+		present[rec.Destination] = true
 		if rec.Destination == m.LocalID {
 			continue
 		}
@@ -566,6 +695,9 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 			continue
 		}
 	}
+	// Snapshot reconciliation (M4 F-08): routes this origin advertised
+	// before but omits now are withdrawn, promptly.
+	m.Routes.ReconcileOrigin(from, s.Seq, present)
 	if m.OnActivity != nil && len(s.Activity) > 0 {
 		records := make([]activity.Record, len(s.Activity))
 		copy(records, s.Activity)
@@ -573,6 +705,9 @@ func (m *Merger) Merge(from uint64, payload []byte) error {
 			records[i].Path = append([]uint64(nil), records[i].Path...)
 		}
 		m.OnActivity(s.Origin, s.Seq, records, s.Expires)
+	}
+	if m.OnDeparted != nil && len(s.Departed) > 0 {
+		m.OnDeparted(s.Origin, s.Seq, append([]uint64(nil), s.Departed...), s.Expires)
 	}
 	return nil
 }

@@ -5,7 +5,7 @@ import "net/http"
 // postProbe starts an async path probe. The response reports pending
 // immediately; the result arrives as a peer:probe event.
 func (s *Server) postProbe(w http.ResponseWriter, r *http.Request) {
-	if !s.allowMutation() {
+	if !s.allowMutation(CallerFrom(r.Context()).ID()) {
 		writeError(w, r, http.StatusTooManyRequests, ErrCodeRateLimited, "too many changes at once", "wait a moment and retry", nil)
 		return
 	}

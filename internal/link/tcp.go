@@ -148,6 +148,47 @@ func (t *TCP) HasConn(addr netip.AddrPort) bool {
 	return ok
 }
 
+// SendToIP writes one framed payload over the connection from addr's IP,
+// when exactly one such connection exists. This is the TCP-relay /
+// accept-side path: an accepted connection is keyed by the peer's ephemeral
+// port, but a sender addressing the peer's listen port must still reach it
+// over that stream when UDP is blocked. With zero or several connections
+// for the IP the call fails rather than guessing a peer behind shared NAT.
+func (t *TCP) SendToIP(addr netip.AddrPort, payload []byte) error {
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	t.mu.Lock()
+	var found *tcpConn
+	var foundAddr netip.AddrPort
+	for a, c := range t.conns {
+		if a.Addr() == addr.Addr() {
+			if found != nil {
+				t.mu.Unlock()
+				return fmt.Errorf("link: ambiguous TCP connection for %s", addr.Addr())
+			}
+			found, foundAddr = c, a
+		}
+	}
+	t.mu.Unlock()
+	if found == nil {
+		return fmt.Errorf("link: no TCP connection from %s", addr.Addr())
+	}
+	return t.Send(foundAddr, payload)
+}
+
+// HasConnForIP reports whether exactly one connection exists from addr's IP.
+func (t *TCP) HasConnForIP(addr netip.AddrPort) bool {
+	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	count := 0
+	for a := range t.conns {
+		if a.Addr() == addr.Addr() {
+			count++
+		}
+	}
+	return count == 1
+}
+
 // Send writes one framed payload to addr.
 func (t *TCP) Send(addr netip.AddrPort, payload []byte) error {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())

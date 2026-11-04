@@ -122,9 +122,10 @@ func TestConfigPatchAllowlist(t *testing.T) {
 	// Unknown fields (api.*, network_secret, peers, ...) are rejected by the
 	// strict decoder, so a patch can only touch the allowlist.
 	srv, gui, _ := newTestServerGUI(t)
+	grantTestUser(srv, 1000, RoleMutate)
 	h := srv.Handler()
 
-	rec := do(t, h, http.MethodPatch, "/api/v1/config", `{"name":"box","network_secret":"abc"}`, nil)
+	rec := doKernel(t, h, http.MethodPatch, "/api/v1/config", `{"name":"box","network_secret":"abc"}`, nil, 1000)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field code = %d body=%s", rec.Code, rec.Body)
 	}
@@ -139,7 +140,7 @@ func TestConfigPatchAllowlist(t *testing.T) {
 		t.Fatalf("rejected patch was applied: %+v", gui.patched)
 	}
 
-	rec = do(t, h, http.MethodPatch, "/api/v1/config", `{"listen_port":1234}`, nil)
+	rec = doKernel(t, h, http.MethodPatch, "/api/v1/config", `{"listen_port":1234}`, nil, 1000)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("patch code = %d body=%s", rec.Code, rec.Body)
 	}
@@ -154,9 +155,10 @@ func TestConfigPatchAllowlist(t *testing.T) {
 
 func TestConnectionAndInvites(t *testing.T) {
 	srv, _, _ := newTestServerGUI(t)
+	grantTestUser(srv, 1000, RoleSecret)
 	h := srv.Handler()
 
-	rec := do(t, h, http.MethodPost, "/api/v1/connection", `{"action":"disconnect"}`, nil)
+	rec := doKernel(t, h, http.MethodPost, "/api/v1/connection", `{"action":"disconnect"}`, nil, 1000)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connection code = %d", rec.Code)
 	}
@@ -168,12 +170,12 @@ func TestConnectionAndInvites(t *testing.T) {
 		t.Fatalf("connection = %+v", conn)
 	}
 
-	if rec := do(t, h, http.MethodPost, "/api/v1/connection", `{"action":"warp"}`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/connection", `{"action":"warp"}`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad action code = %d", rec.Code)
 	}
 
 	for path, kind := range map[string]string{"/api/v1/invites/peer": "peer", "/api/v1/invites/network": "network"} {
-		rec := do(t, h, http.MethodPost, path, "", nil)
+		rec := doKernel(t, h, http.MethodPost, path, "", nil, 1000)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s code = %d", path, rec.Code)
 		}
@@ -212,9 +214,10 @@ func TestLogsPage(t *testing.T) {
 
 func TestProbeReportsPending(t *testing.T) {
 	srv, gui, _ := newTestServerGUI(t)
+	grantTestUser(srv, 1000, RoleMutate)
 	h := srv.Handler()
 
-	rec := do(t, h, http.MethodPost, "/api/v1/peers/0123456789abcdef/probe", "", nil)
+	rec := doKernel(t, h, http.MethodPost, "/api/v1/peers/0123456789abcdef/probe", "", nil, 1000)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("probe code = %d body=%s", rec.Code, rec.Body)
 	}

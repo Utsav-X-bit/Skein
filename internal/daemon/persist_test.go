@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/configstore"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 )
@@ -105,4 +107,63 @@ func TestStalePeerPredicate(t *testing.T) {
 	if stalePeer(peer.Peer{State: peer.StateDown, Added: now}, now, 15*time.Minute) {
 		t.Fatal("a fresh peer is stale")
 	}
+}
+
+// TestDaemonHoldsConfigLockForLifetime (Step 3) proves the daemon is
+// the single writer: a second daemon for the same config path fails at
+// New with ErrLocked, the first daemon's persist writes through the
+// store, and closing the first daemon releases the lock so a third
+// daemon can start.
+func TestDaemonHoldsConfigLockForLifetime(t *testing.T) {
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfgPath := dir + "/skein.toml"
+	cfg := conf.Default()
+	cfg.Path = cfgPath
+	cfg.Node.Name = "locktest"
+	cfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.1")
+	cfg.Node.NetworkSecret = make([]byte, 32)
+	cfg.API.Token = make([]byte, 32)
+	cfg.API.Listen = ""
+	cfg.API.Socket = dir + "/control.sock"
+	// MDNS must stay on: with zero peers and MDNS off, Render refuses
+	// the config (pre-existing validation), so persist would write
+	// nothing — and this test is about the write path, not that rule.
+	cfg.Discovery.MDNS = true
+	cfg.Discovery.STUN = false
+
+	d1, err := New(cfg, id)
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	if _, err := New(cfg, id); err == nil {
+		t.Fatal("second New = nil, want ErrLocked (daemon holds the config lock)")
+	} else if !configstore.IsLocked(err) {
+		// New wraps the lock error; accept either the typed error or
+		// its message, but never a silent success.
+		if !strings.Contains(err.Error(), "locked") {
+			t.Fatalf("second New = %v, want ErrLocked", err)
+		}
+	}
+
+	d1.persistPeers()
+	loaded, err := conf.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("persisted config does not load: %v", err)
+	}
+	if loaded.Node.Name != cfg.Node.Name {
+		t.Fatalf("persisted name = %q, want %q", loaded.Node.Name, cfg.Node.Name)
+	}
+
+	if err := d1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	d3, err := New(cfg, id)
+	if err != nil {
+		t.Fatalf("New after Close = %v, want success (lock released)", err)
+	}
+	_ = d3.Close()
 }

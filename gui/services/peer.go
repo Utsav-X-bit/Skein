@@ -28,12 +28,21 @@ func (s *PeerService) Add(ctx context.Context, req api.AddPeerRequest) error {
 	return c.do(ctx, "POST", "/api/v1/peers", req, nil)
 }
 
-func (s *PeerService) Remove(ctx context.Context, peerID string) error {
+// LeaveNetwork leaves this node's own network (ADR-002, Step 7
+// endpoint). It is the only peer-departure action: Step 12 deleted
+// the GUI peer-removal method with the DELETE endpoint — no peer
+// removes another peer. Propagated is the source of truth — until M4 lands
+// leave-announcement gossip it is false, and the caller must say
+// so rather than claim a mesh-wide leave.
+// (The frontend wires it when bindings regenerate.)
+func (s *PeerService) LeaveNetwork(ctx context.Context) (api.LeaveResult, error) {
 	c, err := ControlClient()
 	if err != nil {
-		return err
+		return api.LeaveResult{}, err
 	}
-	return c.do(ctx, "DELETE", fmt.Sprintf("/api/v1/peers/%s", peerID), nil, nil)
+	var out api.LeaveResult
+	err = c.do(ctx, "POST", "/api/v1/system/leave", map[string]bool{"confirm": true}, &out)
+	return out, err
 }
 
 func (s *PeerService) Probe(ctx context.Context, peerID string) (api.ProbeResult, error) {

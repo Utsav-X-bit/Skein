@@ -44,8 +44,18 @@ func Stop() error { return stop() }
 // Restart restarts the service. It needs elevation (helper verbs).
 func Restart() error { return restart() }
 
-// Install registers the daemon as a system service.
-func Install(executable, configPath string) error { return install(executable, configPath) }
+// Install registers the daemon as a system service. Step 6: the
+// candidate is validated (skeind only, regular non-symlink file,
+// non-world-writable parent) before any registration write, so a
+// direct caller cannot bypass RegisterDaemon's validation. Prefer
+// RegisterDaemon for installs/upgrades: it adds stop-first,
+// backups, and restore-on-failure around Install/Rewrite.
+func Install(executable, configPath string) error {
+	if err := ValidateDaemonPath(executable); err != nil {
+		return err
+	}
+	return install(executable, configPath)
+}
 
 // Uninstall removes the service registration.
 func Uninstall() error { return uninstall() }
@@ -56,5 +66,12 @@ func Installed() (executable, configPath string, ok bool, err error) { return in
 
 // Rewrite points a registered service at a new executable and config path
 // (config import). The service must be stopped; a missing registration is
-// an error (use Install).
-func Rewrite(executable, configPath string) error { return rewrite(executable, configPath) }
+// an error (use Install). Step 6: the new executable is validated
+// before the rewrite — the argument is the NEW binary, never the
+// already-installed exe (that was the Agent D upgrade bug).
+func Rewrite(executable, configPath string) error {
+	if err := ValidateDaemonPath(executable); err != nil {
+		return err
+	}
+	return rewrite(executable, configPath)
+}

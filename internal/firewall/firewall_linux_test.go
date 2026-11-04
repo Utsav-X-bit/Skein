@@ -166,7 +166,7 @@ func TestRemoveDeletesUFWRules(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	got := strings.Join(f.lines(), "\n")
-	for _, want := range []string{"ufw delete allow 11010/udp", "ufw delete allow in on skein0"} {
+	for _, want := range []string{"ufw --force delete allow 11010/udp", "ufw --force delete allow in on skein0"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}

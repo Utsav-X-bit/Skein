@@ -29,7 +29,69 @@ jobs:
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      # M8 (F-21): known-vulnerability scan, pinned — not @latest, so a
+      # tool upgrade can never silently change what CI accepts. Pin
+      # verified resolvable via the module proxy on 2026-11-04.
+      # KNOWN FIRST-RUN FAILURE (M8 report §6): under the repo's current
+      # go1.26.0 toolchain this step reports 28 reachable stdlib
+      # vulnerabilities, all fixed by go1.26.10. Bump the toolchain to
+      # >= 1.26.10 (go.mod) before expecting this step green — verified
+      # locally on 2026-11-04: go1.26.10 reports 0 reachable findings.
+      # Do not weaken this step to make the first run pass.
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      # M8 (F-21): secret scan of the working tree, pinned, gating.
+      # Deliberately --no-git: a full-history scan is a separate
+      # remediation (the November 2026 GitGuardian history for this repo
+      # contains flagged secrets that predate this branch), and gating
+      # PR CI on history would fail every run for pre-existing history.
+      # See docs/engineering/M9-ACCEPTANCE.md §2a. .gitleaks.toml
+      # allowlists only pre-existing test fixtures (verified at
+      # baseline f6bc79b); any other finding fails this step.
+      - name: Secret scan (working tree)
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 detect --no-git --source . --config .gitleaks.toml
+      # M6: GUI services tests, release and dev builds. The release
+      # build must ignore security env vars (F-04); the skeindev build
+      # must honour them. Both are asserted by the env tests.
+      - name: GUI services tests (release + dev builds)
+        run: |
+          go test -tags purego ./gui/services/
+          go test -tags purego,skeindev ./gui/services/
+      # M6/M8: the release job below must never build with -tags
+      # skeindev — a skeindev binary silently reopens F-04 (it honours
+      # SKEIN_HELPER and friends). This guard fails if the tag appears
+      # anywhere in the release job's steps.
+      - name: Release build must not use skeindev
+        run: |
+          if sed -n '/^  release:/,/^  netns:/p' .github/workflows/ci.yml | grep -q skeindev; then
+            echo "release job must not use -tags skeindev" >&2
+            exit 1
+          fi
       - run: go test -race -count=1 -shuffle=on ./...
+      # Tier 0 skip accounting: per-package pass/fail/skip counts in the log.
+      # The GitHub runner is non-root, so the root-skipped tests
+      # (TestGrantedUIDACL, TestLoadConfigExplainsOwnership) run here.
+      # Needs the acl package for TestGrantedUIDACL's setfacl call.
+      - name: Install ACL tools for the socket-ACL test
+        run: sudo apt-get install -y acl
+      - name: Test skip report
+        run: ./scripts/test-skip-report.sh ./cmd/... ./internal/...
+      # Step 9 collapse enforcement gates: single writer (Step 3) plus
+      # no spawn path, no helper rotate-secret/reset, no direct
+      # service registration, no bootstrap route in the normal
+      # handler, allow-listed writers, no secret logging.
+      - name: Collapse enforcement gates
+        run: ./scripts/collapse-gates.sh
+      # Step 11 packaging content assertions: installer manifests
+      # must ship daemon + minimal helper + CLI + Wintun (Windows)
+      # and daemon + helper + CLI + unit + group + polkit (Linux).
+      # Parses manifests, so it runs without makensis/nfpm.
+      - name: Packaging content assertions
+        run: ./scripts/packaging-assert.sh
+      # Tier 0 fuzzing: the only fuzz target in the repo is FuzzParse in
+      # internal/wire (frame parser). Bounded at 60s so CI stays fast.
+      - name: Fuzz wire frame parser
+        run: go test -fuzz=FuzzParse -fuzztime=60s ./internal/wire/
       - run: GOOS=darwin GOARCH=arm64 go build -tags purego ./...
       - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skeind.exe ./cmd/skeind
       - run: GOOS=windows GOARCH=amd64 go build -o /tmp/skein.exe ./cmd/skein

@@ -17,6 +17,11 @@ func GrantUserRoot(int) error {
 	return fmt.Errorf("grant-user is a Linux verb; on Windows use set-owner")
 }
 
+// GrantUserRoleRoot is the Linux uid:role grant verb; same Windows stub.
+func GrantUserRoleRoot(int, string) error {
+	return fmt.Errorf("grant-user is a Linux verb; on Windows use set-owner")
+}
+
 // SetOwnerRoot rewrites the config directory, config files, and control pipe
 // DACLs to SYSTEM, Administrators, and the single interactive user.
 func SetOwnerRoot(user string) error {

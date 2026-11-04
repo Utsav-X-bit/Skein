@@ -26,70 +26,117 @@ const usage = `skein-helper — Skein desktop helper (elevated; installed root-o
 Usage:
   skein-helper <verb> [options]
 
-Verbs:
-  init                  create identity, config, secret; install and start the service
-  join                  configure this node from a network invite (stdin or --pipe)
-  import                migrate a user-mode config into the system path
-  install               register the system service and start it
-  uninstall             stop and remove the system service
+Retained verbs (Step 10: the minimal helper; everything else moved
+to the daemon control API):
+  bootstrap --verb init|join|import
+                        (Step 4) mint a single-use bootstrap token and
+                        start the service in bootstrap mode; the token
+                        is returned ONLY in stdout JSON, never logged,
+                        never written to disk in plaintext. Fails if a
+                        system config already exists or a bootstrap is
+                        already in progress.
+  install               register the system service and start it (with --daemon <path>: register that validated skeind instead of the package one)
+  uninstall [--purge]   stop and remove the system service
   start | stop | restart
+                        service lifecycle (restart is retained: the
+                        secret-rotation endpoint sequence restarts
+                        the service through it, and no daemon
+                        endpoint restarts the service)
   status                service state (unprivileged)
-  rotate-secret         backup, stop, rotate the network secret, start;
-                        the result carries the new join string
-  reset                 stop, then back up (or --purge) config and identity
-  grant-user <uid>      (Linux) persist uid in the access file and apply the socket ACL
+  grant-user <uid> [--role read|mutate|secret]
+                        (Linux) persist uid in the access file and apply the socket ACL;
+                        default role is mutate (explicit human elevation, not a
+                        legacy bare line, which the API reads as read)
+  revoke-user <uid> [--force]
+                        (Linux) remove uid from the access file, remove
+                        its socket ACL, and reload the live daemon's
+                        grants without a restart. The invoking user
+                        (PKEXEC_UID/SUDO_UID) must hold the secret role;
+                        removing the last grant or last secret grant
+                        needs --force. Revoking a uid with no grant
+                        is an error, never a silent success.
   set-owner <user>      (Windows) rewrite config and control-pipe DACLs
-  update-daemon         verify the signed manifest; with --consent, swap the binary
+  revoke-user <user> [--force]
+                        (Windows) remove the user's SID from the access
+                        file and reload the live daemon's grants
+                        without a restart; the invoking user must be
+                        SYSTEM or the access-file owner.
+
+Removed verbs (Step 10: each returns exit 1 with this replacement):
+  init                  use: skein-helper bootstrap --verb init, then POST /api/v1/bootstrap/init with the token
+  join                  use: skein-helper bootstrap --verb join, then POST /api/v1/bootstrap/join with the token
+  import                use: skein-helper bootstrap --verb import, then POST /api/v1/bootstrap/import with the token
+  rotate-secret         use: POST /api/v1/system/rotate-secret {"confirm":true} (secret role)
+  reset                 use: POST /api/v1/system/reset {"confirm":true} (secret role), then skein-helper stop
+  update-daemon         use: GET /api/v1/system/update/check?manifest_path=... then POST /api/v1/system/update/apply {"manifest_path":...,"confirm":true} (secret role)
 
 Options:
-  --source <path>       import: the user-mode config file to migrate
-  --manifest <path>     update-daemon: the signed manifest
-  --consent             update-daemon: apply, not just check
-  --pipe <name>         (Windows) read the JSON request from, and write the JSON
-                        result to, the GUI-created named pipe. The request
-                        carries secrets, which never appear in argv.
-  --purge               reset: remove the files instead of backing them up
-  --keep-identity       reset: keep identity.key
-  --name <n> --port <p> --mtu <m> --prefix-v4 <cidr> --prefix-v6 <cidr>
-  --mdns | --no-mdns --stun | --no-stun --stun-server <addr>
-                        init options (also accepted in the --pipe request)
+  --daemon <path>       install: register this validated skeind instead of the package one
+  --pipe <name>         (Windows) the GUI-created named pipe channel; only
+                        removed-verb pointers are served over it now,
+                        since no retained verb takes a pipe request.
+  --purge               uninstall: accepted for the GUI/CLI uninstall
+                        dialog; config purge itself is the daemon reset
+                        endpoint above, not the helper.
+  --role <role>         grant-user: read|mutate|secret
+  --verb <verb>         bootstrap: init|join|import
+  --force               revoke-user: allow removing the last grant or
+                        the last secret grant
+  --request <path>      read a JSON request from a file (elevated GUI path)
+  --result <path>       write the JSON result to a file (refused for
+                        bootstrap: the token is stdout-only)
 `
 
+// removedVerbs maps each Step 10-removed helper verb to the exact
+// daemon endpoint that replaces it (Step 9 gate 5 route table is the
+// source of truth: bootstrap init/join/import, system rotate-secret /
+// reset / update check+apply). The pointer is the remediation: a user
+// following it lands on a real, role-gated endpoint, not a dead verb.
+// init/join/import point at the bootstrap endpoints, not at
+// POST /api/v1/system/init — that endpoint always returns 409 for a
+// configured node (Step 7), and the bootstrap flow is the only init
+// path for an unconfigured node.
+var removedVerbs = map[string]string{
+	"init":          "skein-helper bootstrap --verb init, then POST /api/v1/bootstrap/init with the returned token",
+	"join":          "skein-helper bootstrap --verb join, then POST /api/v1/bootstrap/join with the returned token",
+	"import":        "skein-helper bootstrap --verb import, then POST /api/v1/bootstrap/import with the returned token",
+	"rotate-secret": `POST /api/v1/system/rotate-secret {"confirm":true} (secret role)`,
+	"reset":         `POST /api/v1/system/reset {"confirm":true} (secret role), then skein-helper stop`,
+	"update-daemon": `GET /api/v1/system/update/check?manifest_path=... then POST /api/v1/system/update/apply {"manifest_path":...,"confirm":true} (secret role)`,
+}
+
+// removedVerb writes the Step 10 deprecation envelope and returns
+// exit code 1. It is deliberately not fail(): fail() maps error text
+// to a generic remediation, while this pointer must be exact.
+func removedVerb(stdout io.Writer, verb string) int {
+	fmt.Fprintf(stdout, "%s\n", mustJSON(map[string]any{
+		"ok":          false,
+		"error":       "verb removed: use the daemon control API",
+		"verb":        verb,
+		"remediation": removedVerbs[verb],
+	}))
+	return 1
+}
+
 type options struct {
-	source     string
-	manifest   string
-	consent    bool
-	pipe       string
-	request    string
-	result     string
-	purge      bool
-	keepIdent  bool
-	name       string
-	port       uint16
-	mtu        int
-	prefixV4   string
-	prefixV6   string
-	mdns       *bool
-	stun       *bool
-	stunServer string
-}
-
-type initRequest struct {
-	Name       string `json:"name"`
-	PrefixV4   string `json:"prefix_v4"`
-	PrefixV6   string `json:"prefix_v6"`
-	Port       uint16 `json:"port"`
-	MTU        int    `json:"mtu"`
-	MDNS       *bool  `json:"mdns"`
-	STUN       *bool  `json:"stun"`
-	STUNServer string `json:"stun_server"`
-}
-
-type joinRequest struct {
-	Invite string `json:"invite"`
+	pipe    string
+	request string
+	result  string
+	purge   bool
+	force   bool
+	role    string
+	verb    string
+	daemon  string
 }
 
 func main() {
+	// Step 4: a bootstrap token is plaintext only in the stdout JSON
+	// response to the invoking GUI. It must never be written to a
+	// --result file on disk, so that combination is refused outright.
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap" && flagValue(os.Args[1:], "--result") != "" {
+		fmt.Fprintln(os.Stderr, "skein-helper: bootstrap refuses --result: the token is returned in stdout JSON only, never written to a file")
+		os.Exit(2)
+	}
 	var stdout bytes.Buffer
 	code := run(os.Args[1:], &stdout, os.Stderr)
 	if _, err := os.Stdout.Write(stdout.Bytes()); err != nil {
@@ -153,35 +200,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if opts.pipe != "" {
 		return runPiped(verb, rest, opts, stdout, stderr)
 	}
+	if _, removed := removedVerbs[verb]; removed {
+		// Before any privilege check: a removed verb needs no
+		// elevation to learn its replacement, and this keeps the
+		// deprecation test passing on non-root CI runners too.
+		return removedVerb(stdout, verb)
+	}
 
 	privilegedVerb := verb != "status" && verb != "help" && verb != "-h" && verb != "--help"
 	if err := requirePrivilege(privilegedVerb); err != nil {
 		return fail(stdout, err)
 	}
 	switch verb {
-	case "init":
-		var req initRequest
-		if err := decodeRequest(requestData(opts), &req); err != nil {
-			return fail(stdout, err)
+	case "bootstrap":
+		// Step 4: the only secret-producing helper action left after
+		// the collapse. The verb binds the token: a join token
+		// cannot init, and vice versa. The token travels in the
+		// stdout JSON envelope only — result() marshals it there
+		// and nowhere else (no log line, no argv, no result file:
+		// main() refuses --result for this verb).
+		if opts.verb == "" {
+			return fail(stdout, errors.New("bootstrap needs --verb init|join|import"))
 		}
-		mergeInitOptions(&opts, req)
-		res, err := app.InitRoot(initOptions(opts))
-		return result(stdout, err, res)
-	case "join":
-		invite, err := readInvite(requestData(opts))
+		token, err := app.MintBootstrap(opts.verb)
 		if err != nil {
 			return fail(stdout, err)
 		}
-		res, err := app.JoinRoot(invite)
-		return result(stdout, err, res)
-	case "import":
-		if opts.source == "" {
-			return fail(stdout, errors.New("import needs --source <path>"))
-		}
-		res, err := app.ImportRoot(opts.source)
-		return result(stdout, err, res)
+		return result(stdout, nil, map[string]any{"token": token, "verb": opts.verb, "expires_in_seconds": 600})
 	case "install":
-		st, err := app.EnsureService()
+		var st service.State
+		var err error
+		if opts.daemon != "" {
+			st, err = app.EnsureServiceDaemon(opts.daemon)
+		} else {
+			st, err = app.EnsureService()
+		}
 		return result(stdout, err, map[string]any{"state": string(st)})
 	case "uninstall":
 		if err := uninstall(); err != nil {
@@ -209,24 +262,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return fail(stdout, err)
 		}
 		return result(stdout, nil, map[string]any{"state": string(st.State), "enabled": st.Enabled})
-	case "rotate-secret":
-		res, err := app.RotateRoot()
-		return result(stdout, err, res)
-	case "reset":
-		res, err := app.ResetRoot(opts.purge, opts.keepIdent)
-		return result(stdout, err, res)
+	case "revoke-user":
+		if len(rest) != 1 {
+			return fail(stdout, errors.New("usage: skein-helper revoke-user <uid-or-user> [--force]"))
+		}
+		out, err := app.RevokeUser(rest[0], opts.force)
+		if err != nil {
+			return fail(stdout, err)
+		}
+		payload := map[string]any{"identity": out.Identity, "role": out.Role, "reloaded": out.Reloaded}
+		if out.Warning != "" {
+			payload["warning"] = out.Warning
+		}
+		if out.ReloadNote != "" {
+			payload["note"] = out.ReloadNote
+		}
+		return result(stdout, nil, payload)
 	case "grant-user":
 		if len(rest) != 1 {
-			return fail(stdout, errors.New("usage: skein-helper grant-user <uid>"))
+			return fail(stdout, errors.New("usage: skein-helper grant-user <uid> [--role read|mutate|secret]"))
 		}
 		uid, err := strconv.Atoi(rest[0])
 		if err != nil {
 			return fail(stdout, fmt.Errorf("uid %q must be an integer", rest[0]))
 		}
-		if err := app.GrantUserRoot(uid); err != nil {
+		role := opts.role
+		if role == "" {
+			role = "mutate" // plan default for a new explicit grant
+		}
+		if err := app.GrantUserRoleRoot(uid, role); err != nil {
 			return fail(stdout, err)
 		}
-		return result(stdout, nil, map[string]any{"uid": uid})
+		return result(stdout, nil, map[string]any{"uid": uid, "role": role})
 	case "set-owner":
 		if len(rest) != 1 {
 			return fail(stdout, errors.New("usage: skein-helper set-owner <user>"))
@@ -235,12 +302,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return fail(stdout, err)
 		}
 		return result(stdout, nil, map[string]any{"user": rest[0]})
-	case "update-daemon":
-		if opts.manifest == "" {
-			return fail(stdout, errors.New("update-daemon needs --manifest <path>"))
-		}
-		res, err := app.UpdateRoot(opts.manifest, opts.consent)
-		return result(stdout, err, res)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -250,99 +311,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runPiped serves one request over the GUI-created pipe: the request JSON
-// (which may carry the join string) is read from the pipe, the verb runs,
-// and the result JSON goes back. The buffer is zeroed after the call.
+// runPiped serves one request over the GUI-created pipe. Step 10: the
+// only verbs that ever used the pipe channel (init, join,
+// rotate-secret) are removed, so the pipe now serves only their
+// endpoint pointers — no request body is read for a removed verb, and
+// no privilege check gates learning the replacement. No retained verb
+// takes a pipe request (the Windows GUI uses --request/--result files),
+// so anything else keeps the old "does not use the pipe channel"
+// exit 2. No in-tree caller passes --pipe at all.
 func runPiped(verb string, rest []string, opts options, stdout, stderr io.Writer) int {
-	if err := requirePrivilege(true); err != nil {
-		fail(stdout, err)
-		return 1
-	}
+	_ = rest
 	session, err := openPipeSession(opts.pipe)
 	if err != nil {
 		fail(stdout, err)
 		return 1
 	}
-	data, err := session.readRequest()
-	if err != nil {
-		fail(stdout, err)
-		return 1
-	}
-	defer zero(data)
-
-	var out bytes.Buffer
-	var rc int
-	switch verb {
-	case "init":
-		var req initRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			rc = fail(&out, fmt.Errorf("init request: %w", err))
-		} else {
-			mergeInitOptions(&opts, req)
-			res, err := app.InitRoot(initOptions(opts))
-			rc = result(&out, err, res)
+	if _, removed := removedVerbs[verb]; removed {
+		var out bytes.Buffer
+		rc := removedVerb(&out, verb)
+		if err := session.writeResult(out.Bytes()); err != nil {
+			fmt.Fprintf(stderr, "skein-helper: pipe result: %v\n", err)
+			return 1
 		}
-	case "join":
-		var req joinRequest
-		if err := json.Unmarshal(data, &req); err != nil {
-			rc = fail(&out, fmt.Errorf("join request: %w", err))
-		} else {
-			res, err := app.JoinRoot(req.Invite)
-			rc = result(&out, err, res)
-		}
-	case "rotate-secret":
-		res, err := app.RotateRoot()
-		rc = result(&out, err, res)
-	default:
-		fmt.Fprintf(stderr, "skein-helper: verb %q does not use the pipe channel\n", verb)
-		return 2
+		return rc
 	}
-	if err := session.writeResult(out.Bytes()); err != nil {
-		fmt.Fprintf(stderr, "skein-helper: pipe result: %v\n", err)
-		return 1
-	}
-	return rc
-}
-
-// mergeInitOptions lets the --pipe request override the flags.
-func mergeInitOptions(opts *options, req initRequest) {
-	if req.Name != "" {
-		opts.name = req.Name
-	}
-	if req.PrefixV4 != "" {
-		opts.prefixV4 = req.PrefixV4
-	}
-	if req.PrefixV6 != "" {
-		opts.prefixV6 = req.PrefixV6
-	}
-	if req.Port != 0 {
-		opts.port = req.Port
-	}
-	if req.MTU != 0 {
-		opts.mtu = req.MTU
-	}
-	if req.MDNS != nil {
-		opts.mdns = req.MDNS
-	}
-	if req.STUN != nil {
-		opts.stun = req.STUN
-	}
-	if req.STUNServer != "" {
-		opts.stunServer = req.STUNServer
-	}
-}
-
-func initOptions(o options) app.InitOptions {
-	return app.InitOptions{
-		Name:       o.name,
-		PrefixV4:   o.prefixV4,
-		PrefixV6:   o.prefixV6,
-		Port:       o.port,
-		MTU:        o.mtu,
-		MDNS:       o.mdns,
-		STUN:       o.stun,
-		STUNServer: o.stunServer,
-	}
+	fmt.Fprintf(stderr, "skein-helper: verb %q does not use the pipe channel\n", verb)
+	return 2
 }
 
 // parseOptions consumes the per-verb flags and returns the leftover
@@ -360,20 +354,6 @@ func parseOptions(args []string) (options, []string, error) {
 			return args[i], nil
 		}
 		switch arg {
-		case "--source":
-			v, err := next(arg)
-			if err != nil {
-				return o, rest, err
-			}
-			o.source = v
-		case "--manifest":
-			v, err := next(arg)
-			if err != nil {
-				return o, rest, err
-			}
-			o.manifest = v
-		case "--consent":
-			o.consent = true
 		case "--pipe":
 			v, err := next(arg)
 			if err != nil {
@@ -385,6 +365,9 @@ func parseOptions(args []string) (options, []string, error) {
 			if err != nil {
 				return o, rest, err
 			}
+			// Parsed for GUI argv compatibility; no retained verb
+			// reads a request file since Step 10 (the pipe verbs
+			// that used it are removed).
 			o.request = v
 		case "--result":
 			v, err := next(arg)
@@ -393,128 +376,35 @@ func parseOptions(args []string) (options, []string, error) {
 			}
 			o.result = v
 		case "--purge":
+			// Accepted for the GUI/CLI uninstall dialog; config
+			// purge itself is the daemon reset endpoint, not the
+			// helper, so this flag changes no helper behaviour.
 			o.purge = true
-		case "--keep-identity":
-			o.keepIdent = true
-		case "--name":
+		case "--force":
+			o.force = true
+		case "--role":
 			v, err := next(arg)
 			if err != nil {
 				return o, rest, err
 			}
-			o.name = v
-		case "--port":
+			o.role = v
+		case "--verb":
 			v, err := next(arg)
 			if err != nil {
 				return o, rest, err
 			}
-			n, err := strconv.ParseUint(v, 10, 16)
-			if err != nil {
-				return o, rest, fmt.Errorf("--port: %q is not a port", v)
-			}
-			o.port = uint16(n)
-		case "--mtu":
+			o.verb = v
+		case "--daemon":
 			v, err := next(arg)
 			if err != nil {
 				return o, rest, err
 			}
-			n, err := strconv.Atoi(v)
-			if err != nil {
-				return o, rest, fmt.Errorf("--mtu: %q is not a number", v)
-			}
-			o.mtu = n
-		case "--prefix-v4":
-			v, err := next(arg)
-			if err != nil {
-				return o, rest, err
-			}
-			o.prefixV4 = v
-		case "--prefix-v6":
-			v, err := next(arg)
-			if err != nil {
-				return o, rest, err
-			}
-			o.prefixV6 = v
-		case "--mdns":
-			t := true
-			o.mdns = &t
-		case "--no-mdns":
-			f := false
-			o.mdns = &f
-		case "--stun":
-			t := true
-			o.stun = &t
-		case "--no-stun":
-			f := false
-			o.stun = &f
-		case "--stun-server":
-			v, err := next(arg)
-			if err != nil {
-				return o, rest, err
-			}
-			o.stunServer = v
+			o.daemon = v
 		default:
 			rest = append(rest, arg)
 		}
 	}
 	return o, rest, nil
-}
-
-// stdinRequest returns the helper's stdin as the request source when it is a
-// terminal (nothing piped), so a missing invite is a clean error.
-// requestData reads the request from --request for an elevated helper, or
-// from stdin for a direct invocation.
-func requestData(o options) []byte {
-	if o.request != "" {
-		data, err := os.ReadFile(o.request)
-		if err != nil {
-			return nil
-		}
-		return data
-	}
-	return stdinRequest()
-}
-
-func stdinRequest() []byte {
-	stat, _ := os.Stdin.Stat()
-	if stat.Mode()&os.ModeCharDevice != 0 {
-		return nil
-	}
-	data, _ := io.ReadAll(io.LimitReader(os.Stdin, 4096))
-	return data
-}
-
-func decodeRequest(data []byte, out any) error {
-	if len(data) == 0 {
-		return nil
-	}
-	return json.Unmarshal(data, out)
-}
-
-// readInvite takes the join string from piped stdin: one string, at most 2 KiB.
-func readInvite(data []byte) (string, error) {
-	invite := strings.TrimSpace(string(data))
-	var req struct {
-		Invite string `json:"invite"`
-	}
-	if strings.HasPrefix(invite, "{") && json.Unmarshal(data, &req) == nil && req.Invite != "" {
-		invite = strings.TrimSpace(req.Invite)
-	}
-	if invite == "" {
-		return "", errors.New("join: pipe the network invite to stdin, e.g. echo 'skein:2:...' | skein-helper join")
-	}
-	if len(invite) > 2048 {
-		return "", fmt.Errorf("join: invite is %d bytes, maximum is 2048", len(invite))
-	}
-	if strings.ContainsAny(invite, "\n\r\t ") {
-		return "", errors.New("join: invite must be a single line")
-	}
-	return invite, nil
-}
-
-func zero(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
 }
 
 // uninstall stops and removes the service and its firewall rules.
@@ -577,13 +467,13 @@ func remediation(err error) string {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "already exists"):
-		return "run import to migrate the existing config, or reset first"
+		return "already configured; use the daemon control API (see skein-helper --help)"
 	case strings.Contains(msg, "not running"), strings.Contains(msg, "service start"):
 		return "check the service state with skein-helper status and the daemon logs"
 	case strings.Contains(msg, "elevated"), strings.Contains(msg, "Administrator"), strings.Contains(msg, "root"):
 		return "run the helper elevated (UAC or sudo)"
 	case strings.Contains(msg, "config not found"):
-		return "run init or import first"
+		return "run the bootstrap flow (skein-helper bootstrap --verb init|join|import) first"
 	}
 	return ""
 }

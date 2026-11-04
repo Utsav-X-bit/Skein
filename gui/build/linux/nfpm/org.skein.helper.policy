@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Skein mesh VPN — polkit policy for the minimal helper (Step 11,
+  closes Agent C L-16: before this file, pkexec fell back to its
+  generic org.freedesktop.policykit.exec action and the prompt showed
+  a bare binary name).
+  The GUI invokes pkexec with the action flag set to one of these three
+  actions (gui/services/helper_command_unix.go polkitActionForVerb):
+    install   — install / bootstrap (creates the service, mints the
+                one-time bootstrap token)
+    lifecycle — start / stop / restart / uninstall (service state)
+    grants    — grant-user / set-owner / revoke-user (who may use
+                the control API)
+  All three require admin authentication for an active local
+  session (auth_admin, not auth_self: a helper verb changes system
+  state for every user, not just the caller). Inactive sessions and
+  remote sessions are denied outright — there is no remote GUI
+  elevation path. status is unprivileged and needs no action.
+  Each action pins the helper path: pkexec refuses any other binary
+  under these action IDs.
+-->
+<policyconfig>
+  <action id="org.skein.helper.install">
+    <description>Skein needs administrator access to install its system service</description>
+    <message>Authentication is required to install the Skein system service or to set up a new Skein node.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/skein-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+  <action id="org.skein.helper.lifecycle">
+    <description>Skein needs administrator access to start, stop, or remove its system service</description>
+    <message>Authentication is required to change the state of the Skein system service.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/skein-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+  <action id="org.skein.helper.grants">
+    <description>Skein needs administrator access to change who may control it</description>
+    <message>Authentication is required to grant or revoke access to the Skein control API.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/skein-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

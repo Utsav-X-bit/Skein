@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -68,9 +69,8 @@ func TestActivitiesReturnsAnArray(t *testing.T) {
 func (f *fakeState) Events() <-chan Event { return f.events }
 
 type fakeWriter struct {
-	added   []string
-	removed []uint64
-	names   []string
+	added []string
+	names []string
 }
 
 func (f *fakeWriter) SetName(name string) error {
@@ -80,10 +80,6 @@ func (f *fakeWriter) SetName(name string) error {
 
 func (f *fakeWriter) AddPeer(invite string) error {
 	f.added = append(f.added, invite)
-	return nil
-}
-func (f *fakeWriter) RemovePeer(id uint64) error {
-	f.removed = append(f.removed, id)
 	return nil
 }
 
@@ -112,6 +108,27 @@ func do(t *testing.T, h http.Handler, method, path, body string, headers map[str
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// doKernel is do() for a kernel caller: no bearer token, identity from
+// the request context. Mutation tests must use it with an explicit
+// grant, because a bearer caller is read-only since Step 1.
+func doKernel(t *testing.T, h http.Handler, method, path, body string, headers map[string]string, uid int) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req = req.WithContext(WithCaller(req.Context(), Caller{UID: uid}))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// grantTestUser gives uid the given role on srv. Tests that mutate must
+// call it explicitly; there is no implicit grant.
+func grantTestUser(srv *Server, uid int, role Role) {
+	srv.SetGrants(map[string]Role{"uid:" + strconv.Itoa(uid): role})
 }
 
 func TestRequiresBearerToken(t *testing.T) {
@@ -172,9 +189,10 @@ func TestConfigRedactsSecrets(t *testing.T) {
 
 func TestPeerMutations(t *testing.T) {
 	srv, _, writer, prober := newTestServer(t)
+	grantTestUser(srv, 1000, RoleMutate)
 	h := srv.Handler()
 
-	rec := do(t, h, http.MethodPost, "/api/v1/peers", `{"invite":"skein:1:abc"}`, nil)
+	rec := doKernel(t, h, http.MethodPost, "/api/v1/peers", `{"invite":"skein:1:abc"}`, nil, 1000)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("post code = %d body=%s", rec.Code, rec.Body)
 	}
@@ -182,15 +200,15 @@ func TestPeerMutations(t *testing.T) {
 		t.Fatalf("added = %v", writer.added)
 	}
 
-	rec = do(t, h, http.MethodDelete, "/api/v1/peers/0123456789abcdef", "", nil)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("delete code = %d", rec.Code)
-	}
-	if len(writer.removed) != 1 || writer.removed[0] != 0x0123456789abcdef {
-		t.Fatalf("removed = %v", writer.removed)
+	// Step 12 (ADR-002): the peer-removal endpoint is deleted, not
+	// deprecated. A DELETE now matches no route (404); the only
+	// departure path is POST /api/v1/system/leave.
+	rec = doKernel(t, h, http.MethodDelete, "/api/v1/peers/0123456789abcdef", "", nil, 1000)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete code = %d, want 404 (endpoint deleted)", rec.Code)
 	}
 
-	rec = do(t, h, http.MethodPost, "/api/v1/peers/0123456789abcdef/probe", "", nil)
+	rec = doKernel(t, h, http.MethodPost, "/api/v1/peers/0123456789abcdef/probe", "", nil, 1000)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("probe code = %d", rec.Code)
 	}
@@ -201,17 +219,20 @@ func TestPeerMutations(t *testing.T) {
 
 func TestRejectsBadPeerRequests(t *testing.T) {
 	srv, _, _, _ := newTestServer(t)
+	grantTestUser(srv, 1000, RoleMutate)
 	h := srv.Handler()
-	if rec := do(t, h, http.MethodPost, "/api/v1/peers", `{}`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/peers", `{}`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty invite code = %d", rec.Code)
 	}
-	if rec := do(t, h, http.MethodPost, "/api/v1/peers", `not json`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/peers", `not json`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad json code = %d", rec.Code)
 	}
-	if rec := do(t, h, http.MethodDelete, "/api/v1/peers/zzzz", "", nil); rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad id code = %d", rec.Code)
+	// Step 12: the DELETE peers route is gone, so a DELETE with a
+	// bad id matches no route (404) instead of reaching id parsing.
+	if rec := doKernel(t, h, http.MethodDelete, "/api/v1/peers/zzzz", "", nil, 1000); rec.Code != http.StatusNotFound {
+		t.Fatalf("bad id code = %d, want 404 (endpoint deleted)", rec.Code)
 	}
-	if rec := do(t, h, http.MethodPost, "/api/v1/peers", strings.Repeat("x", 20<<10), nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/peers", strings.Repeat("x", 20<<10), nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("oversized body code = %d", rec.Code)
 	}
 }
@@ -244,19 +265,20 @@ func TestSSEStreamsEvents(t *testing.T) {
 
 func TestSetNameEndpoint(t *testing.T) {
 	srv, _, writer, _ := newTestServer(t)
+	grantTestUser(srv, 1000, RoleMutate)
 	h := srv.Handler()
 
-	rec := do(t, h, http.MethodPost, "/api/v1/name", `{"name":"asus-utsav"}`, nil)
+	rec := doKernel(t, h, http.MethodPost, "/api/v1/name", `{"name":"asus-utsav"}`, nil, 1000)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("code = %d body=%s", rec.Code, rec.Body)
 	}
 	if len(writer.names) != 1 || writer.names[0] != "asus-utsav" {
 		t.Fatalf("names = %v", writer.names)
 	}
-	if rec := do(t, h, http.MethodPost, "/api/v1/name", `{"name":""}`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/name", `{"name":""}`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty name code = %d", rec.Code)
 	}
-	if rec := do(t, h, http.MethodPost, "/api/v1/name", `not json`, nil); rec.Code != http.StatusBadRequest {
+	if rec := doKernel(t, h, http.MethodPost, "/api/v1/name", `not json`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad json code = %d", rec.Code)
 	}
 }

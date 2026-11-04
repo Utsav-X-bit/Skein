@@ -1,5 +1,7 @@
 import { NavLink } from "react-router-dom";
-import { Activity, ArrowLeftRight, LayoutDashboard, ListTree, Radio, ScrollText, Settings, Shield, Users } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Activity, ArrowLeftRight, Info, LayoutDashboard, ListTree, Radio, ScrollText, Settings, Shield, Users } from "lucide-react";
+import { AppService } from "@/lib/api";
 import { LogoMark } from "@/components/brand/LogoMark";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { cn } from "@/lib/utils";
@@ -14,9 +16,15 @@ const items = [
   { to: "/activity", label: "Activity", icon: Activity },
   { to: "/logs", label: "Diagnostics", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings },
+  { to: "/about", label: "About", icon: Info },
 ];
 
 export function Sidebar() {
+  // M7: footer version is live (AppService.Version binding), not the
+  // old hardcoded "v0.1". While it loads or errors, "dev" is shown
+  // rather than a version that was never queried.
+  const version = useQuery({ queryKey: ["app-version"], queryFn: () => AppService.Version() });
+  const versionLabel = version.data ? version.data : "dev";
   const collapsed = useUI((s) => s.sidebarCollapsed);
   const toggle = useUI((s) => s.toggleSidebar);
   return (
@@ -46,7 +54,8 @@ export function Sidebar() {
         ))}
       </nav>
       <div className={cn("border-t border-[var(--border)] p-3", collapsed && "text-center")}>
-        <div className="mono-label">{collapsed ? "v0.1" : "Skein Desktop"}</div>
+        <div className="mono-label">{collapsed ? versionLabel : "Skein Desktop"}</div>
+        {!collapsed && <div className="mt-1 font-mono text-[10px] text-[var(--text-faint)]">{versionLabel}</div>}
         {!collapsed && <div className="mt-1 text-xs text-[var(--text-faint)]">mesh control surface</div>}
       </div>
     </aside>

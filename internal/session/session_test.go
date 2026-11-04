@@ -132,6 +132,29 @@ func attemptEpoch(t *testing.T, m *Manager, peerID uint64, attempt [AttemptSize]
 	return hs.Epoch()
 }
 
+// TestEpochsAreMonotonicCountersNotWallClock is the M4 P3 (F-03)
+// regression test: the first epoch must be 1 as documented, not the Unix
+// time (~1.79e9 in 2026), and repeated Begins must strictly increase even
+// when no session was installed, so a restarted node re-dialing after a
+// failed handshake converges upward instead of reusing a stale epoch.
+func TestEpochsAreMonotonicCountersNotWallClock(t *testing.T) {
+	p := newPair(t)
+	attempt1, _, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptEpoch(t, p.a, p.bID, attempt1); got != 1 {
+		t.Fatalf("first epoch = %d, want 1 (documented, not wall-clock)", got)
+	}
+	attempt2, _, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptEpoch(t, p.a, p.bID, attempt2); got <= 1 {
+		t.Fatalf("second Begin epoch = %d, want > 1", got)
+	}
+}
+
 func TestHandshakeAndDataRoundTrip(t *testing.T) {
 	p := newPair(t)
 	establish(t, p)

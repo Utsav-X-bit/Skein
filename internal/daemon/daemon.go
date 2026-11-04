@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,10 +19,10 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/activity"
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
+	"github.com/Utsav-X-bit/skein/internal/configstore"
 	"github.com/Utsav-X-bit/skein/internal/control"
 	"github.com/Utsav-X-bit/skein/internal/dataplane"
 	"github.com/Utsav-X-bit/skein/internal/discovery"
-	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/path"
@@ -65,6 +64,33 @@ type Daemon struct {
 	closeErr    error
 	persistMu   sync.Mutex
 	cfgMu       sync.RWMutex
+	// sysMu serialises Step 7 system operations (rotate/reset/leave/
+	// import/update) against each other. It does not replace
+	// persistMu (config writes) — a system op holds sysMu for its
+	// whole multi-step sequence, and persistLocked holds persistMu
+	// for each write inside it.
+	sysMu sync.Mutex
+	// updateState is the last update outcome (in-memory copy of
+	// what the detached apply process writes to the state file).
+	// Guarded by sysMu.
+	updateState *api.UpdateState
+	// updateSvcOverride is the service-manager surface for update
+	// apply / rollback. Production leaves it nil (real service
+	// package); tests swap it for a fake.
+	updateSvcOverride updateService
+	// updateLauncherOverride spawns the detached apply process.
+	// Nil means the platform spawnDetached. Tests swap it for a
+	// recorder.
+	updateLauncherOverride func(exe string, args []string, logPath string) error
+	// stagingDirOverride, when set, is the update staging directory
+	// (tests). Production derives it from the installed service
+	// binary's directory, falling back to the running exe's dir.
+	stagingDirOverride string
+	// store is the single config writer (ADR-001 §4). It holds the
+	// cross-process lock for the daemon's lifetime when the daemon was
+	// built from a config file; nil for in-memory/test daemons with no
+	// config path, where persistLocked returns early anyway.
+	store *configstore.Store
 }
 
 // config returns a snapshot safe to read outside the daemon lock.
@@ -149,11 +175,52 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	})
 	d.ctl = ctl
 	d.api = api.NewServer(cfg.API.Token, d, d, d)
+	// Step 1: authorisation table from the access file, and the audit
+	// hook. A missing access file leaves the table unconfigured (kernel
+	// callers read-only); a malformed one fails daemon creation, so the
+	// daemon never runs with a silently ignored grant file. Audit records
+	// carry caller, method, path, and status only — never a secret, even
+	// for secret endpoints (there the record is flagged, not filled).
+	if err := d.api.LoadGrantsFromFile(controlAccessFile); err != nil {
+		return nil, fmt.Errorf("daemon: access file: %w", err)
+	}
+	d.api.Audit(func(ev api.AuditEvent) {
+		// Step 5: denied attempts log required vs held role.
+		// The record contains no token, secret, or request body
+		// by construction (api.AuditEvent has no such field),
+		// so nothing secret-bearing can reach this log line.
+		if ev.Denied {
+			log.Printf("skein: audit denied caller=%s %s %s status=%d required=%s held=%s", ev.Caller, ev.Method, ev.Path, ev.Status, ev.Required, ev.Held)
+			return
+		}
+		if ev.Secret {
+			log.Printf("skein: audit caller=%s %s %s status=%d secret_endpoint=true", ev.Caller, ev.Method, ev.Path, ev.Status)
+			return
+		}
+		log.Printf("skein: audit caller=%s %s %s status=%d", ev.Caller, ev.Method, ev.Path, ev.Status)
+	})
 	log.SetOutput(io.MultiWriter(os.Stderr, &logWriter{ring: d.logs, red: d.redact, hub: d.hub}))
 	// A peer that proves the network secret may join without a configured
 	// entry; the invite carries the secret, so holding it is membership.
 	sessions.SetAcceptUnknown(true)
 	sessions.SetPeerLearnedHandler(d.peerLearned)
+
+	// Step 3 (ADR-001 §4): the daemon holds the config lock for its
+	// lifetime. A second daemon for the same config fails here, before
+	// any mesh work, instead of racing the first daemon's persists.
+	// Daemons built without a config path (tests, in-memory) have no
+	// file to lock and skip this.
+	if cfg.Path != "" {
+		store, err := configstore.Open(cfg.Path)
+		if err != nil {
+			return nil, fmt.Errorf("daemon: config store: %w", err)
+		}
+		if err := store.Lock(); err != nil {
+			store.Close()
+			return nil, fmt.Errorf("daemon: %w", err)
+		}
+		d.store = store
+	}
 
 	return d, nil
 }
@@ -245,46 +312,26 @@ func (d *Daemon) persistPeers() {
 }
 
 // persistLocked rewrites cfg with the current peer list. The caller holds
-// persistMu.
+// persistMu. Step 3: the write goes through configstore, the single
+// config writer — never a direct temp + rename here again. A daemon built
+// by New holds the lifetime lock, so this is the fast path; a daemon
+// built by hand (tests) without a store takes a brief lock instead.
 func (d *Daemon) persistLocked(base conf.Config) {
 	if base.Path == "" {
 		return
 	}
 	cfg := configWithPeers(base, d.peers.List())
-	text, err := conf.Render(cfg)
-	if err != nil {
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
+	store := d.store
+	if store == nil {
+		var err error
+		store, err = configstore.Open(base.Path)
+		if err != nil {
+			log.Printf("skein: warning: cannot persist peers: %v", err)
+			return
+		}
+		defer store.Close()
 	}
-	// CreateTemp uses O_EXCL with a random name, so a symlink planted in the
-	// user-owned config directory can never redirect this root write.
-	tmp, err := os.CreateTemp(filepath.Dir(cfg.Path), filepath.Base(cfg.Path)+".tmp-*")
-	if err != nil {
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(text); err != nil {
-		tmp.Close()
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
-	}
-	if err := fileperm.Restrict(tmpName); err != nil {
-		log.Printf("skein: warning: cannot restrict %s: %v", tmpName, err)
-	}
-	// Root-owned config: the daemon writes as root and no longer preserves the
-	// previous owner, which was a user-mode CLI artifact.
-	if err := os.Rename(tmpName, cfg.Path); err != nil {
+	if err := store.Write(cfg); err != nil {
 		log.Printf("skein: warning: cannot persist peers: %v", err)
 		return
 	}
@@ -310,6 +357,21 @@ func (d *Daemon) sessionEstablished(peerID uint64) {
 func (d *Daemon) Run(ctx context.Context) error {
 	cfg := d.config()
 
+	// Step 2 (ADR-001 §5): the single control listener starts
+	// synchronously, before mDNS, TUN creation, firewall changes, or
+	// connLoop. A configured transport that fails to bind is fatal:
+	// Run returns the error and the process exits, instead of running
+	// headless with a dead control plane (the old serveControl
+	// behaviour). An unconfigured transport (dev mode) returns a no-op
+	// stop and is logged loudly by StartControlListeners.
+	apiCtx, stopAPI := context.WithCancel(ctx)
+	defer stopAPI()
+	stopControl, err := d.StartControlListeners(apiCtx)
+	if err != nil {
+		return fmt.Errorf("control listener: %w", err)
+	}
+	defer stopControl()
+
 	for _, p := range d.peers.List() {
 		addrs := make([]string, 0, len(p.Candidates))
 		for _, c := range p.Candidates {
@@ -330,9 +392,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
-	apiCtx, stopAPI := context.WithCancel(ctx)
-	defer stopAPI()
-	if cfg.API.Listen != "" {
+	// Step 5 (ADR-001 §5): dev TCP is dev-only. It starts only when
+	// no kernel transport (socket/pipe) is configured — a config
+	// with a kernel transport never gets a second TCP control plane,
+	// even if api.listen is also set: that combination is refused
+	// outright for system configs at the app layer (see
+	// app.checkSystemDevTCP), and here the daemon logs loudly and
+	// serves the kernel plane only. Dev TCP still serves the same
+	// wrapRole-gated handler, so a bearer client never exceeds read
+	// (Step 1), including on secret-role endpoints.
+	if devTCPEnabled(cfg) {
 		d.http = &http.Server{
 			Addr:              cfg.API.Listen,
 			Handler:           d.api.Handler(),
@@ -341,18 +410,32 @@ func (d *Daemon) Run(ctx context.Context) error {
 			MaxHeaderBytes:    64 << 10,
 			BaseContext:       func(net.Listener) context.Context { return apiCtx },
 		}
+		go d.serveDevTCP(apiCtx, d.http)
+	} else if cfg.API.Listen != "" {
+		log.Printf("skein: warning: api.listen ignored: kernel control transport is configured; control API is socket/pipe only")
 	}
-	if cfg.API.Listen != "" {
-		go d.serveAPI(apiCtx, d.http)
-	}
-	go d.serveControl(apiCtx)
 	go d.refreshWAN(ctx)
 	go d.pruneStalePeers(ctx)
 
 	return d.connLoop(ctx)
 }
 
-func (d *Daemon) serveAPI(ctx context.Context, srv *http.Server) {
+// devTCPEnabled reports whether the dev-only TCP control listener may
+// start for cfg. Step 5: dev TCP exists only for dev configs (listen
+// set, no socket/pipe). Any config with a kernel transport — in
+// particular every system/service config — gets the kernel plane
+// only; api.listen on such a config is ignored here and refused at
+// the app layer for system configs.
+func devTCPEnabled(cfg conf.Config) bool {
+	return cfg.API.Listen != "" && cfg.API.Socket == "" && cfg.API.Pipe == ""
+}
+
+// serveDevTCP is the dev-only loopback TCP control listener. It is
+// never started for a service config (see devTCPEnabled), and it
+// serves the same authorisation-gated handler as the kernel plane,
+// so bearer clients are capped at read and secret-role endpoints
+// stay 403 over TCP.
+func (d *Daemon) serveDevTCP(ctx context.Context, srv *http.Server) {
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		log.Printf("skein: error: API listen: %v", err)
@@ -414,6 +497,11 @@ func (d *Daemon) Close() error {
 			if err := linkDev.Close(); err != nil && d.closeErr == nil {
 				d.closeErr = err
 			}
+		}
+		// Releasing the config lock lets a restarted daemon re-acquire
+		// it; the OS would release it on process death anyway.
+		if d.store != nil {
+			_ = d.store.Close()
 		}
 	})
 	return d.closeErr
@@ -563,6 +651,7 @@ func (d *Daemon) Config() api.ConfigView {
 		STUN:              cfg.Discovery.STUN,
 		STUNServer:        cfg.Discovery.STUNServer,
 		ConfigPath:        cfg.Path,
+		Departed:          cfg.Node.Departed,
 		Protocol:          version.Protocol,
 		NetworkSecret:     "redacted",
 		APIToken:          "redacted",
@@ -622,20 +711,12 @@ func (d *Daemon) SetName(name string) error {
 	return nil
 }
 
-// RemovePeer implements api.PeerWriter.
-func (d *Daemon) RemovePeer(id uint64) error {
-	if _, ok := d.peers.Get(id); !ok {
-		return fmt.Errorf("daemon: peer %016x is unknown", id)
-	}
-	d.peers.Remove(id)
-	d.sessions.RemovePeer(id)
-	d.routes.RemoveDirect(id)
-	d.emit(api.Event{Type: "peer_removed", PeerID: fmt.Sprintf("%016x", id)})
-	d.persistPeers()
-	d.emitPeerChanged()
-	d.emitRouteChanged()
-	return nil
-}
+// Step 12 (ADR-002): Daemon.RemovePeer is deleted with the DELETE
+// endpoint. No peer removes another peer; a peer leaves itself via
+// the system/leave endpoint. (session.Manager.RemovePeer stays: it
+// is internal session cleanup used by leave/rotate/stale-sweep, not
+// a peer-removal API, and the stale-sweeper's own peer_removed
+// event stays with it.)
 
 // ProbePeer implements api.Prober.
 func (d *Daemon) ProbePeer(ctx context.Context, id uint64) error {

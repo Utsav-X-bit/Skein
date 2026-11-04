@@ -38,9 +38,11 @@ func NewUnixListener(path, group, accessFile string) (net.Listener, error) {
 	return listenUnix(path, group, uids)
 }
 
-// readGrantedUIDs parses the access file: one uid per line, # comments and
-// blank lines ignored. An empty name means no file; a missing file means no
-// grants.
+// readGrantedUIDs parses the access file for socket ACL purposes: one
+// uid per line, # comments and blank lines ignored. Roles are stripped
+// here (the API layer resolves them via ParseAccessGrants); a line is
+// "uid" or "uid:role". An empty name means no file; a missing file means
+// no grants.
 func readGrantedUIDs(path string) ([]int, error) {
 	if path == "" {
 		return nil, nil
@@ -52,15 +54,19 @@ func readGrantedUIDs(path string) ([]int, error) {
 		}
 		return nil, err
 	}
+	grants, err := ParseAccessGrants(strings.NewReader(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("access file %s: %w", path, err)
+	}
 	var uids []int
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for id := range grants {
+		uidStr, ok := strings.CutPrefix(id, "uid:")
+		if !ok {
+			continue // a SID line cannot appear on a Unix access file
 		}
-		uid, err := strconv.Atoi(line)
+		uid, err := strconv.Atoi(uidStr)
 		if err != nil || uid < 0 {
-			return nil, fmt.Errorf("access file %s: bad uid %q", path, line)
+			return nil, fmt.Errorf("access file %s: bad uid %q", path, uidStr)
 		}
 		uids = append(uids, uid)
 	}
@@ -172,7 +178,7 @@ func (c *peerCredConn) ConnContext() context.Context {
 		uid = peerUID
 	}
 	if uid >= 0 {
-		return WithCaller(base, Caller{UID: uid})
+		return WithCaller(base, Caller{UID: uid, Transport: TransportKernel})
 	}
 	return base
 }

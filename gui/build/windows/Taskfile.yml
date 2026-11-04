@@ -112,22 +112,53 @@ tasks:
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
 
+  # Step 11: build the Windows system binaries (daemon, minimal
+  # helper, CLI) for the target arch into gui/bin. These are Go
+  # binaries from the repo root module, not Wails outputs, so this
+  # task runs from the repo root ({{.ROOT_DIR}}/..) with GOOS/GOARCH
+  # set explicitly. CGO is off: the daemon/helper must not need a
+  # C toolchain on the packaging host.
+  build:system-binaries:
+    summary: Builds skeind, skein-helper and skein for Windows
+    dir: '{{.ROOT_DIR}}/..'
+    cmds:
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skeind.exe" ./cmd/skeind
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skein-helper.exe" ./cmd/skein-helper
+      - go build -trimpath -o "{{.ROOT_DIR}}/{{.BIN_DIR}}/skein.exe" ./cmd/skein
+    env:
+      GOOS: windows
+      GOARCH: '{{.ARCH | default ARCH}}'
+      CGO_ENABLED: "0"
+    vars:
+      ARCH: '{{.ARCH | default ARCH}}'
+
   create:nsis:installer:
     summary: Creates an NSIS installer
     dir: build/windows/nsis
     deps:
       - task: build
+      - task: build:system-binaries
     preconditions:
       - sh: '[ "{{.INSTALL_SCOPE}}" = "user" ] || [ "{{.INSTALL_SCOPE}}" = "machine" ]'
         msg: "INSTALL_SCOPE must be 'user' or 'machine', got '{{.INSTALL_SCOPE}}'"
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
+      # Step 11: fetch Wintun for the TARGET arch (not always amd64:
+      # the old flow fetched amd64 regardless of .ARCH). The fetch
+      # script verifies the pinned 0.14.1 SHA-256 and fails the
+      # build on mismatch; it never ships an unverified DLL.
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" project.nsi
+        powershell -ExecutionPolicy Bypass -File "{{.ROOT_DIR}}\..\scripts\fetch-wintun.ps1" -Arch {{.ARCH}} -Dest "{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging"
         {{else}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" project.nsi
+        bash "{{.ROOT_DIR}}/../scripts/fetch-wintun.sh" "{{.ARCH}}" "{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging"
+        {{end}}
+      - |
+        {{if eq OS "windows"}}
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun-LICENSE.txt" project.nsi
+        {{else}}
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun-LICENSE.txt" project.nsi
         {{end}}
     vars:
       ARCH: '{{.ARCH | default ARCH}}'

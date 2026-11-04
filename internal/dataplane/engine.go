@@ -33,6 +33,12 @@ var (
 	ErrTTL         = errors.New("dataplane: ttl exhausted")
 	ErrOversize    = errors.New("dataplane: packet exceeds the MTU")
 	ErrUnknownPeer = errors.New("dataplane: destination is not a known peer")
+	// ErrExpired is returned when the active epoch is past its lifetime
+	// (M4 F-04): DATA pauses rather than reusing an expired key. The
+	// caller drops the packet; rekey is triggered (lower-ID side) or
+	// awaited (higher-ID side, whose control loop rekeys via Tick),
+	// and traffic resumes once the new epoch installs.
+	ErrExpired = errors.New("dataplane: session epoch expired, rekey in progress")
 )
 
 // handshakeRetry bounds how often a failed handshake is retried.
@@ -109,6 +115,9 @@ type Engine struct {
 	mu       sync.Mutex
 	inflight map[uint64]*inflight
 	started  map[uint64]time.Time
+	// fallbackDialers are non-dialer peers the control loop has armed
+	// for fallback dialing after a full silence timeout (M4 F-11).
+	fallbackDialers map[uint64]bool
 
 	now func() time.Time
 
@@ -140,16 +149,17 @@ func New(cfg Config, deps Deps) (*Engine, error) {
 		return nil, errors.New("dataplane: mtu must be positive")
 	}
 	return &Engine{
-		cfg:      cfg,
-		tun:      deps.TUN,
-		link:     deps.Link,
-		peers:    deps.Peers,
-		routes:   deps.Routes,
-		sessions: deps.Sessions,
-		inflight: make(map[uint64]*inflight),
-		started:  make(map[uint64]time.Time),
-		now:      time.Now,
-		closed:   make(chan struct{}),
+		cfg:             cfg,
+		tun:             deps.TUN,
+		link:            deps.Link,
+		peers:           deps.Peers,
+		routes:          deps.Routes,
+		sessions:        deps.Sessions,
+		inflight:        make(map[uint64]*inflight),
+		started:         make(map[uint64]time.Time),
+		fallbackDialers: make(map[uint64]bool),
+		now:             time.Now,
+		closed:          make(chan struct{}),
 	}, nil
 }
 
@@ -333,6 +343,13 @@ func (e *Engine) SendOverlayPacket(pkt []byte) error {
 		_ = e.ensureSession(peerID)
 		return ErrNoSession
 	}
+	if err := e.checkExpired(peerID); err != nil {
+		// Fail closed (M4 F-04): never seal DATA with an expired epoch.
+		// checkExpired triggers Rekey on the lower-ID side; the
+		// higher-ID side's Rekey is a no-op and its control loop
+		// drives the replacement from the other end.
+		return err
+	}
 	adArr := associatedData(wire.Data, peerID, e.cfg.LocalID, epoch)
 	ad := adArr[:]
 	_, counter, ct, err := e.sessions.Seal(peerID, ad, pkt)
@@ -478,9 +495,16 @@ func (e *Engine) handleConfirm(src netip.AddrPort, h wire.Header, payload []byte
 	}
 	adArr := associatedData(wire.Confirm, h.ToFinal, h.From, epoch)
 	ad := adArr[:]
-	if err := e.sessions.HandleConfirm(h.From, epoch, counter, ad, ct); err != nil {
+	installed, err := e.sessions.HandleConfirmInstalled(h.From, epoch, counter, ad, ct)
+	if err != nil {
 		e.counters.AuthFailure.Add(1)
 		return err
+	}
+	if !installed {
+		// A valid confirmation of a superseded session: no peer_up, no
+		// active-endpoint move, no counter increment — the winning
+		// session (if any) already reported establishment.
+		return nil
 	}
 	e.established(h.From, src)
 	return nil
@@ -632,11 +656,24 @@ func (e *Engine) forward(frame []byte, h wire.Header, src netip.AddrPort) error 
 	return nil
 }
 
+// checkExpired fails closed on an expired epoch and triggers a rekey,
+// shared by DATA and control sends (M4 F-04).
+func (e *Engine) checkExpired(peerID uint64) error {
+	if e.sessions.NeedsRekey(peerID, e.now()) {
+		_ = e.Rekey(peerID)
+		return ErrExpired
+	}
+	return nil
+}
+
 // SendControl encrypts and sends a control frame to peerID.
 func (e *Engine) SendControl(peerID uint64, typ wire.MessageType, payload []byte) error {
 	epoch, ok := e.sessions.ActiveEpoch(peerID)
 	if !ok {
 		return ErrNoSession
+	}
+	if err := e.checkExpired(peerID); err != nil {
+		return err
 	}
 	adArr := associatedData(typ, peerID, e.cfg.LocalID, epoch)
 	ad := adArr[:]
@@ -750,6 +787,9 @@ func (e *Engine) SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.Mess
 	epoch, ok := e.sessions.ActiveEpoch(peerID)
 	if !ok {
 		return ErrNoSession
+	}
+	if err := e.checkExpired(peerID); err != nil {
+		return err
 	}
 	adArr := associatedData(typ, peerID, e.cfg.LocalID, epoch)
 	ad := adArr[:]
@@ -882,7 +922,20 @@ func (e *Engine) sendConfirmBody(peerID uint64, body []byte, src netip.AddrPort)
 	return e.sendToPeer(peerID, wire.Confirm, body)
 }
 
-// ensureSession starts a handshake when this node is the configured dialer.
+// AllowFallbackDial arms fallback dialing for a non-dialer peer (M4
+// F-11); it is a no-op for unknown peers. The control loop calls it
+// only after a full silence timeout with no inbound contact.
+func (e *Engine) AllowFallbackDial(peerID uint64) {
+	if _, ok := e.peers.Get(peerID); !ok {
+		return
+	}
+	e.mu.Lock()
+	e.fallbackDialers[peerID] = true
+	e.mu.Unlock()
+}
+
+// ensureSession starts a handshake when this node is the configured dialer,
+// or when fallback dialing has been armed for a non-dialer peer.
 func (e *Engine) ensureSession(peerID uint64) error {
 	if e.sessions.HasSession(peerID) {
 		return nil
@@ -892,7 +945,12 @@ func (e *Engine) ensureSession(peerID uint64) error {
 		return ErrUnknownPeer
 	}
 	if !p.Dialer {
-		return ErrNoSession
+		e.mu.Lock()
+		armed := e.fallbackDialers[peerID]
+		e.mu.Unlock()
+		if !armed {
+			return ErrNoSession
+		}
 	}
 
 	_, routeExists := e.routes.Lookup(peerID)
@@ -959,6 +1017,13 @@ func (e *Engine) sendHandshake(p peer.Peer, attempt [session.AttemptSize]byte, p
 		From:    e.cfg.LocalID,
 		TTL:     wire.MaxTTL,
 	}
+	// Race the route and the direct candidates (M4 F-08): a stale relay
+	// route previously starved direct dialing entirely, because the
+	// route path returned before any candidate was tried. Now both are
+	// attempted; the handshake completes on whichever path works, and
+	// only a failure on every path is an error.
+	var firstErr error
+	sent := false
 	if r, ok := e.routes.Lookup(p.ID); ok && r.NextHop != p.ID {
 		h.ToNext = r.NextHop
 		if ep, ok := e.endpointFor(r.NextHop); ok {
@@ -966,7 +1031,11 @@ func (e *Engine) sendHandshake(p peer.Peer, attempt [session.AttemptSize]byte, p
 			if err != nil {
 				return err
 			}
-			return e.link.Send(ep, frame)
+			if err := e.link.Send(ep, frame); err != nil {
+				firstErr = err
+			} else {
+				sent = true
+			}
 		}
 	}
 	h.ToNext = p.ID
@@ -975,13 +1044,23 @@ func (e *Engine) sendHandshake(p peer.Peer, attempt [session.AttemptSize]byte, p
 		return err
 	}
 	if len(p.Candidates) == 0 {
+		if sent {
+			return nil
+		}
+		if firstErr != nil {
+			return firstErr
+		}
 		return ErrNoRoute
 	}
-	var firstErr error
 	for _, c := range p.Candidates {
 		if err := e.link.Send(c.Addr, frame); err != nil && firstErr == nil {
 			firstErr = err
+		} else if err == nil {
+			sent = true
 		}
+	}
+	if sent {
+		return nil
 	}
 	return firstErr
 }

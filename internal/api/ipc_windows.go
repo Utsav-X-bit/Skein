@@ -40,8 +40,10 @@ const (
 )
 
 // readGrantedSIDs parses the access file the helper writes: one SID string
-// per line, # comments and blank lines ignored. An empty name means no file;
-// a missing file means no grants.
+// per line, # comments and blank lines ignored. Roles are stripped here
+// (the API layer resolves them via ParseAccessGrants); a line is "SID"
+// or "SID:role". An empty name means no file; a missing file means no
+// grants.
 func readGrantedSIDs(path string) ([]string, error) {
 	if path == "" {
 		return nil, nil
@@ -53,13 +55,16 @@ func readGrantedSIDs(path string) ([]string, error) {
 		}
 		return nil, err
 	}
+	grants, err := ParseAccessGrants(strings.NewReader(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("access file %s: %w", path, err)
+	}
 	var sids []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for id := range grants {
+		if strings.HasPrefix(id, "uid:") {
+			continue // a uid line cannot appear on a Windows access file
 		}
-		sids = append(sids, line)
+		sids = append(sids, id)
 	}
 	return sids, nil
 }
@@ -342,6 +347,7 @@ func (p *pipeListener) verifyClient(h windows.Handle) Caller {
 	defer tok.Close()
 
 	var caller Caller
+	caller.Transport = TransportKernel
 	if user, err := tok.GetTokenUser(); err == nil {
 		caller.SID = user.User.Sid.String()
 	}
@@ -469,7 +475,8 @@ func CurrentSID() (string, error) {
 }
 
 // VerifyPipeServer authenticates the daemon behind a connected pipe handle:
-// the server process must exist and its image path must start with
+// the server process must exist and its image must be a Skein daemon
+// binary (see matchServerImage for how expectedImage is matched).
 // expectedImage (e.g. `C:\Program Files\Skein\skeind.exe`, compared
 // case-insensitively). It returns the server PID.
 func VerifyPipeServer(h windows.Handle, expectedImage string) (int, error) {
@@ -480,20 +487,79 @@ func VerifyPipeServer(h windows.Handle, expectedImage string) (int, error) {
 	if pid == 0 {
 		return 0, errors.New("pipe reports no server process")
 	}
+	image, err := PipeServerImage(pid)
+	if err != nil {
+		return 0, err
+	}
+	if !matchServerImage(image, expectedImage) {
+		return 0, fmt.Errorf("server image %q is not under %q", image, expectedImage)
+	}
+	return int(pid), nil
+}
+
+// PipeServerImage returns the NT device-path image of a process, e.g.
+// `\Device\HarddiskVolume3\Program Files\Skein\skeind.exe`.
+func PipeServerImage(pid uint32) (string, error) {
 	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return 0, fmt.Errorf("open server process: %w", err)
+		return "", fmt.Errorf("open server process: %w", err)
 	}
 	defer windows.CloseHandle(proc)
 	const maxPath = 1024
 	buf := make([]uint16, maxPath)
 	n, _, err := getProcessImageFileNameProc.Call(uintptr(proc), uintptr(unsafe.Pointer(&buf[0])), maxPath)
 	if err != nil {
-		return 0, fmt.Errorf("server image: %w", err)
+		return "", fmt.Errorf("server image: %w", err)
 	}
-	image := windows.UTF16ToString(buf[:n])
-	if !strings.HasPrefix(strings.ToLower(image), strings.ToLower(expectedImage)) {
-		return 0, fmt.Errorf("server image %q is not under %q", image, expectedImage)
+	return windows.UTF16ToString(buf[:n]), nil
+}
+
+// matchServerImage reports whether image (an NT device path or a
+// drive-letter path) satisfies expectedImage: empty means basename
+// skeind.exe/skein.exe; otherwise a full path matches by suffix after
+// stripping the expectation's drive letter, and a directory matches
+// by drive-stripped prefix.
+//
+// Note: GetProcessImageFileNameW returns an NT device path, not a
+// drive-letter path, so a naive prefix comparison against a
+// drive-letter expectation can never match (the pre-Step-2 code had
+// exactly that bug, and was never called, so it never fired).
+func matchServerImage(image, expectedImage string) bool {
+	if expectedImage == "" {
+		base := strings.ToLower(filepathBase(image))
+		return base == "skeind.exe" || base == "skein.exe"
 	}
-	return int(pid), nil
+	img := strings.ToLower(image)
+	exp := strings.ToLower(expectedImage)
+	if len(exp) >= 2 && exp[1] == ':' {
+		exp = exp[2:]
+	}
+	if strings.HasSuffix(exp, ".exe") {
+		return strings.HasSuffix(img, exp)
+	}
+	exp = strings.TrimSuffix(exp, `\`)
+	return strings.HasPrefix(img, exp+`\`) || strings.HasPrefix(driveStripped(img), exp+`\`)
+}
+
+// driveStripped removes a leading NT device prefix
+// (`\Device\HarddiskVolumeN`) from a path, if present, so a
+// drive-stripped directory expectation can be prefix-matched.
+func driveStripped(path string) string {
+	if !strings.HasPrefix(path, `\Device\`) {
+		return path
+	}
+	rest := strings.TrimPrefix(path, `\Device\`)
+	if i := strings.Index(rest, `\`); i >= 0 {
+		return rest[i:]
+	}
+	return path
+}
+
+// filepathBase is filepath.Base without adding another import: it
+// splits on both separators because NT device paths use backslashes.
+func filepathBase(path string) string {
+	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }

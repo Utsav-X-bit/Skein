@@ -46,6 +46,8 @@ func fileMode(path string) string {
 }
 
 // grantedUIDs reads the persisted granted-uid list from the IPC layer.
+// Lines are "uid" or "uid:role" (Step 1); roles are stripped here because
+// this view lists granted identities, not their roles.
 func grantedUIDs() []uint32 {
 	if runtime.GOOS == "windows" {
 		return nil // Windows grants are SIDs, persisted by the pipe layer
@@ -54,13 +56,17 @@ func grantedUIDs() []uint32 {
 	if err != nil {
 		return nil
 	}
+	grants, err := api.ParseAccessGrants(strings.NewReader(string(raw)))
+	if err != nil {
+		return nil
+	}
 	var out []uint32
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	for id := range grants {
+		uidStr, ok := strings.CutPrefix(id, "uid:")
+		if !ok {
 			continue
 		}
-		if n, err := strconv.ParseUint(line, 10, 32); err == nil {
+		if n, err := strconv.ParseUint(uidStr, 10, 32); err == nil {
 			out = append(out, uint32(n))
 		}
 	}

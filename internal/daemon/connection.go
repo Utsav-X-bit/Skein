@@ -208,8 +208,14 @@ func (d *Daemon) Disconnect(ctx context.Context) (api.Connection, error) {
 	return d.Connection(), nil
 }
 
-// Connect resumes the dataplane after a pause.
+// Connect resumes the dataplane after a pause. A departed node
+// (Step 7, ADR-002) refuses: rejoin with a fresh invite first
+// (system join clears the flag), then Connect. Otherwise a
+// Connect alone would silently undo a leave.
 func (d *Daemon) Connect(ctx context.Context) (api.Connection, error) {
+	if d.departed() {
+		return d.Connection(), &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "node has left its network; rejoin with a fresh invite first", Remediation: "call POST /api/v1/system/join with a fresh invite (confirm:true)"}
+	}
 	d.conn.mu.Lock()
 	switch d.conn.state {
 	case ConnConnected, ConnConnecting:
@@ -246,6 +252,26 @@ func (d *Daemon) publishConnection() {
 }
 
 // connLoop owns the dataplane lifecycle across pause/resume cycles until ctx
+// is cancelled. Step 5 (ADR-001 §5): a terminal dataplane error no
+// longer kills the process — and with it the control plane. Instead
+// the loop sets ConnError (with the error + remediation visible in
+// GET /api/v1/status), tears the dataplane down, and waits for an
+// explicit Connect retry or ctx cancellation. The control listener
+// started by Daemon.Run keeps answering throughout: diagnostics
+// stay queryable while the mesh side is down. Only a control-plane
+// failure (bind failure in Run, before connLoop) is still fatal.
+// waitForRetry reports whether Connect asked for a retry (true) or
+// ctx was cancelled (false).
+func waitForRetry(ctx context.Context, resumeCh chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-resumeCh:
+		return true
+	}
+}
+
+// connLoop owns the dataplane lifecycle across pause/resume cycles until ctx
 // is cancelled.
 func (d *Daemon) connLoop(ctx context.Context) error {
 	for {
@@ -256,8 +282,11 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		downCh := make(chan struct{})
 		d.conn.setGeneration(engCancel, ctlCancel, pauseCh, resumeCh, downCh)
 
-		if d.conn.isPaused() {
-			// Service restarted while paused: stay down until Connect.
+		if d.conn.isPaused() || d.departed() {
+			// Service restarted while paused or departed: stay
+			// down until Connect (paused) or rejoin+Connect
+			// (departed — Connect alone refuses while departed,
+			// so a departed node cannot wake itself here).
 			select {
 			case <-ctx.Done():
 				return nil
@@ -275,7 +304,14 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 			close(downCh)
 			d.conn.set(ConnError, "", err)
 			d.publishConnection()
-			return err
+			log.Printf("skein: connection error: %v (control plane stays up; retry with Connect)", err)
+			// Step 5: stay alive in ConnError for diagnostics and
+			// an explicit retry, instead of exiting and taking
+			// the control plane down with the mesh.
+			if !waitForRetry(ctx, resumeCh) {
+				return nil
+			}
+			continue
 		}
 		// The TUN interface now exists; add the interface-scoped firewall
 		// rules without blocking the dataplane or the control API.
@@ -319,7 +355,14 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		if engErr != nil {
 			d.conn.set(ConnError, "", engErr)
 			d.publishConnection()
-			return engErr
+			log.Printf("skein: connection error: %v (control plane stays up; retry with Connect)", engErr)
+			// Step 5: same ConnError survival as the startup
+			// path above — the mesh side restarts on Connect,
+			// the process and its control plane do not die.
+			if !waitForRetry(ctx, resumeCh) {
+				return nil
+			}
+			continue
 		}
 	}
 }
@@ -484,6 +527,12 @@ func (a engineAdapter) EnsureSession(peerID uint64) error {
 		return e.EnsureSession(peerID)
 	}
 	return errors.New("dataplane paused")
+}
+
+func (a engineAdapter) AllowFallbackDial(peerID uint64) {
+	if e := a.d.engine(); e != nil {
+		e.AllowFallbackDial(peerID)
+	}
 }
 
 func (a engineAdapter) DropSession(peerID uint64) {

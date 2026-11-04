@@ -14,6 +14,20 @@ import (
 // callerKey stores the kernel-derived caller identity in the request context.
 type callerKey struct{}
 
+// Transport names how a caller authenticated. Kernel means the identity
+// came from the kernel (SO_PEERCRED on the Unix socket, the client token
+// on the Windows pipe); Bearer means a dev-TCP client presented the raw
+// API token. The distinction is the authorisation gate: a bearer caller
+// never exceeds Read, however valid its token is (see roleFor).
+type Transport int
+
+const (
+	// TransportKernel is the zero value, so callers built without an
+	// explicit transport (tests, older code) are kernel callers.
+	TransportKernel Transport = iota
+	TransportBearer
+)
+
 // Caller identifies the process that opened a control connection. The
 // identity comes from the kernel (SO_PEERCRED on the Unix socket, the
 // impersonated client token on the Windows pipe), never from anything the
@@ -23,6 +37,8 @@ type Caller struct {
 	UID int
 	// SID is the client's user SID on Windows; "" when unknown.
 	SID string
+	// Transport is how the caller authenticated.
+	Transport Transport
 }
 
 // Known reports whether the transport derived a caller identity.
@@ -36,6 +52,8 @@ func (c Caller) ID() string {
 		return c.SID
 	case c.UID >= 0:
 		return fmt.Sprintf("uid:%d", c.UID)
+	case c.Transport == TransportBearer:
+		return "bearer"
 	default:
 		return "unknown"
 	}
@@ -55,14 +73,28 @@ func CallerFrom(ctx context.Context) Caller {
 	return c
 }
 
-// AuditEvent records one mutating request. Caller is a kernel identity
-// (uid or SID), not a secret.
+// AuditEvent records one mutating request, or (Step 5) one denied
+// authorisation attempt. Caller is a kernel identity (uid or SID),
+// not a secret.
 type AuditEvent struct {
 	Time   time.Time
 	Caller string
 	Method string
 	Path   string
 	Status int
+	// Secret marks a secret-endpoint mutation (e.g. network-invite
+	// generation). The record never carries the secret itself; Secret
+	// only says a secret was disclosed, so the log can be audited
+	// without leaking it.
+	Secret bool
+	// Denied marks an authorisation denial (Step 5): the caller was
+	// authenticated but held too low a role for the route.
+	// Required is the role the route demanded, Held is the role the
+	// caller held. Neither field ever carries a token, secret, or
+	// request body.
+	Denied   bool
+	Required Role
+	Held     Role
 }
 
 // authorized reports whether r may proceed. A request carrying a kernel

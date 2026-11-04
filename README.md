@@ -33,17 +33,26 @@ flowchart LR
   invites.
 - **Bounded routing**: distance vector with full paths, split horizon, and at
   most four links. Relays rewrite only `to_next` and `ttl`.
-- **One CLI binary**: `skein` runs the daemon (`skein run`), the system
-  service, the TUI dashboard, and every client command; `skeind` remains a
-  thin wrapper.
+- **One privileged daemon, one minimal helper** (ADR-001, see
+  [`docs/engineering/ADR-001.md`](docs/engineering/ADR-001.md)): `skeind` is
+  the service binary and the only privileged actor — it owns the TUN device,
+  routes, firewall, sessions, peers, and config (single writer, cross-process
+  lock), and serves the control API, including init/join/import, rotate,
+  reset, leave, and self-update. `skein` is the unprivileged CLI/TUI and a
+  control-API client; it never writes system config directly and never spawns
+  a daemon. The desktop GUI is unprivileged always.
 - **Desktop control surface**: `skein-desktop` is a Wails app for onboarding,
   peers, invites, activity, diagnostics, settings, firewall repair, and
   service control. It talks to the daemon over a root-owned Unix socket or
-  Windows named pipe, never a shell.
-- **Fixed-verb privileged helper**: `skein-helper` performs init/join/import,
-  service changes, secret rotation, resets, and signed updates. Every verb
+  Windows named pipe, never a shell, and verifies the daemon's server
+  identity on every dial.
+- **Fixed-verb privileged helper**: `skein-helper` keeps only `bootstrap`,
+  `install`, `uninstall`, `start`, `stop`, `restart`, `status`,
+  `grant-user`, `set-owner` (Windows), and `revoke-user`. Every verb
   validates its inputs and returns one JSON object; secrets travel on stdin or
-  a GUI-created pipe, never argv.
+  a GUI-created pipe, never argv. The removed verbs (`init`, `join`,
+  `import`, `rotate-secret`, `reset`, `update-daemon`) exit 1 and print the
+  daemon endpoint that replaces them (see [CLI](#cli)).
 - **Automatic firewall**: `skein run` opens the underlay port and trusts the
   overlay interface (ufw, firewalld, raw iptables fallback, or Windows
   Firewall), so any protocol works without extra rules. The desktop Security
@@ -65,14 +74,23 @@ Version `0.1.0-dev`.
 
 ## Install
 
-Skein ships as four pieces:
+Skein ships as five pieces:
 
 | File | Purpose |
 |---|---|
-| `skein` | CLI, daemon (`skein run`), and TUI dashboard |
-| `skein-helper` | Elevated fixed-verb helper used by the desktop |
-| `skein-desktop` | Wails desktop control surface |
+| `skeind` | Privileged daemon / system service (the only privileged actor) |
+| `skein` | Unprivileged CLI, TUI dashboard, and control-API client (`skein run` is the dev path only) |
+| `skein-helper` | Elevated minimal helper used by the desktop (retained verbs only, see above) |
+| `skein-desktop` | Wails desktop control surface (unprivileged) |
 | `wintun.dll` | Windows tunnel driver (Windows only) |
+
+Packaged installs are the supported path: the Linux package (nfpm) ships
+`skeind` at `/usr/local/bin/skeind`, `skein-helper` at
+`/usr/libexec/skein-helper`, the `skein` CLI, the systemd unit, the `skein`
+group (sysusers), the runtime directory (tmpfiles), and the polkit policy; the
+Windows installer (NSIS) ships the desktop, `skeind.exe`, `skein-helper.exe`,
+`skein.exe`, and `wintun.dll` into `C:\Program Files\Skein`. See
+[Packaging](#packaging) below.
 
 ### Linux
 
@@ -105,31 +123,45 @@ go build -trimpath -o skein-helper ./cmd/skein-helper
 (cd gui && wails3 build)          # -> gui/bin/skein-desktop
 ```
 
-**Install**
+**Install (packaged)**
 
-```bash
-sudo install -Dm0755 skein /usr/local/bin/skein
-sudo install -Dm0755 skein-helper /usr/libexec/skein-helper
-sudo install -Dm0755 gui/bin/skein-desktop /usr/local/bin/skein-desktop
-```
+Install the nfpm package for your distro; it places the binaries, unit,
+group, tmpfiles entry, and polkit policy above. Then create or join a
+network through the desktop, or from a terminal with the system commands
+below — the daemon, not the desktop and not the helper, writes the system
+config (`/etc/skein/skein.toml`) and identity, as the single writer.
 
 `skein-helper` must stay root-owned at `/usr/libexec/skein-helper`; the
-desktop invokes it with `pkexec`. The desktop writes the service config to
-`/etc/skein/skein.toml`, installs `skein.service`, starts it, and grants your
-uid access to `/run/skein/control.sock`.
+desktop invokes it with `pkexec` (or polkit). After bootstrap, the daemon
+grants your uid access to `/run/skein/control.sock` (0660, root:skein).
+
+**Build from source (dev layout)**
+
+```bash
+go build -trimpath -o skein ./cmd/skein
+go build -trimpath -o skeind ./cmd/skeind
+go build -trimpath -o skein-helper ./cmd/skein-helper
+(cd gui && wails3 build)          # -> gui/bin/skein-desktop
+```
 
 **Service without the desktop**
 
 ```bash
-skein init
-sudo skein install-service -c /home/$USER/.config/skein/skein.toml
-sudo systemctl enable --now skein
+# First node: the helper mints a single-use bootstrap token and starts the
+# daemon in bootstrap mode; the CLI posts it to the daemon bootstrap endpoint.
+sudo skein system init [--name NAME] [--port PORT] [--mtu MTU]
+# Joining node:
+sudo skein system join "skein:2:…"
+# Then: lifecycle via the helper, mesh operations via the daemon API:
+sudo skein system start|stop|restart
+skein system leave        # leave this node's own network (see Limits)
+skein system rotate       # rotate the network secret via the daemon, then helper restart
 ```
 
-`install-service` opens the underlay UDP port for IPv4 and IPv6 before the
-service starts; the overlay interface trust rule is added when the daemon
-starts. ufw and firewalld get family-neutral rules; without either, Skein
-appends its own iptables rules.
+`install-service` (via the minimal helper) opens the underlay UDP port for
+IPv4 and IPv6 before the service starts; the overlay interface trust rule is
+added when the daemon starts. ufw and firewalld get family-neutral rules;
+without either, Skein appends its own iptables rules.
 
 ### Windows
 
@@ -184,8 +216,10 @@ and `skein-desktop.exe`.
 
 ```powershell
 cd 'C:\Program Files\Skein'
-.\skein.exe init
-.\skein.exe install-service -c "$env:APPDATA\skein\skein.toml"
+# First node / joining node: helper bootstrap token + daemon bootstrap endpoint.
+.\skein.exe system init
+.\skein.exe system join "skein:2:…"
+.\skein.exe system start
 sc start skein
 ```
 
@@ -230,14 +264,18 @@ snapshot.
    `C:\Program Files\Skein\skein-desktop.exe` (Windows).
 2. Choose **Create a network**. The defaults are usually enough; set a name if
    you want peers to see it.
-3. Approve the UAC/`pkexec` prompt. The helper installs and starts the service.
+3. Approve the UAC/`pkexec` prompt. The helper mints a single-use bootstrap
+   token and starts the daemon in bootstrap mode; the daemon writes the
+   config and identity as the single writer and then runs normally (see
+   [Bootstrap](#bootstrap)).
 4. Copy the join string shown by the app.
 
 **Other nodes**
 
 1. Launch the desktop and choose **Join a network**.
 2. Paste the join string.
-3. Approve the elevation prompt. The node joins and starts automatically.
+3. Approve the elevation prompt. The node bootstraps, joins, and starts
+   automatically.
 
 If `/etc/skein` (Linux) or `C:\ProgramData\Skein` (Windows) already exists
 but the service is stopped, choose **Use an existing installation** instead of
@@ -253,7 +291,8 @@ With the service installed, the TUI attaches over the control socket/pipe; no
 skein dashboard
 ```
 
-Without a service, run a dev daemon:
+Without a service, run a dev daemon (dev-only; the system path is
+`skein system init|join` above):
 
 ```bash
 skein init                                  # prints a join string
@@ -279,9 +318,10 @@ no `-c` is needed. A stale per-user config no longer hides the service: the
 default-path client prefers the system control plane, while an explicit `-c`
 still selects a dev daemon.
 
-If no daemon is answering, the dashboard starts one from the selected config
-(and stops it when you quit). Under `sudo` the invoking user's config is used.
-Daemon output from a dashboard-started daemon goes to `<config>.log`.
+If no daemon is answering, the dashboard reports that and does not start
+one: it never spawns a daemon. Start the service (`skein system start`) or a
+dev daemon (`skein run -c …`) first, then run the dashboard. Under `sudo`
+the invoking user's config is used.
 
 The full-screen dashboard is a dense, btop-style network console. It uses a
 woven Skein infinity mark derived from `Logo.png` and reflows for compact,
@@ -378,17 +418,73 @@ Full key-by-key reference: [`docs/protocol.md`](docs/protocol.md#configuration).
 | `skein name [value]` | Show or set this node's name |
 | `skein dashboard` | Live TUI; attaches to the service socket/pipe or starts a dev daemon |
 | `skein status [--json]` | Overlay addresses, peers, uptime, counters |
-| `skein peers [list\|add\|rm]` | Manage peers |
+| `skein peers [list\|add]` | Manage peers (no removal: a peer leaves itself with `skein system leave`) |
 | `skein routes [--json]` | Reachability table |
 | `skein probe <peer-id>` | Re-probe candidate endpoints |
 | `skein ping <overlay-ip>` | Ping through the overlay |
 | `skein version`, `skein -v` | Version plus the commit the binary was built from |
 
+| `skein system init\|join\|import` | Bootstrap a system install (helper token + daemon bootstrap endpoint) |
+| `skein system reset [--purge] [--keep-identity]` | Reset via the daemon API (secret role) |
+| `skein system leave` | Leave this node's own network (no peer removal: see Limits) |
+| `skein system rotate` | Rotate the network secret via the daemon, then helper restart |
+| `skein system start\|stop\|restart` | Service lifecycle via the minimal helper |
+| `skein install-service`, `skein uninstall-service` | Register/remove the system service via the minimal helper |
+
 `setup`, `install-service`, `uninstall-service`, and `reset` are also available
 through `skein-helper` with fixed arguments; the desktop uses the helper so no
-shell is involved. Helper verbs: `init`, `join`, `import`, `install`,
-`uninstall`, `start`, `stop`, `restart`, `status`, `rotate-secret`, `reset`,
-`grant-user`, `set-owner`, `update-daemon`.
+shell is involved. Helper verbs (retained only): `bootstrap`, `install`,
+`uninstall`, `start`, `stop`, `restart`, `status`, `grant-user`,
+`set-owner`, `revoke-user`. Removed helper verbs (`init`, `join`, `import`,
+`rotate-secret`, `reset`, `update-daemon`) exit 1 with the daemon endpoint
+that replaces them.
+
+## Bootstrap
+
+First configuration of a system install is the one place where no config,
+identity, or grant exists yet, so it cannot go through the normal
+role-gated API. The mechanism, approved as ADR-001 §4:
+
+1. The minimal helper (elevated via pkexec/UAC/polkit) checks that no system
+   config exists, generates 256 bits with `crypto/rand`, and stores only the
+   SHA-256 hash — root-owned 0600, with the invoking uid/SID, a 10-minute
+   expiry, and the verb it was minted for (`init`, `join`, or `import`).
+   It installs and starts the daemon, and returns the plaintext token once
+   in stdout JSON to the invoking GUI/CLI. The token is held in memory
+   only: never logged, never written to disk in plaintext.
+2. The daemon starts in bootstrap mode: control socket/pipe only — no TUN,
+   no UDP port, no mDNS, no firewall, not a mesh member. It accepts exactly
+   one `POST /api/v1/bootstrap/init|join|import` with the token in the JSON
+   body (never in a URL or argv), verified in order: kernel transport
+   (bearer/dev-TCP callers get 403 even with a valid token), uid/SID match,
+   constant-time hash match, expiry, unused. Five failed attempts burn the
+   token.
+3. On success the token is marked used atomically before any config work,
+   the daemon writes config and identity as the sole writer, grants the
+   bootstrap caller the `secret` role, deletes the state file, and switches
+   in-process to normal mode. A configured daemon answers
+   `POST /api/v1/system/init` with 409, not by re-running bootstrap.
+
+Explicitly rejected: unauthenticated bootstrap from any local uid,
+long-lived bootstrap passwords, plaintext tokens on disk, and bearer-token
+bootstrap over a dev TCP port.
+
+## Control-plane roles
+
+The daemon authenticates every control-plane caller by kernel transport
+(Unix `SO_PEERCRED` uid, Windows pipe SID) and authorises by role from the
+access file (`/etc/skein/access` on Linux; the access file on Windows):
+`read` (status, peers, routes, logs, diagnostics), `mutate` (config patches,
+connection, probes, peer invites, firewall repair, leave), `secret`
+(network invites, rotate, reset, update check/apply, grants reload, and the
+system init/import endpoints), and `bootstrap` (bootstrap endpoints only,
+granted only by the bootstrap flow itself — never from the access file).
+Legacy bare uid/SID lines in the access file map to `read`, not `mutate`.
+The dev TCP listener (`api.listen` + bearer token) exists only for
+non-system dev configs and is refused for the system path; the system
+control plane is the single Unix socket (0660, root:skein) or Windows
+named pipe, and a bind failure is fatal — the daemon never runs headless
+with a dead control plane.
 
 ### Global flags
 
@@ -406,7 +502,9 @@ shell is involved. Helper verbs: `init`, `join`, `import`, `install`,
 | `SKEIN_NO_MOTION=1` | Render the dashboard as a static snapshot. |
 | `SKEIN_ASCII=1` | ASCII Skein mark for terminals without reliable Unicode. |
 | `SKEIN_NO_TRAY=1` | Start the desktop without a tray icon (diagnostics). |
-| `SKEIN_HELPER` | Override the helper path (desktop/development). |
+| `SKEIN_HELPER` | Override the helper path — honoured only in dev (`-tags skeindev`) builds; release GUI/CLI builds ignore it and all other security variables (`SKEIN_CONTROL_SOCKET`, `SKEIN_CONTROL_PIPE`, `SKEIN_DAEMON_IMAGE`, `SKEIN_HELPER_NO_PKEXEC`). Never ship a skeindev build. |
+| `SKEIN_NO_FIREWALL` (daemon) | **Honoured in release builds — operator variable, not dev-gated.** When set (any non-empty value), the daemon skips the firewall `Ensure` step after the TUN device exists. Do not set it on a packaged install except as a deliberate operator override; a follow-up (see `docs/engineering/ADR-001.md`) should give it the same release/dev treatment as the GUI/CLI security variables, so a release daemon ignores it. |
+| `SKEIN_STATE_FILE` (daemon) | **Honoured in release builds — operator/test variable, not dev-gated.** Overrides the persisted paused-state path (default `/var/lib/skein/state.json` on Linux, `%ProgramData%\Skein\state.json` on Windows). The daemon's own tests use it to point at a temp file; on a packaged install leave it unset. Same release/dev follow-up as `SKEIN_NO_FIREWALL`. |
 | `SKEIN_DEBUG=1` | Per-frame receive/forward/drop diagnostics on the daemon. |
 | `SKEIN_TUN_PROBE=1` | Root-only TUN kernel round-trip test. |
 | `SKEIN_NETNS_PREFIX` | Namespace prefix used by `test/netns/run.sh`. |
@@ -435,20 +533,70 @@ without secrets and rate-limited per caller. Errors use
 | `GET` | `/api/v1/identity` |
 | `GET` / `PATCH` | `/api/v1/config` (secrets redacted; patch allowlist) |
 | `POST` | `/api/v1/connection` (`connect` / `disconnect`) |
-| `GET` / `POST` | `/api/v1/peers` |
-| `DELETE` | `/api/v1/peers/{id}` |
+| `GET` / `POST` | `/api/v1/peers` (no peer-removal endpoint: a peer leaves itself, below) |
 | `POST` | `/api/v1/peers/{id}/probe` |
 | `GET` | `/api/v1/routes` |
 | `GET` | `/api/v1/activities` |
-| `POST` | `/api/v1/invites/peer`, `/api/v1/invites/network` |
+| `POST` | `/api/v1/invites/peer`, `/api/v1/invites/network` (network invite: `secret` role) |
 | `GET` | `/api/v1/logs?since=&limit=` |
 | `GET` | `/api/v1/events` (SSE; `Last-Event-ID` replay) |
 | `GET` | `/api/v1/diagnostics` |
 | `GET` | `/api/v1/security` |
 | `GET` | `/api/v1/firewall` |
 | `POST` | `/api/v1/firewall/repair` |
+| `POST` | `/api/v1/bootstrap/init\|join\|import` (bootstrap mode only, token in JSON body) |
+| `POST` | `/api/v1/system/leave` (`mutate` role; this node's own departure) |
+| `POST` | `/api/v1/system/rotate-secret`, `/api/v1/system/reset` (`secret` role) |
+| `POST` | `/api/v1/system/init\|join\|import` (configured daemon: init always 409; join/import are the normal-mode counterparts) |
+| `GET` / `POST` | `/api/v1/system/update/check`, `/api/v1/system/update/apply` (`secret` role) |
+| `POST` | `/api/v1/system/grants/reload` (`secret` role) |
 
 Full contract: [`docs/gui-api.md`](docs/gui-api.md).
+
+## Packaging
+
+- **Linux (nfpm, `gui/build/linux/nfpm/nfpm.yaml`)**: ships `skein-desktop`
+  (`/usr/local/bin/skein-desktop`), `skeind` (`/usr/local/bin/skeind`),
+  `skein-helper` (`/usr/libexec/skein-helper`), `skein`
+  (`/usr/local/bin/skein`), the systemd unit
+  (`/usr/lib/systemd/system/skein.service`, `ExecStart=/usr/local/bin/skeind
+  run -c /etc/skein/skein.toml`), the `skein` group (sysusers, `g skein -`),
+  the runtime directory (tmpfiles, `/run/skein 0750 root skein`), and the
+  polkit policy (`/usr/share/polkit-1/actions/org.skein.helper.policy`).
+  The unit and the shipped template agree on `ExecStart`; upgrades adopt the
+  new binary through `RegisterDaemon` without rewriting the unit, and
+  `<binary>.old` plus a timestamped config backup are kept on every upgrade.
+  Uninstall never purges config by default (Linux keeps `/etc/skein` and
+  `/var/lib/skein/backups`); purge is the daemon reset endpoint, not the
+  helper.
+- **Windows (NSIS, `gui/build/windows/nsis/project.nsi`)**: ships the
+  desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, `wintun.dll`, and
+  the Wintun licence into `C:\Program Files\Skein`. The build fails if any
+  required binary is missing. Uninstall runs the helper's `uninstall` verb
+  first (stop-then-delete) and aborts without deleting anything if the
+  helper fails, so no orphaned service is left behind; purge moves
+  `%ProgramData%\Skein` to `.bak` instead of deleting it.
+- **Wintun**: version 0.14.1, SHA-256-pinned in `scripts/fetch-wintun.sh`
+  (`.ps1`/`.cmd` wrappers for Windows). The packaged NSIS install places the
+  DLL in the admin-only install directory; a portable/zip layout in a
+  user-writable directory is not a blessed install (see the M9 checklist in
+  `docs/engineering/M9-ACCEPTANCE.md`).
+- **Self-update**: operator-driven, never automatic. The operator stages a
+  signed manifest (ed25519 + SHA-256, `key_id` + signed `valid_until`,
+  basename-only binary under the staging directory); the daemon's
+  `GET /api/v1/system/update/check` verifies it and refuses downgrades (the
+  new version must be strictly greater — a genuine downgrade is a package
+  reinstall, not an update), and `POST /api/v1/system/update/apply`
+  launches a detached apply process with verified rollback: on failure the
+  previous binary and config are restored and the `.old`/config backups are
+  never deleted. The GUI About/Updates screen drives check/apply; there is
+  no version-feed endpoint and no automatic check.
+- Content assertions: `scripts/packaging-assert.sh` parses both manifests
+  and fails if a shipped file, the install directory, the uninstall order,
+  or the purge behaviour drifts; `scripts/collapse-gates.sh` enforces the
+  collapse invariants (single writer, no daemon spawn from GUI/CLI, no
+  removed helper verb called from GUI/CLI, no removed endpoint, no secret
+  logging). Both run in CI.
 
 ## Firewall and any protocol
 
@@ -559,10 +707,19 @@ handshake backoff 1→30 s.
 - More than five nodes or routes longer than four links are unsupported.
 - No PMTUD or fragmentation; a dual-stack underlay path below 1382 bytes of
   PMTU is unsupported.
-- One shared secret, no per-peer ACLs or revocation. The join string contains
-  that secret, so anyone holding it can join the network.
-- The control API authenticates the caller, but every process running as a
-  granted uid can use it; relays can observe peer IDs, sizes, and timing.
+- One shared secret, no per-peer revocation. The join string contains
+  that secret, so anyone holding it can join the network. There is no
+  "remove this other peer": every peer is equal, anyone can invite, and a
+  peer leaves itself (`skein system leave`) and gossips a tombstone so other
+  peers withdraw its routes (see [How it works](#how-it-works) and
+  `docs/protocol.md`). Leaving is graceful departure, not a ban — the leaver
+  keeps its credential until a network-wide secret rotation, and rejoining
+  needs a fresh invite. Rotation evicts only after the service restarts and
+  every legitimate node rejoins with the new secret.
+- The control API authenticates the caller by kernel transport and
+  authorises by role (see [Control-plane roles](#control-plane-roles)); a
+  process running as a granted uid can use only its role's endpoints.
+  Relays can observe peer IDs, sizes, and timing.
 
 ## Testing
 

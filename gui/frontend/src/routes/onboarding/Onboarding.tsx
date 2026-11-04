@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, KeyRound, Network, Server, ShieldCheck } from "lucide-react";
 import * as SetupService from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
-import { ServiceService, errText } from "@/lib/api";
+import { ServiceService, errText, errKind } from "@/lib/api";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,22 +24,27 @@ export function Onboarding() {
   const create = useMutation({
     mutationFn: () => SetupService.Init({ name, port: Number(port), mtu: Number(mtu) } as never),
     onSuccess: (r) => { setResult(r); setMode("done"); },
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const join = useMutation({
     mutationFn: () => SetupService.Join(invite),
     onSuccess: (r) => { setResult(r); setMode("done"); },
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const start = useMutation({
     mutationFn: () => ServiceService.Start(),
     onSuccess: () => location.reload(),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const importCfg = useMutation({
     mutationFn: () => SetupService.Import(importPath),
     onSuccess: () => location.reload(),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const resetCfg = useMutation({
     mutationFn: () => SetupService.Reset(false),
     onSuccess: () => location.reload(),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const busy = create.isPending || join.isPending || start.isPending || importCfg.isPending || resetCfg.isPending;
   const error = create.error || join.error || start.error || importCfg.error || resetCfg.error;
@@ -73,7 +79,7 @@ export function Onboarding() {
         <Card><CardContent className="space-y-4 pt-5">
           <div><Label>device name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="studio" autoFocus /></div>
           <div className="grid gap-4 sm:grid-cols-2"><div><Label>listen port</Label><Input value={port} onChange={(e) => setPort(e.target.value)} inputMode="numeric" /></div><div><Label>MTU</Label><Input value={mtu} onChange={(e) => setMtu(e.target.value)} inputMode="numeric" /></div></div>
-          <p className="text-xs text-[var(--text-muted)]">Skein will create a root-owned config, install the service, open the underlay port, and trust the overlay interface. You may be asked to authenticate.</p>
+          <p className="text-xs text-[var(--text-muted)]">Skein will ask for administrator approval once, to install the system service and mint a one-time setup token. That approval does not give the app a shell or ongoing root access: after setup, the app talks only to the daemon over its local control socket, and every later privileged step (install/start/stop) asks again.</p>
           {error && (
             <div className="space-y-3 rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/5 p-3 text-xs text-[var(--danger)]">
               <div>{errText(error)}</div>

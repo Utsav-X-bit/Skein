@@ -49,17 +49,79 @@ WantedBy=multi-user.target
 `, execArg, cfgArg), nil
 }
 
+// writeUnitAtomic writes the unit via temp+rename in the unit
+// directory (plan §6.2): a half-written unit is worse than a
+// failed install, so the previous bytes are never truncated in
+// place. On daemon-reload failure it restores prev (nil prev =
+// fresh install: remove the new unit instead).
+func writeUnitAtomic(unit string, prev []byte, hadPrev bool) error {
+	tmp, err := os.CreateTemp("/etc/systemd/system", ".skein-unit-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(unit); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, unitPath); err != nil {
+		return err
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		restoreErr := restoreUnit(prev, hadPrev)
+		if restoreErr != nil {
+			return fmt.Errorf("service: daemon-reload: %w: %s (and restoring the previous unit failed: %v)", err, out, restoreErr)
+		}
+		return fmt.Errorf("service: daemon-reload: %w: %s (previous unit restored)", err, out)
+	}
+	return nil
+}
+
+func restoreUnit(prev []byte, hadPrev bool) error {
+	if !hadPrev {
+		os.Remove(unitPath)
+		_ = exec.Command("systemctl", "daemon-reload").Run()
+		return nil
+	}
+	tmp, err := os.CreateTemp("/etc/systemd/system", ".skein-unit-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(prev); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, unitPath); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	return nil
+}
+
 func install(executable, configPath string) error {
 	unit, err := unitFor(executable, configPath)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+	if err := writeUnitAtomic(unit, nil, false); err != nil {
 		return err
-	}
-	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
-		os.Remove(unitPath)
-		return fmt.Errorf("service: daemon-reload: %w: %s", err, out)
 	}
 	if out, err := exec.Command("systemctl", "enable", Name+".service").CombinedOutput(); err != nil {
 		os.Remove(unitPath)
@@ -70,21 +132,15 @@ func install(executable, configPath string) error {
 }
 
 func rewrite(executable, configPath string) error {
-	if _, err := os.Stat(unitPath); err != nil {
+	prev, err := os.ReadFile(unitPath)
+	if err != nil {
 		return fmt.Errorf("service: %w", err)
 	}
 	unit, err := unitFor(executable, configPath)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		return err
-	}
-	out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("service: daemon-reload: %w: %s", err, out)
-	}
-	return nil
+	return writeUnitAtomic(unit, prev, true)
 }
 
 func uninstall() error {

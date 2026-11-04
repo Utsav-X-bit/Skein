@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
 	"sync"
 	"time"
@@ -26,6 +27,23 @@ const (
 	StateInterval = 5 * time.Second
 	ProbeTimeout  = 2 * time.Second
 	PunchInterval = 30 * time.Second
+	// TombstoneRetention bounds how long a departure is re-gossiped
+	// (M4 P8): two STATE TTLs (180 s) from learning it. An offline peer
+	// that reconnects within that window to any node carrying the
+	// tombstone learns the departure; after it, the peer is gone from
+	// the mesh by ordinary timeout/expiry anyway. A live STATE from
+	// the tombstoned peer itself clears its tombstone immediately
+	// (rejoin proof), regardless of the retention clock.
+	TombstoneRetention = 2 * discovery.TTLFor
+	// DialerFallbackAfter is how long a non-dialer peer may go with no
+	// session and no inbound contact at all before this node is allowed
+	// to initiate anyway (M4 F-11). One full PeerTimeout of silence is
+	// the dead-by-construction signature: the sole dialer has never
+	// reached us, so waiting longer cannot help. Once fallback has
+	// fired for a peer it stays armed (the pair has proven the
+	// configured role does not work); simultaneous handshakes are
+	// resolved by the session attempt tie-break.
+	DialerFallbackAfter = PeerTimeout
 )
 
 // Transport is the control layer's view of the dataplane.
@@ -37,6 +55,10 @@ type Transport interface {
 	EnsureSession(peerID uint64) error
 	DropSession(peerID uint64)
 	Punch(peerID uint64, addr netip.AddrPort) error
+	// AllowFallbackDial arms the dataplane to initiate a handshake to a
+	// non-dialer peer (M4 F-11); without it ensureSession refuses
+	// non-dialers. It is a no-op for unknown peers.
+	AllowFallbackDial(peerID uint64)
 }
 
 // Local describes this node's advertisement.
@@ -60,19 +82,44 @@ type Controller struct {
 
 	mu          sync.Mutex
 	lastPing    map[uint64]time.Time
+	firstSeen   map[uint64]time.Time
+	fallbackOn  map[uint64]bool
+	tombstones  map[uint64]tombstone
+	pendingTomb map[uint64]map[uint64]bool
 	lastPunch   map[uint64]time.Time
-	lastPunchIn map[uint64]time.Time
-	observed    map[uint64]netip.AddrPort
-	lastState   time.Time
-	seq         uint64
-	challenges  map[[16]byte][]chan challengeReply
-	trafficPrev map[uint64]trafficSample
-	lastRTT     map[uint64]time.Duration
-	onEvent     func(typ string, peerID uint64)
-	paused      bool
+	lastPunchIn map[punchKey]time.Time
+	// punchPending holds nonces this node sent to a relay for a target,
+	// so a delivery can be verified (M4 F-07). Single-use: consumed on
+	// the first verified delivery, expired after 2 punch intervals.
+	punchPending map[punchKey]pendingNonce
+	observed     map[uint64]netip.AddrPort
+	lastState    time.Time
+	seq          uint64
+	challenges   map[[16]byte][]chan challengeReply
+	trafficPrev  map[uint64]trafficSample
+	lastRTT      map[uint64]time.Duration
+	onEvent      func(typ string, peerID uint64)
+	paused       bool
 }
 
 type trafficSample struct{ rx, tx uint64 }
+
+// punchKey identifies one punch direction: relay -> target.
+type punchKey struct {
+	from, target uint64
+}
+
+// tombstone is a confirmed departure (M4 P8): the peer has left, its
+// routes must not be used, and the fact is re-gossiped until expiry.
+type tombstone struct {
+	seq     uint64
+	expires time.Time
+}
+
+type pendingNonce struct {
+	nonce [16]byte
+	at    time.Time
+}
 
 // New creates a controller.
 func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.Merger, eng Transport) (*Controller, error) {
@@ -82,21 +129,28 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 	if peers == nil || routes == nil || merger == nil || eng == nil {
 		return nil, errors.New("control: all dependencies are required")
 	}
-	return &Controller{
-		local:       local,
-		peers:       peers,
-		routes:      routes,
-		merger:      merger,
-		eng:         eng,
-		now:         time.Now,
-		lastPing:    make(map[uint64]time.Time),
-		lastPunch:   make(map[uint64]time.Time),
-		lastPunchIn: make(map[uint64]time.Time),
-		observed:    make(map[uint64]netip.AddrPort),
-		challenges:  make(map[[16]byte][]chan challengeReply),
-		trafficPrev: make(map[uint64]trafficSample),
-		lastRTT:     make(map[uint64]time.Duration),
-	}, nil
+	ctl := &Controller{
+		local:        local,
+		peers:        peers,
+		routes:       routes,
+		merger:       merger,
+		eng:          eng,
+		now:          time.Now,
+		lastPing:     make(map[uint64]time.Time),
+		firstSeen:    make(map[uint64]time.Time),
+		fallbackOn:   make(map[uint64]bool),
+		tombstones:   make(map[uint64]tombstone),
+		pendingTomb:  make(map[uint64]map[uint64]bool),
+		lastPunch:    make(map[uint64]time.Time),
+		lastPunchIn:  make(map[punchKey]time.Time),
+		punchPending: make(map[punchKey]pendingNonce),
+		observed:     make(map[uint64]netip.AddrPort),
+		challenges:   make(map[[16]byte][]chan challengeReply),
+		trafficPrev:  make(map[uint64]trafficSample),
+		lastRTT:      make(map[uint64]time.Duration),
+	}
+	merger.OnDeparted = ctl.handleDeparted
+	return ctl, nil
 }
 
 // SetLocalCandidates changes the advertised underlay endpoints without a
@@ -179,6 +233,32 @@ func (c *Controller) Tick() {
 		// Configured dialers connect without waiting for overlay traffic.
 		if p.Dialer {
 			_ = c.eng.EnsureSession(p.ID)
+		} else if !c.eng.HasSession(p.ID) {
+			// M4 F-11 dialer fallback: a non-dialer peer that has
+			// never been contacted at all, for a full silence
+			// timeout, is a dead-by-construction pair. Arm fallback
+			// dialing once and report it, instead of waiting forever.
+			c.mu.Lock()
+			first, ok := c.firstSeen[p.ID]
+			if !ok {
+				first = now
+				c.firstSeen[p.ID] = first
+			}
+			armed := c.fallbackOn[p.ID]
+			c.mu.Unlock()
+			if !armed && p.LastSeen.IsZero() && now.Sub(first) >= DialerFallbackAfter {
+				c.eng.AllowFallbackDial(p.ID)
+				_ = c.eng.EnsureSession(p.ID)
+				c.mu.Lock()
+				c.fallbackOn[p.ID] = true
+				c.mu.Unlock()
+				log.Printf("skein: dialer fallback for peer %016x: non-dialer never contacted after %s, initiating anyway", p.ID, DialerFallbackAfter)
+				c.event("dialer_fallback", p.ID)
+			}
+		} else {
+			c.mu.Lock()
+			delete(c.firstSeen, p.ID)
+			c.mu.Unlock()
 		}
 		if p.State == peer.StateUp && !p.LastSeen.IsZero() && now.Sub(p.LastSeen) > PeerTimeout {
 			// The path is dead: forget the session and the endpoint, or the
@@ -210,10 +290,14 @@ func (c *Controller) Tick() {
 	}
 }
 
-func (c *Controller) broadcastState(now time.Time) {
+func (c *Controller) broadcastState(now time.Time) bool {
 	payload, err := c.statePayload(now)
 	if err != nil {
-		return
+		// F-02: this error was previously swallowed silently, so a
+		// gossip outage looked like "routes never appear". Log it so a
+		// STATE build failure is diagnosable from the daemon log.
+		log.Printf("skein: state broadcast failed: %v", err)
+		return false
 	}
 	sent := false
 	for _, p := range c.peers.List() {
@@ -226,6 +310,110 @@ func (c *Controller) broadcastState(now time.Time) {
 	}
 	if sent {
 		c.lastState = now
+	}
+	return sent
+}
+
+// BroadcastNow sends one STATE immediately and reports whether any peer
+// received it. The daemon's LeaveSystem uses it so Propagated is true
+// only when the leave announcement actually left this node (M4 P8).
+func (c *Controller) BroadcastNow() bool {
+	return c.broadcastState(c.now())
+}
+
+// AnnounceDeparted records this node's own departure as a confirmed
+// tombstone to be gossiped (M4 P8). It does not send anything itself;
+// the caller broadcasts next and only then stops the dataplane.
+func (c *Controller) AnnounceDeparted(id uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tombstones[id] = tombstone{seq: c.seq, expires: c.now().Add(TombstoneRetention)}
+	delete(c.pendingTomb, id)
+}
+
+// handleDeparted applies tombstones from a STATE (M4 P8 trust rules):
+// a self-announcement (origin == departed, authenticated as that peer by
+// the session + the merger's origin check) is confirmed immediately;
+// a re-gossiped tombstone needs a second distinct origin before it is
+// applied or re-gossiped, so one member cannot kill another peer's
+// routes with a forged departure. A confirmed tombstone marks the peer
+// down, withdraws every route to it, drops its session, and is carried
+// in this node's own STATE until retention expires.
+func (c *Controller) handleDeparted(origin, seq uint64, departed []uint64, expires time.Time) {
+	_ = expires
+	now := c.now()
+	c.mu.Lock()
+	var confirm []uint64
+	for _, id := range departed {
+		if id == 0 || id == c.local.ID {
+			continue
+		}
+		if origin == id {
+			confirm = append(confirm, id)
+			continue
+		}
+		origins := c.pendingTomb[id]
+		if origins == nil {
+			origins = make(map[uint64]bool)
+			c.pendingTomb[id] = origins
+		}
+		origins[origin] = true
+		if len(origins) >= 2 {
+			confirm = append(confirm, id)
+		}
+	}
+	for _, id := range confirm {
+		if old, ok := c.tombstones[id]; ok && old.seq >= seq {
+			continue
+		}
+		c.tombstones[id] = tombstone{seq: seq, expires: now.Add(TombstoneRetention)}
+		delete(c.pendingTomb, id)
+	}
+	c.mu.Unlock()
+	for _, id := range confirm {
+		c.peers.SetState(id, peer.StateDown)
+		c.routes.WithdrawDestination(id)
+		c.eng.DropSession(id)
+		c.event("peer_departed", id)
+	}
+}
+
+// clearTombstoneIfAlive drops a tombstone when the tombstoned peer itself
+// sends a STATE that does not announce its own departure: the peer is
+// demonstrably back (rejoin proof), so the tombstone must not outlive it.
+func (c *Controller) clearTombstoneIfAlive(from uint64, departedInState []uint64) {
+	for _, id := range departedInState {
+		if id == from {
+			return
+		}
+	}
+	c.mu.Lock()
+	delete(c.tombstones, from)
+	delete(c.pendingTomb, from)
+	c.mu.Unlock()
+}
+
+// liveDeparted returns confirmed, unexpired tombstone IDs in sorted order.
+func (c *Controller) liveDeparted(now time.Time) []uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []uint64
+	for id, t := range c.tombstones {
+		if now.After(t.expires) {
+			delete(c.tombstones, id)
+			continue
+		}
+		out = append(out, id)
+	}
+	sortIDs(out)
+	return out
+}
+
+func sortIDs(ids []uint64) {
+	for i := 1; i < len(ids); i++ {
+		for j := i; j > 0 && ids[j] < ids[j-1]; j-- {
+			ids[j], ids[j-1] = ids[j-1], ids[j]
+		}
 	}
 }
 
@@ -268,7 +456,7 @@ func (c *Controller) statePayload(now time.Time) ([]byte, error) {
 		})
 	}
 	activities := c.activityRecords(now)
-	state, err := discovery.Build(records, routes, activities, seq, discovery.TTLFor, now)
+	state, err := discovery.BuildWithDeparted(records, routes, activities, c.liveDeparted(now), seq, discovery.TTLFor, now)
 	if err != nil {
 		return nil, err
 	}
@@ -336,9 +524,37 @@ type challengeReply struct {
 func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.MessageType, payload []byte) {
 	c.peers.MarkSeen(from, c.now())
 	if src.IsValid() {
-		c.mu.Lock()
-		c.observed[from] = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
-		c.mu.Unlock()
+		// Record only direct arrivals as the peer's observed endpoint
+		// (M4 F-07 companion): for a relayed frame src is the last
+		// hop's address, not the origin's, and recording it would
+		// make punch dial the relay instead of the peer. A source
+		// that is another peer's candidate/active endpoint is a
+		// last hop; anything else is treated as a direct arrival
+		// (including a NAT mapping not in the candidate list).
+		record := true
+		for _, q := range c.peers.List() {
+			if q.ID == from {
+				continue
+			}
+			if q.ActiveEndpoint.IsValid() && q.ActiveEndpoint == src {
+				record = false
+				break
+			}
+			for _, cand := range q.Candidates {
+				if cand.Addr == src {
+					record = false
+					break
+				}
+			}
+			if !record {
+				break
+			}
+		}
+		if record {
+			c.mu.Lock()
+			c.observed[from] = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
+			c.mu.Unlock()
+		}
 	}
 	switch typ {
 	case wire.Pong:
@@ -358,6 +574,11 @@ func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.Mes
 		return
 	case wire.State:
 		_ = c.merger.Merge(from, payload)
+		// Rejoin proof: a live STATE from a peer that does not
+		// announce its own departure clears its tombstone.
+		if st, err := discovery.Decode(payload); err == nil {
+			c.clearTombstoneIfAlive(from, st.Departed)
+		}
 	case wire.Punch:
 		c.handlePunch(from, src, payload)
 	case wire.Challenge:
@@ -491,6 +712,7 @@ func (c *Controller) maybePunch(peerID, relay uint64, now time.Time) {
 	}
 	c.mu.Lock()
 	c.lastPunch[peerID] = now
+	c.punchPending[punchKey{from: relay, target: peerID}] = pendingNonce{nonce: nonce, at: now}
 	c.mu.Unlock()
 }
 
@@ -501,13 +723,49 @@ func (c *Controller) handlePunch(from uint64, src netip.AddrPort, payload []byte
 		return
 	}
 	if req.HasAddr {
-		// Delivery: only honour it occasionally per peer.
+		// Delivery (M4 F-07): verify before dialing anything.
+		addr := netip.AddrPortFrom(req.Addr.Addr().Unmap(), req.Addr.Port())
+		if addr.Addr().IsLoopback() || addr.Addr().IsLinkLocalUnicast() ||
+			addr.Addr() == c.local.OverlayV4 || addr.Addr() == c.local.OverlayV6 {
+			// Never emit handshake msg1s to loopback, link-local, or
+			// our own overlay address on a member's say-so.
+			return
+		}
 		now := c.now()
+		key := punchKey{from: from, target: req.Target}
 		c.mu.Lock()
-		last := c.lastPunchIn[req.Target]
+		pending, hasPending := c.punchPending[key]
+		if hasPending && now.Sub(pending.at) > 2*PunchInterval {
+			delete(c.punchPending, key)
+			hasPending = false
+		}
+		c.mu.Unlock()
+		if hasPending && pending.nonce != req.Nonce {
+			// Forged or replayed delivery for a request we made to
+			// this relay: the nonce is the proof, and it does not
+			// match. Do not consume the rate-limit slot either.
+			return
+		}
+		if !hasPending {
+			// No outstanding request to this relay for this target:
+			// only the peer that is actually the route next hop to
+			// the target may introduce it. Any other member's
+			// delivery is rejected, however well-formed.
+			r, ok := c.routes.Lookup(req.Target)
+			if !ok || r.NextHop != from {
+				return
+			}
+		}
+		// Rate-limit per (relay, target), not per target alone, so
+		// one requester cannot crowd out another's introductions.
+		c.mu.Lock()
+		last := c.lastPunchIn[key]
 		tooSoon := !last.IsZero() && now.Sub(last) < PunchInterval
 		if !tooSoon {
-			c.lastPunchIn[req.Target] = now
+			c.lastPunchIn[key] = now
+			if hasPending {
+				delete(c.punchPending, key)
+			}
 		}
 		c.mu.Unlock()
 		if tooSoon {

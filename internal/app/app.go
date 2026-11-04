@@ -9,21 +9,56 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Utsav-X-bit/skein/internal/bootstrap"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/daemon"
-	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
-	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
 // Run loads the configuration and identity and runs the daemon until ctx is
 // cancelled. It must be called with root/Administrator privileges.
+//
+// Step 4 (ADR-001 §2.2): if the system config is missing, Run does not
+// fail the service into a restart loop. Instead it checks the bootstrap
+// state: a valid, unused, unexpired token means the service was
+// started by the minimal helper's bootstrap verb, so Run runs
+// bootstrap mode and transitions in-process to normal mode; no valid
+// state means the node is simply not configured yet, and Run logs
+// that and exits 0 (the GUI/helper starts it again after minting a
+// token). A dev (non-system) config that is missing is still an
+// error — bootstrap mode is a system-service state, not a dev path.
 func Run(ctx context.Context, configPath string) error {
 	cfg, err := conf.Load(configPath)
 	if err != nil {
+		if configPath == SystemConfigPath() {
+			if st, serr := bootstrap.Load(BootstrapStatePath()); serr == nil && st.Valid() {
+				return RunBootstrap(ctx, configPath)
+			}
+		}
+		if configPath == SystemConfigPath() {
+			// Unconfigured, no valid bootstrap: a clean exit, not a
+			// crash the service manager would restart-loop.
+			if _, serr := os.Stat(configPath); os.IsNotExist(serr) {
+				log.Printf("skein: not configured; run bootstrap via the GUI or minimal helper")
+				return nil
+			}
+		}
 		return err
 	}
+	// Step 5 (ADR-001 §5): a system config that also sets api.listen
+	// refuses to start, rather than silently serving a second,
+	// bearer-token control plane beside the kernel plane. Normal
+	// install/bootstrap flows already clear api.listen before the
+	// service starts, so this fires only for a hand-edited or
+	// otherwise broken system config. Checked before the leftover
+	// bootstrap-state deletion, so a refusal does not destroy state.
+	if err := checkSystemDevTCP(configPath, cfg); err != nil {
+		return err
+	}
+	// A config exists: any leftover bootstrap state is dead and is
+	// deleted, so a later restart can never re-enter bootstrap mode.
+	_ = bootstrap.DeleteState(BootstrapStatePath())
 	if err := conf.CheckPermissions(configPath); err != nil {
 		return err
 	}
@@ -53,32 +88,22 @@ func Run(ctx context.Context, configPath string) error {
 	return runFn(ctx)
 }
 
-// InstallService registers the current executable as a system service that
-// runs this node with configPath. It opens the underlay port for IPv4 and IPv6
-// immediately, so the node is reachable as soon as the service starts.
-func InstallService(configPath string) error {
-	cfg, err := conf.Load(configPath)
-	if err != nil {
-		return err
+// checkSystemDevTCP implements the Step 5 service-path rule: the
+// installed service serves the control API only on the kernel
+// transport (socket/pipe). A system config with api.listen set is a
+// refusal with a remediation, never a second listener and never a
+// silent ignore. Dev (non-system) configs are unaffected — dev TCP
+// is legitimate there, bearer-capped at read by the API gate.
+func checkSystemDevTCP(configPath string, cfg conf.Config) error {
+	if configPath == SystemConfigPath() && cfg.API.Listen != "" {
+		return fmt.Errorf("system config %s sets api.listen %q: the installed service serves the control API only on the socket/pipe transport; clear api.listen (helper install/bootstrap already clears it) and restart", configPath, cfg.API.Listen)
 	}
-	if err := firewall.EnsurePort(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort}); err != nil {
-		log.Printf("skein: warning: firewall: %v", err)
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	absConfig, err := filepath.Abs(configPath)
-	if err != nil {
-		return err
-	}
-	return service.Install(executable, absConfig)
+	return nil
 }
 
-// UninstallService removes the service and the firewall rules this node added.
-func UninstallService(configPath string) error {
-	if cfg, err := conf.Load(configPath); err == nil {
-		_ = firewall.Remove(firewall.Config{Interface: cfg.Node.Interface, Port: cfg.Node.ListenPort})
-	}
-	return service.Uninstall()
-}
+// Step 12: InstallService/UninstallService are deleted, not kept behind
+// a flag. Install is helper-only: the minimal helper's install verb
+// goes through EnsureServiceDaemon -> service.RegisterDaemon (Step 6),
+// and uninstall goes through the helper's uninstall path. Any caller
+// that reached for these wrappers was the skeind compat alias, also
+// deleted in Step 12.

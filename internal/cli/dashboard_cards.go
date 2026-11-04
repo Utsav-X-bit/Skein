@@ -64,11 +64,7 @@ func (d *dashboard) renderMetricStrip(v view, r dashboardRect) []string {
 		" RTT " + d.paint(ansiBrand, fmtRTT(rtt)) + fmt.Sprintf("   JITTER %.1f ms", jitter),
 	}
 	if v.err != nil {
-		recovery := ""
-		if v.recoverErr != nil {
-			recovery = " · " + strings.Split(v.recoverErr.Error(), "\n")[0]
-		}
-		body[1] = d.paint(ansiError, " ! disconnected from daemon · "+age(v.lastFetch)+recovery)
+		body[1] = d.paint(ansiError, " ! disconnected from daemon · "+age(v.lastFetch))
 	}
 	return d.card("LIVE MESH", body, r)
 }

@@ -220,6 +220,127 @@ func TestTCPConcurrentSendsStayFramed(t *testing.T) {
 	}
 }
 
+// TestSwitchAcceptSideReplyUsesTCP is the M4 P1 (F-01) regression test: a
+// reply to the source of an accepted TCP connection must travel over that
+// connection, not as a UDP datagram to the peer's ephemeral TCP port (where
+// no UDP socket exists and the frame is silently lost). On the old code the
+// accept side's Switch.Send fell through to UDP because `forced` is only set
+// by an explicit DialTCP on the dial side.
+func TestSwitchAcceptSideReplyUsesTCP(t *testing.T) {
+	a, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if !a.HasTCP() || !b.HasTCP() {
+		t.Skip("TCP fallback unavailable")
+	}
+	bAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), b.Port())
+	if err := a.DialTCP(bAddr); err != nil {
+		t.Fatalf("DialTCP: %v", err)
+	}
+	payload := frameBytes(40)
+	if err := a.Send(bAddr, payload); err != nil {
+		t.Fatalf("tcp send: %v", err)
+	}
+	buf := make([]byte, 64)
+	n, from, transport, err := b.RecvTagged(buf)
+	if err != nil || n != len(payload) || transport != "tcp" {
+		t.Fatalf("tcp recv: n=%d transport=%q err=%v", n, transport, err)
+	}
+	// Reply to the exact source of the accepted connection (ephemeral port).
+	reply := frameBytes(30)
+	if err := b.Send(from, reply); err != nil {
+		t.Fatalf("accept-side reply Send: %v", err)
+	}
+	got := make(chan struct {
+		n         int
+		transport string
+		err       error
+	}, 1)
+	go func() {
+		n, _, transport, err := a.RecvTagged(buf)
+		got <- struct {
+			n         int
+			transport string
+			err       error
+		}{n, transport, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil || r.n != len(reply) || r.transport != "tcp" {
+			t.Fatalf("reply recv: n=%d transport=%q err=%v", r.n, r.transport, r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("accept-side reply never arrived over TCP (old code sent it as UDP to an ephemeral port)")
+	}
+}
+
+// TestSwitchSendToListenAddrUsesAcceptedTCP covers TCP relaying: a node that
+// only holds an accepted connection from a peer (keyed by the peer's ephemeral
+// port) must still reach that peer over TCP when sending to the peer's listen
+// address, because no UDP path may exist. The fallback applies only when
+// exactly one connection exists for the destination IP, so it never guesses
+// between two peers behind one NAT address.
+func TestSwitchSendToListenAddrUsesAcceptedTCP(t *testing.T) {
+	a, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if !a.HasTCP() || !b.HasTCP() {
+		t.Skip("TCP fallback unavailable")
+	}
+	bAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), b.Port())
+	if err := a.DialTCP(bAddr); err != nil {
+		t.Fatalf("DialTCP: %v", err)
+	}
+	payload := frameBytes(40)
+	if err := a.Send(bAddr, payload); err != nil {
+		t.Fatalf("tcp send: %v", err)
+	}
+	buf := make([]byte, 64)
+	if _, _, transport, err := b.RecvTagged(buf); err != nil || transport != "tcp" {
+		t.Fatalf("tcp recv: transport=%q err=%v", transport, err)
+	}
+	// b sends to a's listen address, not to the ephemeral dial source.
+	aAddr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.Port())
+	if err := b.Send(aAddr, payload); err != nil {
+		t.Fatalf("send to listen addr: %v", err)
+	}
+	got := make(chan struct {
+		n         int
+		transport string
+		err       error
+	}, 1)
+	go func() {
+		n, _, transport, err := a.RecvTagged(buf)
+		got <- struct {
+			n         int
+			transport string
+			err       error
+		}{n, transport, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil || r.n != len(payload) || r.transport != "tcp" {
+			t.Fatalf("recv: n=%d transport=%q err=%v", r.n, r.transport, r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("frame to listen address never arrived over the accepted TCP connection")
+	}
+}
+
 func TestSwitchSurvivesTruncatedDatagram(t *testing.T) {
 	a, err := Listen(0)
 	if err != nil {

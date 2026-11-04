@@ -34,3 +34,11 @@ func peerCredential(c net.Conn) (int, error) {
 	}
 	return int(cred.Uid), nil
 }
+
+// peerCredFull is unsupported on BSD: LOCAL_PEERCRED (Xucred) carries a
+// uid but no peer pid, so executable-image verification cannot be done
+// from the connection. VerifyUnixServer falls back to the socket-file
+// ownership check on these platforms.
+func peerCredFull(net.Conn) (int, int, error) {
+	return -1, -1, errors.New("peer pid is unavailable on this Unix")
+}

@@ -61,7 +61,21 @@ func rewrite(executable, configPath string) error {
 	return nil
 }
 
+// uninstall stops the service before deleting it (Step 10 fix for the
+// Agent D Windows bug: the old code deleted a running service without
+// stopping it first). "Already stopped" (1062) and "no such service"
+// (1060) are both fine — uninstall must be idempotent. Any other stop
+// failure aborts before the delete, so a service that refuses to stop
+// is never left half-deleted. Linux already stopped first via
+// systemctl disable --now, so only the Windows backend changes here.
+// Compile-only on this VM: the real stop-then-delete cycle is on the
+// user's Windows-machine checklist.
 func uninstall() error {
+	if out, err := scCmd("stop", Name).CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "1062") && !strings.Contains(string(out), "1060") {
+			return fmt.Errorf("service: sc stop before delete: %w: %s", err, out)
+		}
+	}
 	out, err := scCmd("delete", Name).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "1060") {
 		return fmt.Errorf("service: sc delete: %w: %s", err, out)

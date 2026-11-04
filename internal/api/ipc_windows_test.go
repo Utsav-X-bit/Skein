@@ -120,3 +120,32 @@ func TestPipeTwoClients(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestMatchServerImage is the Windows unit-logic half of Step 2
+// server-identity verification. It runs only on Windows (this file
+// is windows-only); on Linux it is compile-checked by the Windows
+// cross-build, not executed. The device-path cases cover the
+// pre-Step-2 bug: GetProcessImageFileNameW returns an NT device
+// path, so a drive-letter expectation must match by suffix, not by
+// prefix.
+func TestMatchServerImage(t *testing.T) {
+	device := `\Device\HarddiskVolume3\Program Files\Skein\skeind.exe`
+	cases := []struct {
+		image, expected string
+		want            bool
+	}{
+		{device, `C:\Program Files\Skein\skeind.exe`, true},
+		{device, `C:\Program Files\Skein`, true},
+		{device, `C:\Program Files\Skein\skein.exe`, false},
+		{device, `C:\Other\skeind.exe`, false},
+		{device, "", true},
+		{`\Device\HarddiskVolume3\Windows\notepad.exe`, "", false},
+		{`C:\Program Files\Skein\skeind.exe`, `C:\Program Files\Skein\skeind.exe`, true},
+		{`c:\program files\skein\skeind.exe`, `C:\Program Files\Skein\skeind.exe`, true},
+	}
+	for _, tc := range cases {
+		if got := matchServerImage(tc.image, tc.expected); got != tc.want {
+			t.Errorf("matchServerImage(%q, %q) = %v, want %v", tc.image, tc.expected, got, tc.want)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import { Security } from "@/routes/security/Security";
 import { Activity } from "@/routes/activity/Activity";
 import { Logs } from "@/routes/logs/Logs";
 import { Settings } from "@/routes/settings/Settings";
+import { About } from "@/routes/about/About";
 
 export function App() {
   return (
@@ -22,6 +23,7 @@ export function App() {
           <Route path="activity" element={<Activity />} />
           <Route path="logs" element={<Logs />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="about" element={<About />} />
         </Route>
       </Routes>
     </HashRouter>

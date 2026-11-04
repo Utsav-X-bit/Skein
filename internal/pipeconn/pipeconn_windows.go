@@ -53,6 +53,17 @@ func Dial(name string) (net.Conn, error) {
 	return c, nil
 }
 
+// ServerHandle returns the raw pipe handle for a connection opened by
+// Dial, so callers can verify the daemon's server identity with
+// api.VerifyPipeServer before sending anything over it.
+func ServerHandle(nc net.Conn) (windows.Handle, bool) {
+	c, ok := nc.(*conn)
+	if !ok || c.h == 0 {
+		return 0, false
+	}
+	return c.h, true
+}
+
 // conn is a net.Conn over one named pipe instance with overlapped I/O.
 type conn struct {
 	h   windows.Handle

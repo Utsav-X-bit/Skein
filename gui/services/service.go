@@ -24,3 +24,23 @@ func (s *ServiceService) Start(ctx context.Context) error     { return runHelper
 func (s *ServiceService) Stop(ctx context.Context) error      { return runHelper(ctx, "stop") }
 func (s *ServiceService) Restart(ctx context.Context) error   { return runHelper(ctx, "restart") }
 func (s *ServiceService) Uninstall(ctx context.Context) error { return runHelper(ctx, "uninstall") }
+
+// InstallWithDaemon is Install with the packaging-known daemon path
+// (plan §8.1: Install passes --daemon explicitly when the installer
+// knows it, otherwise the helper resolves it). UninstallWithPurge is
+// Uninstall with the purge flag the uninstall dialog needs. Both are
+// new methods — the existing binding signatures above are unchanged,
+// and the frontend wires these when bindings regenerate (M7).
+func (s *ServiceService) InstallWithDaemon(ctx context.Context, daemonPath string) error {
+	if daemonPath == "" {
+		return s.Install(ctx)
+	}
+	return runHelper(ctx, "install", "--daemon", daemonPath)
+}
+
+func (s *ServiceService) UninstallWithPurge(ctx context.Context, purge bool) error {
+	if !purge {
+		return s.Uninstall(ctx)
+	}
+	return runHelper(ctx, "uninstall", "--purge")
+}

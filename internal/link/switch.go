@@ -132,10 +132,24 @@ func (s *Switch) readTCP() {
 	}
 }
 
-// Send prefers UDP, uses TCP only for an address whose fallback was dialed
-// and which has not been heard from over UDP, and dials TCP when UDP fails.
+// Send prefers an existing TCP connection over UDP: any live stream to the
+// exact address (including an accepted connection, whose key is the peer's
+// ephemeral port) wins, and a single stream from the destination IP wins
+// when sending to the peer's listen address. This is the M4 F-01 fix: the
+// accept side previously fell through to UDP because `forced` is only set
+// by an explicit DialTCP on the dial side, so handshake replies to a
+// TCP-accepted peer were sent as UDP to a dead ephemeral port and lost
+// silently. A UDP path is used only when no TCP connection exists at all.
 func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	if s.tcp != nil {
+		if s.tcp.HasConn(addr) {
+			return s.tcp.Send(addr, payload)
+		}
+		if err := s.tcp.SendToIP(addr, payload); err == nil {
+			return nil
+		}
+	}
 	s.mu.Lock()
 	forced := s.forced[addr.Addr()]
 	s.mu.Unlock()
@@ -189,10 +203,7 @@ func (s *Switch) DialTCP(addr netip.AddrPort) error {
 // TransportFor reports which transport a connection to addr uses.
 func (s *Switch) TransportFor(addr netip.AddrPort) string {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
-	s.mu.Lock()
-	forced := s.forced[addr.Addr()]
-	s.mu.Unlock()
-	if forced && s.tcp != nil && s.tcp.HasConn(addr) {
+	if s.tcp != nil && (s.tcp.HasConn(addr) || s.tcp.HasConnForIP(addr)) {
 		return "tcp"
 	}
 	return "udp"

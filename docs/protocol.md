@@ -153,10 +153,15 @@ the reply travels back along the path it arrived on.
             [pubkey:32]                        (version 3)
 [route_count:1]
   per route: [destination:8][cost_ms:4][hops:1][path_len:1][path ids...]
+[departed_count:1][departed ids...]            (version 5 only)
 ```
 
 Version 2 adds the optional node name; version 3 adds the peer's public key.
-Version 1 and 2 payloads still decode (name or key empty).
+Version 4 is the ordinary gossip version. Version 5 is written only when a
+departed-peer tombstone is actually being carried (see below); versions 1–4
+payloads still decode (name or key empty, no departed section). A version 5
+STATE is rejected by pre-M4 decoders, which is the bounded cost of a leave
+announcement during a mixed-version rollout.
 
 Limits: 5 peers, 8 candidates per peer, 8 routes, 32-byte names, path length 4,
 and the whole payload must fit one frame. Local and configured records are preserved; excess
@@ -174,9 +179,28 @@ exchanging invites. A member can still advertise sock-puppet peers it controls;
 the peer table is capped, and a configured key is never overwritten. Overlay
 addresses and names are learned the same way (first authenticated claim wins).
 
+### Leaving: tombstones (version 5, ADR-002)
+
+There is no peer-removal message and no peer removes another peer. A peer
+leaves itself (daemon `POST /api/v1/system/leave`, CLI `skein system leave`,
+GUI Peers → Leave) and, before its dataplane stops, gossips a tombstone:
+its own ID in the version 5 departed section. A self-announced departure
+(`origin == departed ID`) is trusted immediately; a re-gossiped departure
+(`origin != departed ID`) needs corroboration from a second distinct origin
+before it is applied, and a live STATE from the supposedly departed peer
+that does not announce its own departure clears the tombstone immediately.
+Confirmed tombstones are re-gossiped in every STATE for 180 s (2 × STATE
+TTL) so offline peers learn the departure on reconnect. Peers that apply a
+tombstone withdraw routes through the leaver, close its sessions, and stop
+relaying via it. A tombstone is graceful departure, not a ban: the leaver
+still holds the network credential until a network-wide secret rotation, and
+rejoining requires a fresh invite.
+
 ## Joining a network
 
-`skein init` prints a bootstrap string:
+A first node creates a network through the bootstrap flow (README
+[Bootstrap](../README.md#bootstrap): helper token + daemon bootstrap
+endpoint; `skein init` is the dev-only equivalent) and its join string is:
 
 ```
 skein:2:<base64url payload>

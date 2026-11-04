@@ -51,6 +51,7 @@ func TestListenerAuthAllowDeny(t *testing.T) {
 // and response code; reads are not.
 func TestAuditHookMutationOnly(t *testing.T) {
 	srv, _, _, _ := newTestServer(t)
+	grantTestUser(srv, 42, RoleMutate)
 	events := make(chan AuditEvent, 4)
 	srv.Audit(func(e AuditEvent) { events <- e })
 	h := srv.Handler()
@@ -89,6 +90,7 @@ func TestAuditHookMutationOnly(t *testing.T) {
 // starve another caller.
 func TestPerCallerMutationLimit(t *testing.T) {
 	srv, _, _, _ := newTestServer(t)
+	srv.SetGrants(map[string]Role{"uid:1": RoleMutate, "uid:2": RoleMutate})
 	h := srv.Handler()
 	post := func(caller Caller) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/name", strings.NewReader(`{"name":"x"}`))

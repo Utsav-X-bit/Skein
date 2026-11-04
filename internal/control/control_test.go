@@ -21,6 +21,7 @@ type fakeTransport struct {
 	fail      bool
 	rekey     []uint64
 	ensured   []uint64
+	fallback  []uint64
 	dropped   []uint64
 	punched   []punchCall
 	noSession bool
@@ -70,6 +71,12 @@ func (f *fakeTransport) Punch(peerID uint64, addr netip.AddrPort) error {
 	defer f.mu.Unlock()
 	f.punched = append(f.punched, punchCall{peer: peerID, addr: addr})
 	return nil
+}
+
+func (f *fakeTransport) AllowFallbackDial(peerID uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fallback = append(f.fallback, peerID)
 }
 
 func (f *fakeTransport) DropSession(peerID uint64) {
@@ -174,6 +181,170 @@ func TestDialerPeersAreContactedWithoutTraffic(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("dialer peer was not contacted: %v", ensured)
+	}
+}
+
+// TestNonDialerFallsBackAfterSilence is the M4 P4 (F-11) regression test:
+// a non-dialer peer that has never been contacted at all after a full
+// silence timeout is a dead-by-construction pair (sole dialer is the side
+// that cannot initiate, e.g. public dialing a CGNAT non-dialer). On the
+// old code the non-dialer waited forever and nothing reported it.
+func TestNonDialerFallsBackAfterSilence(t *testing.T) {
+	f := newFixture(t)
+	f.eng.noSession = true
+	if err := f.peers.Upsert(peer.Peer{ID: f.peerID, PublicKey: f.peerKey, Dialer: false}); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	f.ctl.SetEventHandler(func(typ string, peerID uint64) {
+		if peerID == f.peerID {
+			events = append(events, typ)
+		}
+	})
+	f.ctl.Tick()
+	f.eng.mu.Lock()
+	ensured := append([]uint64(nil), f.eng.ensured...)
+	f.eng.mu.Unlock()
+	for _, id := range ensured {
+		if id == f.peerID {
+			t.Fatal("non-dialer was dialed immediately, without any silence window")
+		}
+	}
+	f.now = f.now.Add(DialerFallbackAfter + time.Second)
+	f.ctl.Tick()
+	f.eng.mu.Lock()
+	ensured = append([]uint64(nil), f.eng.ensured...)
+	fallback := append([]uint64(nil), f.eng.fallback...)
+	f.eng.mu.Unlock()
+	found := false
+	for _, id := range ensured {
+		if id == f.peerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("non-dialer never dialed after a full silence timeout: dead pair undetected")
+	}
+	found = false
+	for _, id := range fallback {
+		if id == f.peerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("fallback was never armed for the non-dialer peer")
+	}
+	found = false
+	for _, e := range events {
+		if e == "dialer_fallback" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no dialer_fallback event reported: %v", events)
+	}
+}
+
+// TestLeaveGossipSelfAnnouncementIsTrusted is the M4 P8 regression test:
+// a departure announced by the departed peer itself (STATE origin ==
+// departed ID, session-authenticated) is applied immediately: the peer
+// goes down, routes through/to it are withdrawn, and the session is
+// dropped — and the tombstone is re-gossiped in the next STATE.
+func TestLeaveGossipSelfAnnouncementIsTrusted(t *testing.T) {
+	f := newFixture(t)
+	peerID := f.peerID
+	payload, err := discovery.Encode(discovery.State{
+		Origin: peerID, Seq: 9, Expires: time.Now().Add(time.Minute),
+		Peers:    []discovery.PeerRecord{{ID: peerID, PublicKey: f.peerKey, OverlayV4: netip.MustParseAddr("10.144.144.2")}},
+		Departed: []uint64{peerID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ctl.HandleControl(peerID, netip.MustParseAddrPort("192.0.2.2:11010"), wire.State, payload)
+	p, _ := f.peers.Get(peerID)
+	if p.State != peer.StateDown {
+		t.Fatalf("departed peer state = %v, want down", p.State)
+	}
+	if _, ok := f.routes.Lookup(peerID); ok {
+		t.Fatal("route to departed peer still present")
+	}
+	f.eng.mu.Lock()
+	dropped := append([]uint64(nil), f.eng.dropped...)
+	f.eng.mu.Unlock()
+	found := false
+	for _, id := range dropped {
+		if id == peerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session to departed peer was not dropped: %v", dropped)
+	}
+	// The tombstone is carried in this node's next STATE. Broadcasts
+	// only go to Up peers, and the departed peer is now Down, so add
+	// a second Up peer to receive it.
+	other := mustIdentity(t)
+	if err := f.peers.Upsert(peer.Peer{ID: other.ID, PublicKey: other.PublicKey, State: peer.StateUp}); err != nil {
+		t.Fatal(err)
+	}
+	f.ctl.Tick()
+	frames := f.eng.frames(wire.State)
+	if len(frames) == 0 {
+		t.Fatal("no STATE broadcast after learning a departure")
+	}
+	last := frames[len(frames)-1]
+	st, err := discovery.Decode(last.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found = false
+	for _, id := range st.Departed {
+		if id == peerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tombstone not re-gossiped: departed = %v", st.Departed)
+	}
+}
+
+// TestLeaveGossipNeedsTwoOrigins: a re-gossiped departure (origin !=
+// departed) from a single origin is pending only — one member must not
+// be able to kill another peer's routes by forging a tombstone. A second
+// distinct origin confirms it.
+func TestLeaveGossipNeedsTwoOrigins(t *testing.T) {
+	f := newFixture(t)
+	peerID := f.peerID
+	relayAIdent, relayBIdent := mustIdentity(t), mustIdentity(t)
+	relayA, relayB := relayAIdent.ID, relayBIdent.ID
+	mk := func(origin uint64, key []byte, seq uint64) []byte {
+		t.Helper()
+		payload, err := discovery.Encode(discovery.State{
+			Origin: origin, Seq: seq, Expires: time.Now().Add(time.Minute),
+			Peers:    []discovery.PeerRecord{{ID: origin, PublicKey: key, OverlayV4: netip.MustParseAddr("10.144.144.2")}},
+			Departed: []uint64{peerID},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	// Note: the merger requires the sender to be a known peer for the
+	// origin check only (origin == sender); peers are registered via
+	// OnPeer only for unknown IDs with a valid key, and here the origin
+	// IDs are synthetic, so use the peer's own keyed record path via
+	// direct HandleControl: the merger accepts any origin that matches
+	// the sender, regardless of peer-table membership.
+	f.ctl.HandleControl(relayA, netip.MustParseAddrPort("192.0.2.9:11010"), wire.State, mk(relayA, relayAIdent.PublicKey, 1))
+	p, _ := f.peers.Get(peerID)
+	if p.State == peer.StateDown {
+		t.Fatal("single re-gossiped tombstone was applied without corroboration")
+	}
+	f.ctl.HandleControl(relayB, netip.MustParseAddrPort("192.0.2.10:11010"), wire.State, mk(relayB, relayBIdent.PublicKey, 1))
+	p, _ = f.peers.Get(peerID)
+	if p.State != peer.StateDown {
+		t.Fatalf("two-origin tombstone was not applied, state = %v", p.State)
 	}
 }
 

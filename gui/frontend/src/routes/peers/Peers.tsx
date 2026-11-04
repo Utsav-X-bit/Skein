@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Trash2, Wifi } from "lucide-react";
-import { PeerService, errText } from "@/lib/api";
+import { Plus, Search, Wifi } from "lucide-react";
+import { PeerService, errText, errKind } from "@/lib/api";
+import { hasLeaveBinding, callLeaveNetwork } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,10 +25,23 @@ export function Peers() {
     onSuccess: () => { setInvite(""); toast.success("Device added"); qc.invalidateQueries({ queryKey: ["peers"] }); },
     onError: (e) => toast.error(errText(e)),
   });
-  const remove = useMutation({
-    mutationFn: (id: string) => PeerService.Remove(id),
-    onSuccess: () => { toast.success("Peer removed from this device"); qc.invalidateQueries({ queryKey: ["peers"] }); },
-    onError: (e) => toast.error(errText(e)),
+  // Step 12 (ADR-002): no peer removal — no peer removes another peer.
+  // The only departure action is this node leaving itself. M7: the Go
+  // method exists (gui/services/peer.go LeaveNetwork) but the
+  // checked-in binding does not export it yet, so the button is
+  // disabled with the reason until a Wails build regenerates
+  // bindings (see lib/bindings.ts); after regeneration this exact
+  // mutation runs. M4 leave gossip already landed: propagated is
+  // true only when the departure announcement reached at least one
+  // peer; false means no peer was reached, and offline peers learn
+  // it from the retained tombstone on reconnect — it is not a ban,
+  // and the leaver keeps its credential until a network-wide secret
+  // rotation, so rejoin needs a fresh invite.
+  const leaveAvailable = hasLeaveBinding();
+  const leave = useMutation({
+    mutationFn: () => callLeaveNetwork(),
+    onSuccess: (r) => { toast.success(r.propagated ? `Left the network (${r.peers_left} peers left, ${r.routes_withdrawn} routes withdrawn)` : `Left locally — no peer was reached to announce it to; offline peers learn it from the retained tombstone on reconnect. Rejoin needs a fresh invite.`); qc.invalidateQueries({ queryKey: ["peers"] }); },
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const probe = useMutation({
     mutationFn: (id: string) => PeerService.Probe(id),
@@ -57,7 +71,20 @@ export function Peers() {
       </div>
       {filtered.length === 0 ? <EmptyState title="No peers" description="Invite a device from Invitations, or add a peer invite here." /> : (
         <Card>
-          <CardHeader><CardTitle>{filtered.length} peers</CardTitle><span className="mono-label">remove is local-only</span></CardHeader>
+          <CardHeader><CardTitle>{filtered.length} peers</CardTitle>
+            <Dialog>
+              <DialogTrigger asChild><Button size="sm" variant="secondary" disabled={!leaveAvailable || leave.isPending} title={leaveAvailable ? "Leave this network yourself" : "Leave needs regenerated Wails bindings (see notice below)"}>Leave network</Button></DialogTrigger>
+              <DialogContent>
+                <DialogTitle>Leave this network?</DialogTitle>
+                <DialogDescription>
+                  This device leaves the mesh itself. No other peer is removed by you, and leaving is not a ban: this device keeps its network credential until the whole network rotates its secret, so rejoining needs a fresh invite from a member.
+                  Leaving first announces the departure to reachable peers (their tables and routes update); peers that are offline learn it from the retained tombstone when they reconnect. The dataplane stops and sessions close.
+                </DialogDescription>
+                <div className="mt-4 flex justify-end gap-2"><Button variant="secondary" onClick={() => leave.mutate()} disabled={leave.isPending}>Leave network</Button></div>
+              </DialogContent>
+            </Dialog>
+          </CardHeader>
+          {!leaveAvailable && <div className="px-4 pb-3 text-xs text-[var(--text-muted)]">Leave network is not callable in this build: the LeaveNetwork Wails binding has not been regenerated since Step 8. Run a Wails build on a GUI machine to regenerate bindings; the button then activates with no further code change.</div>}
           <CardContent className="divide-y divide-[var(--border)] p-0">
             {filtered.map((p) => (
               <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -71,7 +98,6 @@ export function Peers() {
                   <span>↓ {formatBytes(p.rx_bytes)} ↑ {formatBytes(p.tx_bytes)}</span>
                   <span>{timeAgo(p.last_seen_ms ? Date.now() - p.last_seen_ms : undefined)}</span>
                   <Button size="sm" variant="ghost" onClick={() => probe.mutate(p.id)} aria-label={`Probe ${p.name || p.id}`}><Wifi size={15} /></Button>
-                  <Button size="sm" variant="ghost" onClick={() => { if (confirm(`Remove ${p.name || p.id} from this device? This does not revoke access.`)) remove.mutate(p.id); }} aria-label={`Remove ${p.name || p.id}`}><Trash2 size={15} /></Button>
                 </div>
               </div>
             ))}
