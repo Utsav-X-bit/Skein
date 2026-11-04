@@ -31,6 +31,26 @@ func TestMintBootstrapTokenRefusesExistingConfig(t *testing.T) {
 	}
 }
 
+// M9 §2b: fresh-system bootstrap failed with ENOENT on the lock path
+// because mintBootstrapToken opened the configstore before the system
+// config directory existed. Minting must create it.
+func TestMintBootstrapTokenCreatesMissingConfigDir(t *testing.T) {
+	t.Setenv("PKEXEC_UID", "1000")
+	dir := filepath.Join(t.TempDir(), "missing", "skein")
+	cfgPath := filepath.Join(dir, "skein.toml")
+	keyPath := filepath.Join(dir, "identity.key")
+	statePath := filepath.Join(dir, "bootstrap.json")
+	if _, err := mintBootstrapToken("init", cfgPath, keyPath, statePath); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("config dir missing after mint: %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("state file missing after mint: %v", err)
+	}
+}
+
 func TestMintBootstrapTokenHappyAndSecondMintRefused(t *testing.T) {
 	t.Setenv("PKEXEC_UID", "1000")
 	dir := t.TempDir()

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/bootstrap"
@@ -49,6 +50,19 @@ func BootstrapStatePath() string {
 func mintBootstrapToken(verb, cfgPath, keyPath, statePath string) (string, error) {
 	if !bootstrap.ValidVerb(verb) {
 		return "", fmt.Errorf("bootstrap: unknown verb %q (want init, join, or import)", verb)
+	}
+	// Fresh installs have no system config directory yet, and
+	// configstore.Open requires its parent to exist (it creates the
+	// lock file, not the directory). Without this, helper bootstrap
+	// fails on every truly fresh system with ENOENT on the lock path
+	// — caught by the M9 §2b packaged-install test, where /etc/skein
+	// did not exist. The helper runs elevated, so the directory is
+	// root-owned; 0750 matches the daemon's later ownership and
+	// permission checks. Creating an existing directory is a no-op,
+	// and the already-exists checks below still gate on the config
+	// and identity files, not the directory.
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o750); err != nil {
+		return "", fmt.Errorf("bootstrap: create config dir: %w", err)
 	}
 	store, err := configstore.Open(cfgPath)
 	if err != nil {
