@@ -9,10 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/pipeconn"
 )
 
@@ -20,21 +22,21 @@ import (
 // reloads the live daemon's grants, so the revoked caller loses access
 // on its next call without a restart.
 //
-// Windows authorisation model differs from Unix: the access file holds
-// a single owner SID (SetOwnerRoot writes one bare SID, not a role
-// table), so the gate is ownership, not a role column — the invoking
-// token's SID must be SYSTEM or the owner SID itself; anyone else is
-// refused before anything is edited. The daemon's grants/reload
-// endpoint is secret-role-gated (Step 7) and the helper-as-SYSTEM
-// satisfies it over the kernel pipe. As on Unix, there is no revoke
-// API endpoint, so a read/mutate API caller cannot revoke.
+// The gate is role-based, matching Unix: SYSTEM, any secret-role
+// holder, or the grant holder themselves may revoke; anyone else is
+// refused before anything is edited. (M9 §2c: the old gate compared
+// the invoker to the TARGET sid, so a secret-holding owner could
+// only revoke themselves or as SYSTEM, while its message claimed
+// "only the owner may revoke grants".) The daemon's grants/reload
+// endpoint is secret-role-gated (Step 7); a secret holder's reload
+// succeeds, while a self-revoker with a lesser role gets the file
+// change with a reload failure (it takes effect at next start). As
+// on Unix, there is no revoke API endpoint, so a read/mutate API
+// caller cannot revoke.
 //
 // If the daemon is not running, the pipe is absent, reload is skipped,
 // and the file change takes effect at next start. A live daemon that
-// refuses reload is an error, not a silent stale table. Compile-only
-// on this VM: Windows revoke runtime (pipe dial, token SID, DACL
-// behaviour) is on the user's Windows-machine checklist, as with all
-// Windows steps.
+// refuses reload is an error, not a silent stale table.
 func RevokeUser(identity string, force bool) (RevokeOutcome, error) {
 	sid, err := lookupSID(identity)
 	if err != nil {
@@ -44,8 +46,8 @@ func RevokeUser(identity string, force bool) (RevokeOutcome, error) {
 	if err != nil {
 		return RevokeOutcome{}, fmt.Errorf("revoke-user: cannot identify invoking user: %w", err)
 	}
-	if invoking != "S-1-5-18" && invoking != sid {
-		return RevokeOutcome{}, fmt.Errorf("revoke-user: invoking user %s is not SYSTEM or the access-file owner (only the owner may revoke grants)", invoking)
+	if invoking != "S-1-5-18" && invoking != sid && !invokerHasSecretRole(invoking) {
+		return RevokeOutcome{}, fmt.Errorf("revoke-user: invoking user %s is not SYSTEM, a secret holder, or the grant holder (only SYSTEM, secret holders, or the grant holder may revoke grants)", invoking)
 	}
 	out, err := revokeGrantFromFile(AccessPath(), sid, force)
 	if err != nil {
@@ -74,6 +76,22 @@ func currentTokenSID() (string, error) {
 		return "", err
 	}
 	return token.User.Sid.String(), nil
+}
+
+// invokerHasSecretRole reports whether sid holds the secret role in
+// the system access file. An unreadable or malformed file fails
+// closed (false): no edit happens on a file the helper cannot read.
+func invokerHasSecretRole(sid string) bool {
+	f, err := os.Open(AccessPath())
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	grants, err := api.ParseAccessGrants(f)
+	if err != nil {
+		return false
+	}
+	return grants[sid] == api.RoleSecret
 }
 
 // reloadGrantsViaPipe POSTs the Step 7 grants/reload endpoint over the

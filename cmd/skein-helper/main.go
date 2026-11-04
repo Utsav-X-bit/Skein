@@ -55,7 +55,7 @@ to the daemon control API):
                         removing the last grant or last secret grant
                         needs --force. Revoking a uid with no grant
                         is an error, never a silent success.
-  set-owner <user>      (Windows) rewrite config and control-pipe DACLs
+  set-owner <user>      (Windows) rewrite config and control-pipe DACLs; restart the daemon afterwards
   revoke-user <user> [--force]
                         (Windows) remove the user's SID from the access
                         file and reload the live daemon's grants
@@ -301,7 +301,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err := app.SetOwnerRoot(rest[0]); err != nil {
 			return fail(stdout, err)
 		}
-		return result(stdout, nil, map[string]any{"user": rest[0]})
+		// The new owner's grant and pipe access take effect at the
+		// next daemon start (the live grant table and the pipe
+		// listener's granted set are both built at start).
+		return result(stdout, nil, map[string]any{"user": rest[0], "restart_required": true})
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0

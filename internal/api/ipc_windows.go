@@ -322,6 +322,14 @@ func (p *pipeListener) acceptLoop(ctx context.Context) {
 		c.in, _ = windows.CreateEvent(nil, 1, 0, nil)
 		c.out, _ = windows.CreateEvent(nil, 1, 0, nil)
 		c.caller = p.verifyClient(h)
+		// M9 §2c: an unverifiable client (no SID) is dropped, never
+		// served. Previously it reached the HTTP layer as a
+		// zero-value Caller, whose UID 0 tripped roleFor's
+		// implicit-secret branch.
+		if c.caller.SID == "" {
+			_ = c.Close()
+			continue
+		}
 		select {
 		case p.conns <- c:
 		case <-ctx.Done():
@@ -353,6 +361,11 @@ func (p *pipeListener) verifyClient(h windows.Handle) Caller {
 	defer tok.Close()
 
 	var caller Caller
+	// Windows has no uid: UID stays -1 (unknown), never Go's zero
+	// value 0. M9 §2c: a zero UID used to trip roleFor's uid-0
+	// implicit-secret branch, so every verified Windows pipe caller
+	// landed Secret regardless of the access-file table.
+	caller.UID = -1
 	caller.Transport = TransportKernel
 	if user, err := tok.GetTokenUser(); err == nil {
 		caller.SID = user.User.Sid.String()

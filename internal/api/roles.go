@@ -188,13 +188,24 @@ func (s *Server) LoadGrantsFromFile(path string) error {
 
 // roleFor resolves a caller's role. Transport is enforced here, not in
 // each handler: a bearer caller never exceeds Read, and an unknown caller
-// (no kernel identity, no valid token) gets None. uid 0 and the Windows
-// SYSTEM / Administrators SIDs already own the system (they can read the
-// config file directly), so denying them the API would be theatre; they
-// are implicitly Secret. Every other kernel caller needs an explicit
-// grant when a table is configured; with no table configured, a kernel
-// caller gets Read only, so status reads keep working but nothing
-// mutates and no secret is disclosed.
+// (no kernel identity, no valid token) gets None. Unix root (uid 0, no
+// SID) and the Windows SYSTEM / Administrators SIDs already own the
+// system (they can read the config file directly), so denying them
+// the API would be theatre; they are implicitly Secret. Every other
+// kernel caller needs an explicit grant when a table is configured;
+// with no table configured, a kernel caller gets Read only, so status
+// reads keep working but nothing mutates and no secret is disclosed.
+//
+// M9 §2c: implicit secret is a kernel-transport concept only, and
+// uid 0 means Unix root only. Windows pipe callers carry UID -1
+// (Windows has no uid; see verifyClient) — but verifyClient used
+// to leave UID at Go's zero value 0, so the bare `c.UID == 0`
+// check fired for every Windows pipe caller and the access-file
+// table was decorative. The uid branch therefore also requires an
+// empty SID, so a SID-carrying Windows caller never trips it; the
+// block also requires the kernel transport. (Unverified pipe
+// clients, which would otherwise arrive as SID-less callers, are
+// dropped by the pipe accept loop before they reach roleFor.)
 func (s *Server) roleFor(c Caller) Role {
 	if c.Transport == TransportBearer {
 		return RoleRead
@@ -203,7 +214,7 @@ func (s *Server) roleFor(c Caller) Role {
 	if id == "unknown" {
 		return RoleNone
 	}
-	if c.UID == 0 || id == "S-1-5-18" || id == "S-1-5-32-544" {
+	if c.Transport == TransportKernel && ((c.UID == 0 && c.SID == "") || id == "S-1-5-18" || id == "S-1-5-32-544") {
 		return RoleSecret
 	}
 	s.mu.RLock()

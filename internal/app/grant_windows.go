@@ -23,7 +23,16 @@ func GrantUserRoleRoot(int, string) error {
 }
 
 // SetOwnerRoot rewrites the config directory, config files, and control pipe
-// DACLs to SYSTEM, Administrators, and the single interactive user.
+// DACLs to SYSTEM, Administrators, and the single interactive user, and
+// makes that user the access file's sole secret holder. The grant is a
+// role line (SID:secret), never a bare SID: a bare line parses to Read,
+// so the old form demoted the new owner on the next grants reload
+// (M9 §2c). The access file's DACL is set explicitly too: previously
+// only the file's content was rewritten, leaving its DACL to whatever
+// WriteFile preserved.
+// Ownership transfer replaces the file (other grants do not survive);
+// restart the daemon afterwards so the new owner can connect (the
+// pipe listener's granted set is built at start).
 func SetOwnerRoot(user string) error {
 	sid, err := lookupSID(user)
 	if err != nil {
@@ -32,8 +41,11 @@ func SetOwnerRoot(user string) error {
 	if err := os.MkdirAll(SystemDir(), 0o750); err != nil {
 		return fmt.Errorf("set-owner: %s: %w", SystemDir(), err)
 	}
-	if err := os.WriteFile(AccessPath(), []byte(sid+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(AccessPath(), []byte(sid+":secret\n"), 0o600); err != nil {
 		return fmt.Errorf("set-owner: access file: %w", err)
+	}
+	if err := fileperm.GrantUser(AccessPath(), sid); err != nil {
+		return fmt.Errorf("set-owner: access file DACL: %w", err)
 	}
 	if err := fileperm.GrantUser(SystemDir(), sid); err != nil {
 		return fmt.Errorf("set-owner: %s: %w", SystemDir(), err)
