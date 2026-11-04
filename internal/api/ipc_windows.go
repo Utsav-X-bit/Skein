@@ -23,7 +23,13 @@ import (
 // x/sys/windows lacks ImpersonateNamedPipeClient and
 // GetProcessImageFileNameW, so they are bound directly.
 var (
-	getProcessImageFileNameProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessImageFileNameW")
+	// GetProcessImageFileNameW lives in psapi.dll, not kernel32.dll:
+	// the old kernel32 lookup compiled everywhere but panicked at
+	// first live use on a machine whose kernel32 does not forward
+	// it (M9 §2c: every CLI call against the live daemon died in
+	// mustFind). The device-path format it returns is what
+	// matchServerImage expects, so the DLL — not the API — changes.
+	getProcessImageFileNameProc = windows.NewLazySystemDLL("psapi.dll").NewProc("GetProcessImageFileNameW")
 )
 
 const (
@@ -512,9 +518,14 @@ func PipeServerImage(pid uint32) (string, error) {
 	defer windows.CloseHandle(proc)
 	const maxPath = 1024
 	buf := make([]uint16, maxPath)
+	// Find() resolves without mustFind's panic: a missing export is
+	// a verification failure (fail closed), never a crash.
+	if err := getProcessImageFileNameProc.Find(); err != nil {
+		return "", fmt.Errorf("server image lookup unavailable: %w", err)
+	}
 	n, _, err := getProcessImageFileNameProc.Call(uintptr(proc), uintptr(unsafe.Pointer(&buf[0])), maxPath)
-	if err != nil {
-		return "", fmt.Errorf("server image: %w", err)
+	if n == 0 {
+		return "", fmt.Errorf("server image: empty (last error %w)", err)
 	}
 	return windows.UTF16ToString(buf[:n]), nil
 }

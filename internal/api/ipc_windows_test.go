@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"unsafe"
@@ -194,6 +195,22 @@ func TestPipeTwoClients(t *testing.T) {
 // pre-Step-2 bug: GetProcessImageFileNameW returns an NT device
 // path, so a drive-letter expectation must match by suffix, not by
 // prefix.
+// M9 §2c: PipeServerImage looked GetProcessImageFileNameW up in
+// kernel32.dll, where it is not exported on this machine — the
+// first live CLI dial panicked in mustFind, even though the unit
+// tests (which only covered matchServerImage strings) passed. This
+// test executes the real lookup against the test process itself.
+func TestPipeServerImageCurrentProcess(t *testing.T) {
+	pid := windows.GetCurrentProcessId()
+	image, err := PipeServerImage(pid)
+	if err != nil {
+		t.Fatalf("PipeServerImage(current) = %v, want no error", err)
+	}
+	if image == "" || !strings.HasSuffix(strings.ToLower(image), ".exe") {
+		t.Fatalf("PipeServerImage(current) = %q, want a non-empty .exe image", image)
+	}
+}
+
 func TestMatchServerImage(t *testing.T) {
 	device := `\Device\HarddiskVolume3\Program Files\Skein\skeind.exe`
 	cases := []struct {
