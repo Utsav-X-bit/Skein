@@ -21,7 +21,14 @@ const (
 	// KeySize is the size of an X25519 private or public key in bytes.
 	KeySize = 32
 	// MaxEndpoints is the maximum number of underlay endpoints carried in an invite.
-	MaxEndpoints = 8
+	// 16 fits the 512-byte invite payload cap even worst-case (16 IPv6
+	// endpoints + 16 used overlay addresses = 466 bytes). It was 8 until
+	// 2026-11-05, when a multi-homed laptop (two LANs, Tailscale, a ppp
+	// VPN, STUN public IPs, plus link-local IPv6s) gathered 9 endpoints
+	// and `invite --network` refused outright, so no node could join the
+	// fresh network. Every consumer (config peer validation, mDNS, peer
+	// candidate table) reads this same constant.
+	MaxEndpoints = 16
 
 	invitePrefix   = "skein:1:"
 	maxInviteBytes = 512
