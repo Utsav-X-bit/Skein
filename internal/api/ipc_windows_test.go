@@ -232,3 +232,47 @@ func TestMatchServerImage(t *testing.T) {
 		}
 	}
 }
+
+func TestParseServicePID(t *testing.T) {
+	out := "SERVICE_NAME: skein\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        STATE              : 4  RUNNING\r\n        WIN32_EXIT_CODE    : 0  (0x0)\r\n        SERVICE_EXIT_CODE  : 0  (0x0)\r\n        CHECKPOINT         : 0x0\r\n        WAIT_HINT          : 0x0\r\n        PID                : 3616\r\n        FLAGS              :\r\n"
+	pid, ok := parseServicePID(out)
+	if !ok || pid != 3616 {
+		t.Fatalf("parseServicePID = %d, %v, want 3616, true", pid, ok)
+	}
+	if _, ok := parseServicePID("SERVICE_NAME: skein\r\n        STATE : 1 STOPPED\r\n"); ok {
+		t.Fatal("parseServicePID(no PID line) = true, want false")
+	}
+}
+
+func TestParseServiceBinaryPath(t *testing.T) {
+	out := "SERVICE_NAME: skein\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        BINARY_PATH_NAME   : \"C:\\Program Files\\Skein\\skeind.exe\" run -c \"C:\\ProgramData\\Skein\\skein.toml\"\r\n        LOAD_ORDER_GROUP   :\r\n"
+	exe, ok := parseServiceBinaryPath(out)
+	if !ok || exe != `C:\Program Files\Skein\skeind.exe` {
+		t.Fatalf("parseServiceBinaryPath = %q, %v, want the quoted exe, true", exe, ok)
+	}
+	unquoted := "SERVICE_NAME: skein\r\n        BINARY_PATH_NAME   : C:\\Skein\\skeind.exe run\r\n"
+	exe, ok = parseServiceBinaryPath(unquoted)
+	if !ok || exe != `C:\Skein\skeind.exe` {
+		t.Fatalf("parseServiceBinaryPath(unquoted) = %q, %v, want C:\\Skein\\skeind.exe, true", exe, ok)
+	}
+}
+
+// TestVerifyPipeServerByServiceLive is the regression test for M9 bug
+// #13: an unprivileged caller cannot open the SYSTEM daemon process,
+// so verification must fall back to the SCM. It runs only where the
+// skein service is registered (the M9 machine); CI skips it.
+func TestVerifyPipeServerByServiceLive(t *testing.T) {
+	pid, err := servicePID()
+	if err != nil {
+		t.Skipf("no skein service registered: %v", err)
+	}
+	if err := verifyPipeServerByService(pid, ""); err != nil {
+		t.Fatalf("verifyPipeServerByService(real pid, \"\") = %v, want nil", err)
+	}
+	if err := verifyPipeServerByService(pid, `C:\Other\skeind.exe`); err == nil {
+		t.Fatal("verifyPipeServerByService(real pid, wrong image) = nil, want error")
+	}
+	if err := verifyPipeServerByService(pid+1, ""); err == nil {
+		t.Fatal("verifyPipeServerByService(wrong pid) = nil, want error")
+	}
+}

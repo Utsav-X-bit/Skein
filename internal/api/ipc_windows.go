@@ -12,8 +12,11 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -534,6 +537,24 @@ func VerifyPipeServer(h windows.Handle, expectedImage string) (int, error) {
 	}
 	image, err := PipeServerImage(pid)
 	if err != nil {
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			// M9 §2e, bug #13: an unprivileged caller (the GUI, or
+			// a CLI run without elevation) cannot open the SYSTEM
+			// daemon process even for query-limited information,
+			// so the image check is unreachable and every
+			// unprivileged dial failed. Fall back to the Service
+			// Control Manager: sc queryex/qc are readable by any
+			// user, and only an administrator can register a
+			// service, so a pipe server whose PID equals the
+			// registered service's PID (running the expected
+			// binary) is the daemon. Anything else fails closed
+			// with the original image error.
+			if ferr := verifyPipeServerByService(pid, expectedImage); ferr == nil {
+				return int(pid), nil
+			} else {
+				return 0, fmt.Errorf("%w (service fallback: %v)", err, ferr)
+			}
+		}
 		return 0, err
 	}
 	if !matchServerImage(image, expectedImage) {
@@ -562,6 +583,119 @@ func PipeServerImage(pid uint32) (string, error) {
 		return "", fmt.Errorf("server image: empty (last error %w)", err)
 	}
 	return windows.UTF16ToString(buf[:n]), nil
+}
+
+// serviceName is the registered service name; it must match
+// internal/service.Name (the api package must not import service).
+const serviceName = "skein"
+
+// verifyPipeServerByService verifies the pipe server without opening
+// its process: the server PID must equal the registered "skein"
+// service's PID, and the service's binary must match expectedImage
+// (same rule as matchServerImage). It reads only world-readable SCM
+// state (sc queryex / sc qc).
+func verifyPipeServerByService(pid uint32, expectedImage string) error {
+	svcPID, err := servicePID()
+	if err != nil {
+		return err
+	}
+	if svcPID != pid {
+		return fmt.Errorf("pipe server pid %d is not the skein service pid %d", pid, svcPID)
+	}
+	exe, err := serviceBinaryPath()
+	if err != nil {
+		return err
+	}
+	if !matchServerImage(exe, expectedImage) {
+		return fmt.Errorf("service binary %q is not under %q", exe, expectedImage)
+	}
+	return nil
+}
+
+// scQueryCmd runs sc.exe without flashing a console window in the
+// GUI (mirrors internal/service's scCmd).
+func scQueryCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("sc", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	return cmd
+}
+
+// servicePID parses the PID from `sc queryex skein`.
+func servicePID() (uint32, error) {
+	out, err := scQueryCmd("queryex", serviceName).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("sc queryex: %w: %s", err, out)
+	}
+	pid, ok := parseServicePID(string(out))
+	if !ok {
+		return 0, fmt.Errorf("sc queryex: no PID in %q", out)
+	}
+	return pid, nil
+}
+
+// parseServicePID extracts the PID from sc queryex output
+// ("        PID              : 3616").
+func parseServicePID(out string) (uint32, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "PID") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil || n <= 0 {
+			continue
+		}
+		return uint32(n), true
+	}
+	return 0, false
+}
+
+// serviceBinaryPath parses the executable from `sc qc skein`
+// (BINARY_PATH_NAME, which carries the full command line).
+func serviceBinaryPath() (string, error) {
+	out, err := scQueryCmd("qc", serviceName).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("sc qc: %w: %s", err, out)
+	}
+	exe, ok := parseServiceBinaryPath(string(out))
+	if !ok {
+		return "", fmt.Errorf("sc qc: no BINARY_PATH_NAME in %q", out)
+	}
+	return exe, nil
+}
+
+// parseServiceBinaryPath extracts the executable from sc qc output.
+// BINARY_PATH_NAME carries the whole command line, e.g.
+// `"C:\Program Files\Skein\skeind.exe" run -c "C:\ProgramData\Skein\skein.toml"`;
+// the executable is the quoted part, or the first token when unquoted.
+func parseServiceBinaryPath(out string) (string, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "BINARY_PATH_NAME") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		v := strings.TrimSpace(parts[1])
+		if v == "" {
+			continue
+		}
+		if strings.HasPrefix(v, `"`) {
+			end := strings.Index(v[1:], `"`)
+			if end < 0 {
+				continue
+			}
+			return v[1 : 1+end], true
+		}
+		return strings.Fields(v)[0], true
+	}
+	return "", false
 }
 
 // matchServerImage reports whether image (an NT device path or a

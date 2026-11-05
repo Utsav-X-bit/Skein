@@ -39,6 +39,13 @@ import (
 // renamed squatter binary fails this check.
 var daemonImageNames = map[string]bool{"skein": true, "skeind": true}
 
+// procExeReader resolves a process's executable image. It is a
+// variable so tests can simulate an unreadable /proc entry (a
+// non-root caller facing a root daemon) without a second user.
+var procExeReader = func(pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+}
+
 // VerifyUnixServer verifies the daemon behind conn. expectedImage, when
 // non-empty, is a path or path prefix the server image must start with
 // (mirroring VerifyPipeServer: a full install path or a package
@@ -46,6 +53,17 @@ var daemonImageNames = map[string]bool{"skein": true, "skeind": true}
 // empty, the server image's basename must be skein or skeind.
 // It returns the server pid and uid. On platforms without a peer pid
 // it returns pid -1 and the socket file's owner uid instead.
+//
+// Root-peer fallback: the service daemon runs as root, and the kernel
+// will not let a non-root caller read /proc/<pid>/exe (ptrace check),
+// so an unprivileged GUI/CLI could never verify a root daemon and
+// reported it as not running (M9 §2e). When the peer uid is 0 and the
+// image is unreadable for permission reasons, identity is proved from
+// the socket file instead: SO_PEERCRED already attested the peer is
+// root, and only root can own a socket in the root-gated control
+// directory. A same-uid peer (a dev daemon run by the caller) has a
+// readable /proc entry and stays on the strict image path; any other
+// readlink failure still fails closed.
 func VerifyUnixServer(conn net.Conn, expectedImage string) (pid, uid int, err error) {
 	if _, ok := conn.(*net.UnixConn); !ok {
 		return -1, -1, errors.New("unix server verification: not a unix connection")
@@ -65,8 +83,13 @@ func VerifyUnixServer(conn net.Conn, expectedImage string) (pid, uid int, err er
 	if uid != 0 && uid != os.Getuid() {
 		return -1, -1, fmt.Errorf("unix server verification: server uid %d is neither root nor the caller", uid)
 	}
-	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	exe, err := procExeReader(pid)
 	if err != nil {
+		if uid == 0 && (errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)) {
+			// Root daemon, unreadable /proc entry: prove identity
+			// from the socket file (see the doc comment above).
+			return verifyUnixSocketFile(conn)
+		}
 		return -1, -1, fmt.Errorf("unix server verification: server image: %w", err)
 	}
 	if expectedImage != "" {
