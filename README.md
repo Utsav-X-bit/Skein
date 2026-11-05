@@ -339,29 +339,32 @@ so the mesh comes back up.
 
 ### Method 1 — Install the packaged build (recommended)
 
-**Windows — setup exe.** Run the installer. It does everything:
-copies all five files into `C:\Program Files\Skein`, stops a running
-service first on upgrade, and — when a network already exists —
-re-registers and starts the `skein` service (the daemon creates the
-firewall rules at startup). On a first install there is no network
-yet, so there is no service to start: open Skein and create or join a
-network, and that first step registers the service.
+**Windows — setup exe.** The installer does everything: copies all
+five files into `C:\Program Files\Skein`, stops a running service
+first on upgrade, and — when a network already exists — re-registers
+and starts the `skein` service (the daemon creates the firewall rules
+at startup). On a first install there is no network yet, so there is
+no service to start: open Skein and create or join a network, and
+that first step registers the service.
 
-```powershell
-.\skein-desktop-amd64-installer.exe /S
-```
-
-(`/S` is silent; without it you get the wizard. The installer asks
-for Administrator itself.) Build the exe once from `gui/` — the
-packaging step builds the system binaries and fetches Wintun for you,
-so you only need the desktop build first. (The `PATH` change below
-lasts only for this PowerShell session.)
+The exe is a build artifact, not a file in the repo — build it once
+from `gui/`. The packaging step builds the system binaries and
+fetches Wintun for you, so you only need the desktop build first.
+(The `PATH` change below lasts only for this PowerShell session.)
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\go\bin;C:\Program Files (x86)\NSIS;$env:PATH"
 cd gui
 wails3 build          # desktop -> gui\bin\skein-desktop.exe
 wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe
+cd ..
+```
+
+Then run it (`/S` is silent; without it you get the wizard. The
+installer asks for Administrator itself.):
+
+```powershell
+.\gui\bin\skein-desktop-amd64-installer.exe /S
 ```
 
 (Go 1.26.10+, Node.js, and Wails 3 v3.1.0 needed; NSIS 3.11 for the
