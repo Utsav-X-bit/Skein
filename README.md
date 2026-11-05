@@ -330,18 +330,50 @@ polkit policy. The Windows installer (NSIS) ships the desktop,
 `skeind.exe`, `skein-helper.exe`, `skein.exe`, and `wintun.dll` into
 `C:\Program Files\Skein`. See [Packaging](#packaging) below.
 
+**Upgrading from a pre-dev install.** Config and identity are adopted
+unchanged, but the old access file holds a bare uid (Linux) or SID
+(Windows), which the dev code maps to the `read` role — the owner
+cannot revoke, rotate, or use secret endpoints until promoted:
+
+```bash
+sudo /usr/libexec/skein-helper grant-user 1000 --role secret   # Linux
+```
+
+```powershell
+& "C:\Program Files\Skein\skein-helper.exe" set-owner <your-username>   # Windows
+```
+
+The Windows form writes `<SID>:secret` and reports
+`restart_required: true` — restart the service after it.
+
 ### Linux
 
-**Option A — packaged install (recommended).** Install the nfpm
-package for your distro; it places the binaries, unit, group, tmpfiles
-entry, and polkit policy above. Then create or join a network through
-the desktop, or from a terminal (see [Usage](#usage)) — the daemon,
-not the desktop and not the helper, writes the system config
-(`/etc/skein/skein.toml`) and identity, as the single writer.
-`skein-helper` must stay root-owned at `/usr/libexec/skein-helper`;
-the desktop invokes it with `pkexec` (or polkit). After bootstrap, the
-daemon grants your uid access to `/run/skein/control.sock` (0660,
-`root:skein`).
+**Option A — packaged install (recommended).** Build the package
+from `gui/` (see [Packaging](#packaging)), then install it for your
+distro; it places the binaries, unit, group, tmpfiles entry, and
+polkit policy above. The package does **not** register or start the
+service — activate it once with the helper, by its full path (it is
+not on `PATH`):
+
+```bash
+sudo /usr/libexec/skein-helper install
+sudo /usr/libexec/skein-helper status
+```
+
+Then create or join a network through the desktop, or from a terminal
+(see [Usage](#usage)) — the daemon, not the desktop and not the
+helper, writes the system config (`/etc/skein/skein.toml`) and
+identity, as the single writer. `skein-helper` must stay root-owned
+at `/usr/libexec/skein-helper`; the desktop invokes it with `pkexec`
+(or polkit). After bootstrap, the daemon grants your uid access to
+`/run/skein/control.sock` (0660, `root:skein`).
+
+If you previously installed the binaries by hand, the package manager
+refuses to overwrite them — pass `--overwrite` for the four binary
+paths (`/usr/local/bin/skeind`, `/usr/local/bin/skein`,
+`/usr/local/bin/skein-desktop`, `/usr/libexec/skein-helper`), e.g.
+`pacman -U --overwrite '/usr/local/bin/*' --overwrite
+'/usr/libexec/skein-helper' <package>`.
 
 **Option B — build from source, install the service manually.**
 
@@ -354,14 +386,17 @@ go build -trimpath -o skein-helper ./cmd/skein-helper
 ```
 
 Then, as root, place the binaries where the packaged layout expects
-them and register the service through the helper:
+them and register the service through the helper. The helper lives
+at `/usr/libexec/skein-helper` — it is not on `PATH` (nor in sudo's
+`secure_path`), so always call it by its full path:
 
 ```bash
 sudo install -m 755 skeind /usr/local/bin/skeind
 sudo install -m 755 skein-helper /usr/libexec/skein-helper
 sudo install -m 755 skein /usr/local/bin/skein
-sudo skein-helper install
-sudo skein-helper status
+sudo install -m 755 skein-desktop /usr/local/bin/skein-desktop
+sudo /usr/libexec/skein-helper install
+sudo /usr/libexec/skein-helper status
 ```
 
 Create or join a network with the system commands in
@@ -387,25 +422,43 @@ PowerShell, from the repository root. It copies the binaries into
 `skein` service through the helper, and verifies it:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -DesktopPath .\gui\bin\skein-desktop.exe
 ```
 
 Options: `-InstallDir` (default `C:\Program Files\Skein`),
-`-SourceDir` (default `dist\`), `-Port` (default `11010`),
-`-SkipFirewall`, `-SkipService`. Re-running it upgrades in place: it
+`-SourceDir` (default `dist\`), `-DesktopPath` (install the desktop
+too — without it only the three system binaries are copied),
+`-Port` (default `11010`), `-SkipFirewall`, `-SkipService`. Re-running it upgrades in place: it
 stops a running service, replaces the binaries, re-applies any missing
 rules, and re-registers the service. It never touches
 `%ProgramData%\Skein`, so reinstalls keep your config, identity, and
 network membership. Then create or join a network (see
 [Usage](#usage)).
 
-**Option B — packaged installer.** The NSIS installer
-(`gui/build/windows/nsis/project.nsi`) ships the same layout into
-`C:\Program Files\Skein` and fails the build if any required binary is
-missing. Uninstall runs the helper's `uninstall` verb first
-(stop-then-delete) and aborts without deleting anything if the helper
-fails, so no orphaned service is left behind; purge moves
-`%ProgramData%\Skein` to `.bak` instead of deleting it.
+**Option B — packaged installer.** Build it from `gui/` — NSIS must
+be on `PATH` (`makensis` is not, by default):
+
+```powershell
+cd gui
+wails3 build          # -> gui\bin\skein-desktop.exe
+wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe
+```
+
+Run the installer (silent: `.\skein-desktop-amd64-installer.exe /S`).
+The NSIS installer (`gui/build/windows/nsis/project.nsi`) ships the
+same layout into `C:\Program Files\Skein` and fails the build if any
+required binary is missing. It does **not** register or start the
+service — activate it once, from an elevated prompt, with the helper:
+
+```powershell
+& "C:\Program Files\Skein\skein-helper.exe" install
+& "C:\Program Files\Skein\skein-helper.exe" status
+```
+
+Uninstall runs the helper's `uninstall` verb first (stop-then-delete)
+and aborts without deleting anything if the helper fails, so no
+orphaned service is left behind; purge moves `%ProgramData%\Skein`
+to `.bak` instead of deleting it.
 
 **Option C — manual copy.** Copy `dist\*` plus
 `gui\bin\skein-desktop.exe` into `C:\Program Files\Skein`. The desktop
@@ -451,7 +504,13 @@ go build -trimpath -o skein-helper ./cmd/skein-helper
 ```
 
 **Windows** (PowerShell; `dist\` is the output directory the install
-script expects):
+script expects). The Wails CLI lands in `%USERPROFILE%\go\bin`, which
+is not on `PATH` by default — add it first, and add NSIS
+(`C:\Program Files (x86)\NSIS`) if you want to build the installer:
+
+```powershell
+$env:PATH = "$env:USERPROFILE\go\bin;C:\Program Files (x86)\NSIS;$env:PATH"
+```
 
 ```powershell
 git clone https://github.com/Utsav-X-bit/Skein
@@ -462,6 +521,7 @@ go build -trimpath -o dist\skein-helper.exe .\cmd\skein-helper
 
 cd gui
 wails3 build          # -> gui\bin\skein-desktop.exe
+wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe (needs NSIS on PATH)
 cd ..
 
 .\scripts\fetch-wintun.cmd -Dest dist
@@ -709,7 +769,21 @@ IPv4/IPv6.
   `<binary>.old` plus a timestamped config backup are kept on every
   upgrade. Uninstall never purges config by default (Linux keeps
   `/etc/skein` and `/var/lib/skein/backups`); purge is the daemon
-  reset endpoint, not the helper.
+  reset endpoint, not the helper. Build it from `gui/` (the desktop
+  build, the three system binaries, then the package — the output
+  lands in `gui/bin/`):
+
+  ```bash
+  cd gui
+  wails3 build   # desktop -> gui/bin/skein-desktop
+  # system binaries (from the repo root):
+  go build -trimpath -o gui/bin/skeind ./cmd/skeind
+  go build -trimpath -o gui/bin/skein-helper ./cmd/skein-helper
+  go build -trimpath -o gui/bin/skein ./cmd/skein
+  # package (from gui/; format is deb, rpm, or archlinux):
+  wails3 tool package -name "skein-desktop" -format archlinux \
+    -config ./build/linux/nfpm/nfpm.yaml -out ./bin
+  ```
 - **Windows (NSIS, `gui/build/windows/nsis/project.nsi`)**: ships the
   desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, `wintun.dll`,
   and the Wintun licence into `C:\Program Files\Skein`. The build
