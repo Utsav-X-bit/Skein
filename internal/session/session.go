@@ -528,6 +528,20 @@ func (m *Manager) RemovePeer(id uint64) {
 
 // Begin starts an initiator handshake for peerID at the next epoch.
 func (m *Manager) Begin(peerID uint64) (attempt [AttemptSize]byte, payload []byte, err error) {
+	return m.begin(peerID, 0)
+}
+
+// BeginAbove starts an initiator handshake for peerID at an epoch above
+// minEpoch (in addition to Begin's own climbing). It is used by the
+// dataplane's stale-epoch recovery (bug #14): the recovering side must
+// begin ABOVE the epoch it saw in the stale frame, or the new handshake
+// collides with the peer's existing session at the same epoch and the
+// attempt tie-break can leave the two sides on different keys.
+func (m *Manager) BeginAbove(peerID uint64, minEpoch uint32) (attempt [AttemptSize]byte, payload []byte, err error) {
+	return m.begin(peerID, minEpoch)
+}
+
+func (m *Manager) begin(peerID uint64, floor uint32) (attempt [AttemptSize]byte, payload []byte, err error) {
 	m.mu.Lock()
 	ps, ok := m.peers[peerID]
 	m.mu.Unlock()
@@ -553,6 +567,13 @@ func (m *Manager) Begin(peerID uint64) (attempt [AttemptSize]byte, payload []byt
 	}
 	if ps.begun >= epoch {
 		epoch = ps.begun + 1
+	}
+	// Climb above the floor (a stale epoch observed on the wire). The
+	// floor is unauthenticated frame data, so only apply it when the
+	// next epoch is a valid one; a forged near-max epoch must not wrap
+	// the counter or produce an invalid epoch.
+	if floor > 0 && floor < ^uint32(0)-1 && floor+1 > epoch {
+		epoch = floor + 1
 	}
 	if epoch == 0 {
 		epoch = 1

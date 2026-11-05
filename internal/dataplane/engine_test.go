@@ -207,6 +207,67 @@ func TestDirectHandshakeAndData(t *testing.T) {
 	}
 }
 
+// TestStaleEpochRecoversWithFreshHandshake is the bug #14 (restart
+// recovery) regression test: when a peer restarts and the other side
+// keeps sending on the old epoch, the restarted side must start a
+// fresh handshake on seeing the unknown epoch instead of dropping its
+// traffic until the old epoch expires. On the old code the stale frame
+// was dropped with no handshake, so the pair stayed desynced (the
+// restarted side held no session, the other side kept its own) and
+// data never flowed again without a manual restart of both.
+func TestStaleEpochRecoversWithFreshHandshake(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, b, true)
+
+	pkt := ipv4Packet(a.overlay, b.overlay, []byte("hello"))
+	// Establish the initial session (epoch 1 both sides).
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("first send = %v, want ErrNoSession", err)
+	}
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if got := b.tun.last(); !bytes.Equal(got, pkt) {
+		t.Fatalf("delivered packet = %x, want %x", got, pkt)
+	}
+
+	// Simulate B restarting: B drops all session state (as a fresh
+	// session manager would) while A still holds the epoch-1 session.
+	b.eng.DropSession(a.id)
+	if b.eng.sessions.HasSession(a.id) {
+		t.Fatal("B still has a session after DropSession")
+	}
+
+	// A keeps sending on its stale epoch-1 session. The frame is
+	// dropped by B (the hub link propagates that drop as the send's
+	// error; on real UDP the send succeeds and the drop is silent),
+	// but B must answer with a fresh handshake.
+	if err := a.eng.SendOverlayPacket(pkt); !errors.Is(err, session.ErrStaleEpoch) {
+		t.Fatalf("A stale-epoch send = %v, want stale-epoch error", err)
+	}
+	if !b.eng.sessions.HasSession(a.id) {
+		t.Fatal("B did not start a recovery handshake on the stale-epoch frame")
+	}
+	aEpoch, _ := a.eng.sessions.ActiveEpoch(b.id)
+	bEpoch, _ := b.eng.sessions.ActiveEpoch(a.id)
+	if aEpoch == 0 || aEpoch != bEpoch {
+		t.Fatalf("epochs after recovery = A %d / B %d, want equal and non-zero", aEpoch, bEpoch)
+	}
+	if aEpoch <= 1 {
+		t.Fatalf("epoch after recovery = %d, want > 1 (the recovery handshake climbs above the stale epoch)", aEpoch)
+	}
+
+	// Data flows again on the recovered session.
+	if err := a.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatalf("send after recovery: %v", err)
+	}
+	if got := b.tun.last(); !bytes.Equal(got, pkt) {
+		t.Fatalf("delivered packet after recovery = %x, want %x", got, pkt)
+	}
+}
+
 // TestExpiredSessionFailsClosed is the M4 P7 (F-04) regression test: an
 // epoch past RekeyInterval must not keep carrying traffic while rekey
 // fails. On the old code SendOverlayPacket sealed with the active session

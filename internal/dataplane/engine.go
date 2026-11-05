@@ -524,6 +524,14 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 		if debugFrames() {
 			log.Printf("skein: auth failure type=%d from=%016x epoch=%d counter=%d: %v", h.Type, h.From, epoch, counter, err)
 		}
+		if errors.Is(err, session.ErrStaleEpoch) {
+			// A known peer is speaking on an epoch this node no
+			// longer holds (it restarted and climbed past our
+			// session). Drop the frame, but start a fresh handshake
+			// so the pair re-converges instead of dropping its
+			// traffic until the old epoch expires (bug #14).
+			e.recoverStaleEpoch(h.From, epoch)
+		}
 		return err
 	}
 	if debugFrames() {
@@ -779,6 +787,57 @@ func (e *Engine) Rekey(peerID uint64) error {
 		return err
 	}
 	return nil
+}
+
+// recoverStaleEpoch starts a fresh handshake after a known peer's frames
+// arrive on an epoch this node no longer holds (bug #14: restart
+// recovery). A restarted peer climbs to a new epoch while this node still
+// holds the old session; without a new handshake both sides keep their
+// own session and every frame is dropped as a stale epoch until the old
+// one expires (up to an hour). Either side may initiate the recovery
+// handshake — the attempt tie-break (smaller attempt wins) and Begin's
+// epoch climbing converge the pair — so this deliberately does NOT apply
+// Rekey's lower-ID-only or expiry gates. The handshake begins ABOVE the
+// stale epoch: at the same epoch the attempt tie-break can leave the two
+// sides on different keys. Attempts are throttled by the same inflight
+// backoff as Rekey/ensureSession, so a stream of stale frames cannot
+// handshake-storm the peer, and the handshake goes to the peer's known
+// endpoints (never to the frame's source address), so a spoofed peer ID
+// cannot redirect it.
+func (e *Engine) recoverStaleEpoch(peerID uint64, staleEpoch uint32) {
+	p, ok := e.peers.Get(peerID)
+	if !ok {
+		return
+	}
+	now := e.now()
+	e.mu.Lock()
+	last := e.inflight[peerID]
+	tries := 0
+	if last != nil {
+		tries = last.tries
+		backoff := minBackoff << min(tries, 5)
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		if tries > 0 && now.Sub(last.sentAt) < backoff {
+			e.mu.Unlock()
+			return
+		}
+	}
+	e.mu.Unlock()
+	e.markStarted(peerID)
+	attempt, msg, err := e.sessions.BeginAbove(peerID, staleEpoch)
+	if err != nil {
+		e.counters.RekeyFail.Add(1)
+		return
+	}
+	e.mu.Lock()
+	e.inflight[peerID] = &inflight{attempt: attempt, sentAt: now, tries: tries + 1}
+	e.mu.Unlock()
+	if err := e.sendHandshake(p, attempt, msg); err != nil {
+		e.counters.RekeyFail.Add(1)
+		return
+	}
 }
 
 // SendControlTo encrypts a control frame and sends it to a specific address.

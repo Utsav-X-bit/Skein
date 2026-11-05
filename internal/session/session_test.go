@@ -155,6 +155,39 @@ func TestEpochsAreMonotonicCountersNotWallClock(t *testing.T) {
 	}
 }
 
+// TestBeginAboveClimbsPastStaleEpoch is the bug #14 (restart recovery)
+// unit test: BeginAbove must start above the epoch observed on the wire,
+// or the recovery handshake collides with the peer's existing session
+// at the same epoch and the attempt tie-break can leave the two sides
+// on different keys. A near-max floor must not wrap the counter or
+// produce an invalid epoch.
+func TestBeginAboveClimbsPastStaleEpoch(t *testing.T) {
+	p := newPair(t)
+	attempt, _, err := p.a.BeginAbove(p.bID, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptEpoch(t, p.a, p.bID, attempt); got != 6 {
+		t.Fatalf("BeginAbove(5) epoch = %d, want 6", got)
+	}
+	// A floor below the natural next epoch changes nothing.
+	attempt, _, err = p.a.BeginAbove(p.bID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptEpoch(t, p.a, p.bID, attempt); got <= 6 {
+		t.Fatalf("BeginAbove(1) epoch = %d, want > 6 (still climbs past begun)", got)
+	}
+	// A near-max floor must not wrap or produce an invalid epoch.
+	attempt, _, err = p.a.BeginAbove(p.bID, ^uint32(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptEpoch(t, p.a, p.bID, attempt); got == 0 || got == ^uint32(0) {
+		t.Fatalf("BeginAbove(max) epoch = %d, want a valid epoch", got)
+	}
+}
+
 func TestHandshakeAndDataRoundTrip(t *testing.T) {
 	p := newPair(t)
 	establish(t, p)
