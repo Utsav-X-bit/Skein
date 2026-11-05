@@ -97,7 +97,36 @@ Section
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
-    
+
+    # Complete-setup install (M9 §2f): the installer is the whole
+    # install, not just a file copy.
+    #   1. Stop a running service FIRST (upgrade case): the helper
+    #      is already in $INSTDIR from a previous install, and a
+    #      running skeind locks its exe, so the File lines below
+    #      would fail on locked files. The helper stop tolerates
+    #      already-stopped (1062) and no-service (1060); a stop
+    #      failure is logged but does not abort — the file copy
+    #      will surface a genuinely locked file. A fresh install
+    #      has no helper yet, so this is skipped.
+    #   2. Copy the files (desktop via wails.files, system files
+    #      via the File lines below).
+    #   3. If a network already exists, re-register + start the
+    #      service through the helper (install verb). On a fresh
+    #      install there is no config yet, and helper install fails
+    #      by design ("no system config: run init or import
+    #      first") — the service is registered by the bootstrap
+    #      flow when the user creates or joins a network, so the
+    #      installer skips it and says so instead of failing.
+    # scripts/packaging-assert.sh enforces this order (stop before
+    # the first File line; helper install gated on an existing
+    # network config; Abort on helper-install failure).
+    IfFileExists "$INSTDIR\skein-helper.exe" installStopService installCopyFiles
+    installStopService:
+        DetailPrint "Stopping running skein service for upgrade..."
+        ExecWait '"$INSTDIR\skein-helper.exe" stop' $0
+        DetailPrint "Service stop exit: $0"
+    installCopyFiles:
+
     !insertmacro wails.files
 
     # Step 11 (ADR-001 collapse): the installer ships the whole
@@ -138,7 +167,28 @@ Section
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
-    
+
+    # 3. Service: re-register + start when a network already exists.
+    # $PROGRAMDATA is NOT an NSIS constant (see the uninstall
+    # section): resolve it from the environment instead.
+    ReadEnvStr $R9 "ProgramData"
+    IfFileExists "$R9\Skein\skein.toml" installRegisterService installFreshInstall
+    installRegisterService:
+        DetailPrint "Registering and starting the skein service..."
+        ExecWait '"$INSTDIR\skein-helper.exe" install' $0
+        StrCmp $0 0 installServiceOk
+        DetailPrint "Skein service registration failed (helper install exit $0)."
+        IfSilent installServiceFailedSilent
+        MessageBox MB_OK "Skein install failed: the helper could not register and start the service (helper install exit $0). The files are installed in $INSTDIR. Run this from an elevated prompt to finish the install: \"$INSTDIR\skein-helper.exe\" install"
+    installServiceFailedSilent:
+        Abort
+    installServiceOk:
+        DetailPrint "Skein service is running."
+        Goto installServiceDone
+    installFreshInstall:
+        DetailPrint "No network configured yet; the service will be registered when you create or join a network."
+    installServiceDone:
+
     !insertmacro wails.writeUninstaller
 SectionEnd
 

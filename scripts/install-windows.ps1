@@ -20,9 +20,15 @@
     Uninstall is the helper's job (skein-helper uninstall); purge is
     the daemon's reset endpoint, not this script.
 
-    After this script finishes, create or join a network (the helper
-    mints a single-use bootstrap token and the daemon writes the
-    system config as the single writer):
+    On a first install there is no network yet, so the service is
+    not registered here — it is registered by the bootstrap flow
+    when you create or join a network (helper install needs an
+    existing config and fails without one). On an upgrade the service
+    is re-registered and started, so your network comes back up.
+
+    First install, after this script finishes (the helper mints a
+    single-use bootstrap token and the daemon writes the system
+    config as the single writer):
 
         .\skein.exe system init [--name NAME] [--port PORT]
         .\skein.exe system join "skein:2:…"
@@ -168,22 +174,36 @@ if (-not $SkipFirewall) {
 }
 
 # --- 6. Service registration through the minimal helper ---------------------
+# helper install needs an existing system config ("no system config:
+# run init or import first" on a fresh install) — the service is
+# registered by the bootstrap flow when the first network is created,
+# so on a fresh install this step is skipped, not failed.
 if (-not $SkipService) {
     $helper = Join-Path $InstallDir "skein-helper.exe"
-    Write-Host "Registering the skein service..."
-    & $helper install
-    if ($LASTEXITCODE -ne 0) { Fail "skein-helper install failed (exit $LASTEXITCODE)." }
+    $systemConfig = Join-Path $env:ProgramData "Skein\skein.toml"
+    $hadConfig = Test-Path $systemConfig
+    if ($hadConfig) {
+        Write-Host "Registering the skein service..."
+        & $helper install
+        if ($LASTEXITCODE -ne 0) { Fail "skein-helper install failed (exit $LASTEXITCODE)." }
 
-    Write-Host "Verifying service status..."
-    & $helper status
-    if ($LASTEXITCODE -ne 0) { Fail "skein-helper status failed (exit $LASTEXITCODE)." }
+        Write-Host "Verifying service status..."
+        & $helper status
+        if ($LASTEXITCODE -ne 0) { Fail "skein-helper status failed (exit $LASTEXITCODE)." }
+    } else {
+        Write-Host "No network configured yet; the service will be registered when you create or join a network."
+    }
 } else {
+    $hadConfig = Test-Path (Join-Path $env:ProgramData "Skein\skein.toml")
     Write-Host "Skipping service registration (-SkipService)."
 }
 
 Write-Host ""
-Write-Host "Skein installed. Next steps (from $InstallDir):"
-Write-Host "  First node:  .\skein.exe system init [--name NAME]"
-Write-Host "  Joining node: .\skein.exe system join `"skein:2:…`""
-Write-Host "  Then:        .\skein.exe system start   (or start the service from Services)"
+if ($hadConfig) {
+    Write-Host "Skein installed and the service is running. Your network is back up."
+} else {
+    Write-Host "Skein installed. Next steps (from $InstallDir):"
+    Write-Host "  First node:  .\skein.exe system init [--name NAME]"
+    Write-Host "  Joining node: .\skein.exe system join `"skein:2:…`""
+}
 Write-Host "Your config in %ProgramData%\Skein is untouched by reinstalls."

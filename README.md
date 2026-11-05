@@ -25,9 +25,10 @@ flowchart LR
 
 `ndual` forwards opaque ciphertext: it never holds the `n4 ↔ n6` session keys.
 
-> Status: `0.1.0-dev`. The architecture below is implemented; live
-> Linux/Windows install, upgrade, and mesh verification is still in
-> progress (see `docs/engineering/M9-ACCEPTANCE.md`).
+> Status: `0.1.0-dev`. The architecture below is implemented, and
+> live Linux/Windows install, upgrade, and mesh verification has
+> passed on `dev` (see `docs/engineering/M9-ACCEPTANCE.md`); the
+> final release verdict is still open.
 
 ## Contents
 
@@ -41,6 +42,7 @@ flowchart LR
 - [Firewall](#firewall)
 - [Limitations](#limitations)
 - [Future scope](#future-scope)
+- [Testing](#testing)
 - [Docs and layout](#docs-and-layout)
 
 ## What it is
@@ -322,13 +324,79 @@ Skein ships as five pieces:
 | `skein-desktop` | Wails desktop control surface (unprivileged) |
 | `wintun.dll` | Windows tunnel driver (Windows only) |
 
-Packaged installs are the supported path. The Linux package (nfpm)
-ships `skeind` at `/usr/local/bin/skeind`, `skein-helper` at
-`/usr/libexec/skein-helper`, the `skein` CLI, the systemd unit, the
-`skein` group (sysusers), the runtime directory (tmpfiles), and the
-polkit policy. The Windows installer (NSIS) ships the desktop,
-`skeind.exe`, `skein-helper.exe`, `skein.exe`, and `wintun.dll` into
-`C:\Program Files\Skein`. See [Packaging](#packaging) below.
+There are two ways to install Skein. Method 1 is the complete,
+one-shot install; Method 2 is for developers who want to build from
+source. Both end at the same place: create or join a network (see
+[Usage](#usage)).
+
+One thing to know before either method: **the service is registered
+when you create or join your first network, not at install time.**
+The helper's `install` verb needs an existing system config, and the
+bootstrap flow (first network creation) is what registers the
+service. So a first install only puts the files in place; an upgrade
+over an existing network also re-registers and restarts the service,
+so the mesh comes back up.
+
+### Method 1 — Install the packaged build (recommended)
+
+**Windows — setup exe.** Run the installer. It does everything:
+copies all five files into `C:\Program Files\Skein`, stops a running
+service first on upgrade, and — when a network already exists —
+re-registers and starts the `skein` service (the daemon creates the
+firewall rules at startup). On a first install there is no network
+yet, so there is no service to start: open Skein and create or join a
+network, and that first step registers the service.
+
+```powershell
+.\skein-desktop-amd64-installer.exe /S
+```
+
+(`/S` is silent; without it you get the wizard. The installer asks
+for Administrator itself.) Build the exe once from `gui/` — the
+packaging step builds the system binaries and fetches Wintun for you,
+so you only need the desktop build first. (The `PATH` change below
+lasts only for this PowerShell session.)
+
+```powershell
+$env:PATH = "$env:USERPROFILE\go\bin;C:\Program Files (x86)\NSIS;$env:PATH"
+cd gui
+wails3 build          # desktop -> gui\bin\skein-desktop.exe
+wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe
+```
+
+(Go 1.26.10+, Node.js, and Wails 3 v3.1.0 needed; NSIS 3.11 for the
+packaging step. See Method 2 for the full prerequisite list.)
+
+**Linux — nfpm package.** Build the package, install it, and — only
+when a network already exists — re-register and start the service
+with the helper. On a first install there is no config yet, so skip
+the helper step: the service is registered when you create or join a
+network.
+
+```bash
+# system binaries (from the repo root):
+go build -trimpath -o gui/bin/skeind ./cmd/skeind
+go build -trimpath -o gui/bin/skein-helper ./cmd/skein-helper
+go build -trimpath -o gui/bin/skein ./cmd/skein
+# desktop + package (from gui/; format is deb, rpm, or archlinux):
+cd gui
+wails3 build   # desktop -> gui/bin/skein-desktop
+wails3 tool package -name "skein-desktop" -format archlinux \
+  -config ./build/linux/nfpm/nfpm.yaml -out ./bin
+cd ..
+# install (Arch shown; use the matching package for your distro):
+sudo pacman -U gui/bin/*.pkg.tar.zst
+# only when a network already exists (upgrade/reinstall):
+sudo /usr/libexec/skein-helper install
+sudo /usr/libexec/skein-helper status
+```
+
+If you previously installed the binaries by hand, the package manager
+refuses to overwrite them — pass `--overwrite` for the four binary
+paths (`/usr/local/bin/skeind`, `/usr/local/bin/skein`,
+`/usr/local/bin/skein-desktop`, `/usr/libexec/skein-helper`), e.g.
+`pacman -U --overwrite '/usr/local/bin/*' --overwrite
+'/usr/libexec/skein-helper' <package>`.
 
 **Upgrading from a pre-dev install.** Config and identity are adopted
 unchanged, but the old access file holds a bare uid (Linux) or SID
@@ -346,128 +414,7 @@ sudo /usr/libexec/skein-helper grant-user 1000 --role secret   # Linux
 The Windows form writes `<SID>:secret` and reports
 `restart_required: true` — restart the service after it.
 
-### Linux
-
-**Option A — packaged install (recommended).** Build the package
-from `gui/` (see [Packaging](#packaging)), then install it for your
-distro; it places the binaries, unit, group, tmpfiles entry, and
-polkit policy above. The package does **not** register or start the
-service — activate it once with the helper, by its full path (it is
-not on `PATH`):
-
-```bash
-sudo /usr/libexec/skein-helper install
-sudo /usr/libexec/skein-helper status
-```
-
-Then create or join a network through the desktop, or from a terminal
-(see [Usage](#usage)) — the daemon, not the desktop and not the
-helper, writes the system config (`/etc/skein/skein.toml`) and
-identity, as the single writer. `skein-helper` must stay root-owned
-at `/usr/libexec/skein-helper`; the desktop invokes it with `pkexec`
-(or polkit). After bootstrap, the daemon grants your uid access to
-`/run/skein/control.sock` (0660, `root:skein`).
-
-If you previously installed the binaries by hand, the package manager
-refuses to overwrite them — pass `--overwrite` for the four binary
-paths (`/usr/local/bin/skeind`, `/usr/local/bin/skein`,
-`/usr/local/bin/skein-desktop`, `/usr/libexec/skein-helper`), e.g.
-`pacman -U --overwrite '/usr/local/bin/*' --overwrite
-'/usr/libexec/skein-helper' <package>`.
-
-**Option B — build from source, install the service manually.**
-
-```bash
-git clone https://github.com/Utsav-X-bit/Skein && cd Skein
-go build -trimpath -o skein ./cmd/skein
-go build -trimpath -o skeind ./cmd/skeind
-go build -trimpath -o skein-helper ./cmd/skein-helper
-(cd gui && wails3 build)          # -> gui/bin/skein-desktop (desktop only)
-```
-
-Then, as root, place the binaries where the packaged layout expects
-them and register the service through the helper. The helper lives
-at `/usr/libexec/skein-helper` — it is not on `PATH` (nor in sudo's
-`secure_path`), so always call it by its full path:
-
-```bash
-sudo install -m 755 skeind /usr/local/bin/skeind
-sudo install -m 755 skein-helper /usr/libexec/skein-helper
-sudo install -m 755 skein /usr/local/bin/skein
-sudo install -m 755 skein-desktop /usr/local/bin/skein-desktop
-sudo /usr/libexec/skein-helper install
-sudo /usr/libexec/skein-helper status
-```
-
-Create or join a network with the system commands in
-[Usage](#usage). The firewall rules the daemon needs are applied by
-the daemon itself at startup; to apply them early (or repair them
-without starting the daemon), use the firewall script:
-
-```bash
-sudo ./scripts/firewall-linux.sh [--port 11010] [--interface skein0]
-sudo ./scripts/firewall-linux.sh --remove   # undo exactly those rules
-```
-
-The script detects ufw (active) → firewalld (running) → raw iptables
-in that order, mirroring the daemon's own detection, and prints the
-manager it used.
-
-### Windows
-
-**Option A — universal install script (recommended).** Build first
-(see [Building](#building)), then run one script from an elevated
-PowerShell, from the repository root. It copies the binaries into
-`C:\Program Files\Skein`, creates the firewall rules, registers the
-`skein` service through the helper, and verifies it:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -DesktopPath .\gui\bin\skein-desktop.exe
-```
-
-Options: `-InstallDir` (default `C:\Program Files\Skein`),
-`-SourceDir` (default `dist\`), `-DesktopPath` (install the desktop
-too — without it only the three system binaries are copied),
-`-Port` (default `11010`), `-SkipFirewall`, `-SkipService`. Re-running it upgrades in place: it
-stops a running service, replaces the binaries, re-applies any missing
-rules, and re-registers the service. It never touches
-`%ProgramData%\Skein`, so reinstalls keep your config, identity, and
-network membership. Then create or join a network (see
-[Usage](#usage)).
-
-**Option B — packaged installer.** Build it from `gui/` — NSIS must
-be on `PATH` (`makensis` is not, by default):
-
-```powershell
-cd gui
-wails3 build          # -> gui\bin\skein-desktop.exe
-wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe
-```
-
-Run the installer (silent: `.\skein-desktop-amd64-installer.exe /S`).
-The NSIS installer (`gui/build/windows/nsis/project.nsi`) ships the
-same layout into `C:\Program Files\Skein` and fails the build if any
-required binary is missing. It does **not** register or start the
-service — activate it once, from an elevated prompt, with the helper:
-
-```powershell
-& "C:\Program Files\Skein\skein-helper.exe" install
-& "C:\Program Files\Skein\skein-helper.exe" status
-```
-
-Uninstall runs the helper's `uninstall` verb first (stop-then-delete)
-and aborts without deleting anything if the helper fails, so no
-orphaned service is left behind; purge moves `%ProgramData%\Skein`
-to `.bak` instead of deleting it.
-
-**Option C — manual copy.** Copy `dist\*` plus
-`gui\bin\skein-desktop.exe` into `C:\Program Files\Skein`. The desktop
-looks for `skein-helper.exe` next to itself first, then at
-`C:\Program Files\Skein\skein-helper.exe`, so running the app from
-`dist` works when both binaries are there. `wintun.dll` must sit next
-to `skein.exe` and `skein-desktop.exe`.
-
-### Building
+### Method 2 — Build from source
 
 **Prerequisites**
 
@@ -493,50 +440,74 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 wails3 doctor
 ```
 
-**Build the binaries**
+**Linux — build and install by hand.** Run everything in order,
+from the repo root. The helper lives at `/usr/libexec/skein-helper`
+— it is not on `PATH` (nor in sudo's `secure_path`), so always call
+it by its full path.
 
 ```bash
 git clone https://github.com/Utsav-X-bit/Skein && cd Skein
 go build -trimpath -o skein ./cmd/skein
 go build -trimpath -o skeind ./cmd/skeind
 go build -trimpath -o skein-helper ./cmd/skein-helper
+export PATH="$PATH:$(go env GOPATH)/bin"
 (cd gui && wails3 build)          # -> gui/bin/skein-desktop
+
+sudo install -m 755 skeind /usr/local/bin/skeind
+sudo install -m 755 skein-helper /usr/libexec/skein-helper
+sudo install -m 755 skein /usr/local/bin/skein
+sudo install -m 755 skein-desktop /usr/local/bin/skein-desktop
+# only when a network already exists (upgrade/reinstall):
+sudo /usr/libexec/skein-helper install
+sudo /usr/libexec/skein-helper status
 ```
 
-**Windows** (PowerShell; `dist\` is the output directory the install
-script expects). The Wails CLI lands in `%USERPROFILE%\go\bin`, which
-is not on `PATH` by default — add it first, and add NSIS
-(`C:\Program Files (x86)\NSIS`) if you want to build the installer:
+Then create or join a network (see [Usage](#usage)). The firewall
+rules the daemon needs are applied by the daemon itself at startup;
+to apply them early (or repair them without starting the daemon), use
+the firewall script:
+
+```bash
+sudo ./scripts/firewall-linux.sh [--port 11010] [--interface skein0]
+sudo ./scripts/firewall-linux.sh --remove   # undo exactly those rules
+```
+
+The script detects ufw (active) → firewalld (running) → raw iptables
+in that order, mirroring the daemon's own detection, and prints the
+manager it used.
+
+**Windows — build and install by hand.** Run everything in order,
+from the repo root, in one PowerShell session. The Wails CLI lands in
+`%USERPROFILE%\go\bin`, which is not on `PATH` by default — add it
+first (this lasts only for this session), and add NSIS if you want
+the installer too. The install script finds `dist\` and
+`gui\bin\skein-desktop.exe` on its own — no `-SourceDir` or
+`-DesktopPath` needed when you built in the usual places.
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\go\bin;C:\Program Files (x86)\NSIS;$env:PATH"
-```
 
-```powershell
 git clone https://github.com/Utsav-X-bit/Skein
 cd Skein
-go build -trimpath -o dist\skein.exe        .\cmd\skein
-go build -trimpath -o dist\skeind.exe       .\cmd\skeind
+go build -trimpath -o dist\skein.exe .\cmd\skein
+go build -trimpath -o dist\skeind.exe .\cmd\skeind
 go build -trimpath -o dist\skein-helper.exe .\cmd\skein-helper
 
 cd gui
 wails3 build          # -> gui\bin\skein-desktop.exe
-wails3 package        # -> gui\bin\skein-desktop-amd64-installer.exe (needs NSIS on PATH)
 cd ..
 
 .\scripts\fetch-wintun.cmd -Dest dist
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
-`fetch-wintun.cmd` downloads the pinned Wintun release (0.14.1),
-verifies its SHA-256, and installs `wintun.dll` plus its license. If
-scripts are blocked:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\fetch-wintun.ps1 -Dest dist
-```
-
-Or download <https://www.wintun.net/builds/wintun-0.14.1.zip> manually
-and copy `wintun/bin/amd64/wintun.dll` into `dist`.
+The script copies the binaries into `C:\Program Files\Skein`,
+creates the firewall rules, and — when a network already exists —
+registers and starts the service. It never touches
+`%ProgramData%\Skein`, so reinstalls keep your config, identity, and
+network membership. Re-running it upgrades in place. Then create or
+join a network (see [Usage](#usage)).
 
 **Git Bash note:** do not paste the PowerShell commands into Git
 Bash — backslashes escape the next character, so `.\cmd\skein`
@@ -587,7 +558,9 @@ sudo skein system init [--name NAME] [--port PORT] [--mtu MTU]
 # Joining node:
 sudo skein system join "skein:2:…"
 # Then: lifecycle via the helper, mesh operations via the daemon API:
-sudo skein system start|stop|restart
+sudo skein system start     # start the service
+sudo skein system stop      # stop the service
+sudo skein system restart   # restart the service
 skein system leave        # leave this node's own network (see Limits)
 skein system rotate       # rotate the network secret via the daemon, then helper restart
 ```
@@ -732,8 +705,8 @@ firewall reset, without starting the daemon):
 # Linux: detects ufw -> firewalld -> iptables, mirroring the daemon
 sudo ./scripts/firewall-linux.sh [--port 11010] [--interface skein0]
 
-# Windows: the install script creates the same rules the daemon manages
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+# Windows: no separate step — the daemon creates the rules at startup,
+# and the setup exe / install script pre-create the same set.
 ```
 
 ## Reaching peers behind NAT — examples
@@ -769,25 +742,17 @@ IPv4/IPv6.
   `<binary>.old` plus a timestamped config backup are kept on every
   upgrade. Uninstall never purges config by default (Linux keeps
   `/etc/skein` and `/var/lib/skein/backups`); purge is the daemon
-  reset endpoint, not the helper. Build it from `gui/` (the desktop
-  build, the three system binaries, then the package — the output
-  lands in `gui/bin/`):
-
-  ```bash
-  cd gui
-  wails3 build   # desktop -> gui/bin/skein-desktop
-  # system binaries (from the repo root):
-  go build -trimpath -o gui/bin/skeind ./cmd/skeind
-  go build -trimpath -o gui/bin/skein-helper ./cmd/skein-helper
-  go build -trimpath -o gui/bin/skein ./cmd/skein
-  # package (from gui/; format is deb, rpm, or archlinux):
-  wails3 tool package -name "skein-desktop" -format archlinux \
-    -config ./build/linux/nfpm/nfpm.yaml -out ./bin
-  ```
+  reset endpoint, not the helper. Build it as in Installation,
+  Method 1 (Linux) — the package build, install, and (on upgrade)
+  service activation are there in order.
 - **Windows (NSIS, `gui/build/windows/nsis/project.nsi`)**: ships the
   desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, `wintun.dll`,
   and the Wintun licence into `C:\Program Files\Skein`. The build
-  fails if any required binary is missing. Uninstall runs the
+  fails if any required binary is missing. Install stops a running
+  service first (upgrade), then — when a network already exists —
+  re-registers and starts the service through the helper; on a first
+  install there is no config yet, so the service is registered by the
+  bootstrap flow when the first network is created. Uninstall runs the
   helper's `uninstall` verb first (stop-then-delete) and aborts without
   deleting anything if the helper fails, so no orphaned service is left
   behind; purge moves `%ProgramData%\Skein` to `.bak` instead of

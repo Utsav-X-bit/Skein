@@ -48,6 +48,26 @@ grep -q 'InstallDir "\$PROGRAMFILES64\\\${INFO_PRODUCTNAME}"' "$NSIS" \
 	|| note "NSIS: machine InstallDir is not \$PROGRAMFILES64\\\${INFO_PRODUCTNAME}"
 grep -q 'InstallDir "\$PROGRAMFILES64\\\${INFO_COMPANYNAME}\\\${INFO_PRODUCTNAME}"' "$NSIS" \
 	&& note "NSIS: nested Skein\\Skein InstallDir present"
+# Install order (complete setup): on upgrade the service must be
+# stopped before the first File line (a running skeind locks its
+# exe), and the service must be (re-)registered through the helper
+# when a network already exists. A fresh install has no config, and
+# helper install fails by design on one ("no system config: run init
+# or import first") — so the helper install must be gated on an
+# existing %ProgramData%\Skein\skein.toml, not run unconditionally,
+# and a helper-install failure must abort instead of reporting a
+# successful install with a dead service.
+instsec=$(awk '/^Section$/,/^SectionEnd/' "$NSIS")
+[ -n "$instsec" ] || note "NSIS install: install section not found"
+stop_line=$(printf '%s' "$instsec" | grep -n 'skein-helper.exe" stop' | head -1 | cut -d: -f1)
+first_file_line=$(printf '%s' "$instsec" | grep -n 'File "/oname=' | head -1 | cut -d: -f1)
+[ -n "$stop_line" ] || note "NSIS install: helper stop before file copy missing (upgrade over a running service locks the binaries)"
+if [ -n "$stop_line" ] && [ -n "$first_file_line" ] && [ "$stop_line" -gt "$first_file_line" ]; then
+	note "NSIS install: helper stop runs AFTER the first File line (service must stop first)"
+fi
+printf '%s' "$instsec" | grep -q 'skein-helper.exe" install' || note "NSIS install: helper install (re-register + start) missing"
+printf '%s' "$instsec" | grep -q 'Skein\\skein.toml' || note "NSIS install: helper install is not gated on an existing network config (it fails by design on a fresh install)"
+printf '%s' "$instsec" | grep -q 'Abort' || note "NSIS install: no Abort on helper-install failure"
 # Uninstall order: helper uninstall must come before the first
 # RMDir in the uninstall section, and the section must ask about
 # purge (moving to .bak) instead of silently deleting %ProgramData%.
