@@ -1,7 +1,10 @@
 package configstore
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -10,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
@@ -171,16 +173,22 @@ func TestLockHeldBlocksSecondWriter(t *testing.T) {
 	}
 }
 
+// lockHeldSignal is printed by TestConfigstoreHelperProcess only after it
+// holds the lock. The parent reads it as the handshake.
+const lockHeldSignal = "configstore-lock-held"
+
 // TestConfigstoreHelperProcess is the cross-process lock holder for
 // TestLockHeldAcrossProcesses. It is never run as a normal test: it
-// exits immediately unless SKEIN_CONFIGSTORE_HOLDER is set.
+// exits immediately unless SKEIN_CONFIGSTORE_HOLDER is set. Once the
+// lock is held it prints one line to stdout, which the parent reads as
+// the handshake (no file polling and no arbitrary deadline), then
+// blocks until the parent kills it; the OS releases the lock.
 func TestConfigstoreHelperProcess(t *testing.T) {
 	dir := os.Getenv("SKEIN_CONFIGSTORE_HOLDER")
 	if dir == "" {
 		return
 	}
-	path := filepath.Join(dir, "skein.toml")
-	s, err := Open(path)
+	s, err := Open(filepath.Join(dir, "skein.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +196,25 @@ func TestConfigstoreHelperProcess(t *testing.T) {
 	if err := s.Lock(); err != nil {
 		t.Fatalf("holder Lock: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ready"), []byte("locked"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	fmt.Println(lockHeldSignal)
 	select {} // killed by the parent test; the OS releases the lock
+}
+
+// waitForLockSignal reads the holder's stdout until the lock-held line.
+// It returns io.EOF if the holder exits before printing it, so a holder
+// that dies early fails the test with its stderr instead of being
+// polled until an arbitrary deadline.
+func waitForLockSignal(r io.Reader) error {
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		if strings.TrimSpace(sc.Text()) == lockHeldSignal {
+			return nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return io.EOF
 }
 
 func TestLockHeldAcrossProcesses(t *testing.T) {
@@ -204,27 +227,32 @@ func TestLockHeldAcrossProcesses(t *testing.T) {
 	if err := seed.Write(validConfig("seed")); err != nil {
 		t.Fatal(err)
 	}
-	seed.Close()
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestConfigstoreHelperProcess", "-test.count=1")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestConfigstoreHelperProcess$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "SKEIN_CONFIGSTORE_HOLDER="+dir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-	}()
-	ready := filepath.Join(dir, "ready")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("holder process did not acquire the lock in time")
-		}
-		time.Sleep(10 * time.Millisecond)
+		_ = cmd.Wait()
+	})
+	// The holder prints the signal only after flock succeeds, so reading it
+	// is the lock handshake. EOF means the holder exited before taking the
+	// lock; its stderr says why.
+	if err := waitForLockSignal(stdout); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("holder did not take the lock: %v (stderr: %s)", err, stderr.String())
 	}
 
 	other, err := Open(path)
@@ -236,25 +264,17 @@ func TestLockHeldAcrossProcesses(t *testing.T) {
 		t.Fatalf("cross-process Write under held lock = %v, want ErrLocked", err)
 	}
 
-	// Kill the holder: the OS must release the lock, so a new writer
-	// succeeds without any stale-lock cleanup.
+	// Kill and reap the holder: the OS releases the lock as the process
+	// dies, so the next write succeeds without polling or stale-lock
+	// cleanup.
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cmd.Process.Wait(); err != nil {
+	if err := cmd.Wait(); err != nil {
 		t.Logf("holder wait: %v (ignored)", err)
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		if err := other.Write(validConfig("after")); err == nil {
-			break
-		} else if !IsLocked(err) {
-			t.Fatalf("Write after holder death: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("lock not released after holder death")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := other.Write(validConfig("after")); err != nil {
+		t.Fatalf("Write after holder death = %v, want nil (OS must release the lock)", err)
 	}
 	got, err := conf.Load(path)
 	if err != nil || got.Node.Name != "after" {
