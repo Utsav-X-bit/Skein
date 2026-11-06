@@ -49,6 +49,19 @@ func ufwRules(cfg Config) []struct {
 	}
 }
 
+// ufwDeleteArgs returns the ufw argv that deletes one managed rule.
+// `route` is a ufw subcommand, so it must come before `delete`:
+// `ufw --force route delete allow ...` (not `ufw --force delete route
+// allow ...`, which ufw rejects). --force is first so the delete never
+// prompts; a missing rule is still reported as a normal error and is
+// ignored by the callers that tolerate it.
+func ufwDeleteArgs(args []string) []string {
+	if len(args) > 0 && args[0] == "route" {
+		return append([]string{"--force", "route", "delete"}, args[1:]...)
+	}
+	return append([]string{"--force", "delete"}, args...)
+}
+
 // iptablesRules is the raw-iptables set: port plus interface rules in both
 // directions, plus FORWARD so a relay can pass overlay traffic.
 func iptablesRules(cfg Config) []struct {
@@ -127,11 +140,14 @@ func remove(cfg Config) error {
 	// can report it in FirewallError instead of claiming a
 	// clean reset while rules remain.
 	var errs []string
-	keep := func(err error) {
+	keep := func(out string, err error) {
 		if err == nil {
 			return
 		}
-		msg := strings.ToLower(err.Error())
+		// The Runner contract returns combined output separately, and
+		// the default runner also embeds it in the error. Check both
+		// so "already absent" stays recognised with any Runner.
+		msg := strings.ToLower(err.Error() + "\n" + out)
 		if strings.Contains(msg, "could not find") || strings.Contains(msg, "not found") {
 			return
 		}
@@ -143,16 +159,16 @@ func remove(cfg Config) error {
 		// interactively, and a daemon-side remove can hang
 		// instead of removing the rule.
 		for _, r := range ufwRules(cfg) {
-			_, err := runner("ufw", append([]string{"--force", "delete"}, r.args...)...)
-			keep(err)
+			out, err := runner("ufw", ufwDeleteArgs(r.args)...)
+			keep(out, err)
 		}
 	case "firewalld":
-		_, err := runner("firewall-cmd", "--permanent", fmt.Sprintf("--remove-port=%d/udp", cfg.Port))
-		keep(err)
-		_, err = runner("firewall-cmd", "--permanent", "--zone=trusted", fmt.Sprintf("--remove-interface=%s", cfg.Interface))
-		keep(err)
-		_, err = runner("firewall-cmd", "--reload")
-		keep(err)
+		out, err := runner("firewall-cmd", "--permanent", fmt.Sprintf("--remove-port=%d/udp", cfg.Port))
+		keep(out, err)
+		out, err = runner("firewall-cmd", "--permanent", "--zone=trusted", fmt.Sprintf("--remove-interface=%s", cfg.Interface))
+		keep(out, err)
+		out, err = runner("firewall-cmd", "--reload")
+		keep(out, err)
 	case "iptables":
 		iptablesRemove(cfg)
 	}
@@ -244,7 +260,7 @@ func repair(cfg Config) (Status, error) {
 
 func ufwRepair(cfg Config) (Status, error) {
 	out, _ := runner("ufw", "show", "added")
-	var added []string
+	var added [][]string
 	for _, r := range ufwRules(cfg) {
 		if strings.Contains(out, "ufw "+strings.Join(r.args, " ")) {
 			continue
@@ -253,15 +269,15 @@ func ufwRepair(cfg Config) (Status, error) {
 			rollbackUFW(added)
 			return degraded(cfg, fmt.Errorf("ufw %s: %w", strings.Join(r.args, " "), err)), nil
 		}
-		added = append(added, strings.Join(r.args, " "))
+		added = append(added, r.args)
 	}
 	return status(cfg)
 }
 
 // rollbackUFW removes exactly the rules this repair run added.
-func rollbackUFW(added []string) {
+func rollbackUFW(added [][]string) {
 	for _, a := range added {
-		_, _ = runner("ufw", append([]string{"delete"}, strings.Split(a, " ")...)...)
+		_, _ = runner("ufw", ufwDeleteArgs(a)...)
 	}
 }
 
