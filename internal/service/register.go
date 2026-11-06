@@ -75,6 +75,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 // RegisterOptions selects the daemon binary for one registration.
@@ -329,6 +331,12 @@ func RollbackDaemon(reg Registration, configPath string) error {
 // copyFile copies src to dst (same mode bits as src, best effort).
 // It is a byte copy used for binary/config backups, not a config
 // write: it never parses or modifies content.
+//
+// A destination created inside a directory whose DACL set-owner
+// protected inherits no ACEs at all, so on Windows the new file would be
+// deny-all (the write succeeds through the handle, but the backup is then
+// unreadable when a rollback needs it). RestrictDACL sets that DACL and
+// leaves the Unix mode from the create call untouched.
 func copyFile(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -343,6 +351,10 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	if err := fileperm.RestrictDACL(dst); err != nil {
+		out.Close()
+		return err
+	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		return err
@@ -353,6 +365,13 @@ func copyFile(src, dst string) error {
 // copyFileAtomic copies src to dst via temp+rename in dst's
 // directory, so a rollback config restore never leaves a half-written
 // config behind.
+//
+// The DACL is set before the mode: after set-owner the destination
+// directory's DACL is protected with non-inheritable ACEs, so the temp
+// file inherits nothing (deny-all on Windows) — and Chmod, which is
+// attribute-based there, would itself be refused. Restrict runs first;
+// the source mode is then applied on Unix, where it is the access
+// control.
 func copyFileAtomic(src, dst string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
 	if err != nil {
@@ -371,6 +390,10 @@ func copyFileAtomic(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+	if err := fileperm.Restrict(name); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		tmp.Close()
 		return err

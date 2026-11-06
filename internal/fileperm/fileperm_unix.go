@@ -15,6 +15,10 @@ func restrict(path string) error {
 	return os.Chmod(path, 0o600)
 }
 
+// restrictDACL is a no-op on Unix: Restrict's DACL has no Unix counterpart,
+// and the caller's create mode is the access control.
+func restrictDACL(string) error { return nil }
+
 func chownToSudoUser(path string) error {
 	if os.Geteuid() != 0 {
 		return nil

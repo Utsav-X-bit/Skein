@@ -7,6 +7,13 @@ package fileperm
 // SYSTEM, and Administrators (Windows).
 func Restrict(path string) error { return restrict(path) }
 
+// RestrictDACL applies the Windows DACL Restrict applies — creator, SYSTEM,
+// Administrators, protected from inheritance — and leaves the Unix mode
+// untouched. Use it for writers that already set their own mode: byte copies
+// that must keep the source's mode bits, and directories created 0700. On Unix
+// it is a no-op, because the create mode is the access control there.
+func RestrictDACL(path string) error { return restrictDACL(path) }
+
 // ChownToSudoUser gives path to the user who invoked sudo, so files created by
 // an elevated command stay usable by the normal user.
 func ChownToSudoUser(path string) error { return chownToSudoUser(path) }

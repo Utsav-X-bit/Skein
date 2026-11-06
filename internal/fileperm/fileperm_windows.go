@@ -49,6 +49,10 @@ func restrict(path string) error {
 	)
 }
 
+// restrictDACL is restrict without a mode half; Windows has no mode bits, so
+// the DACL is the whole restriction.
+func restrictDACL(path string) error { return restrict(path) }
+
 func chownToSudoUser(string) error { return nil }
 
 func preserveOwner(string, string) error { return nil }
