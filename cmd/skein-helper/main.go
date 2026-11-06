@@ -207,7 +207,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return removedVerb(stdout, verb)
 	}
 
-	privilegedVerb := verb != "status" && verb != "help" && verb != "-h" && verb != "--help"
+	var privilegedVerb bool
+	switch verb {
+	case "bootstrap", "install", "uninstall", "start", "stop", "restart", "grant-user", "set-owner", "revoke-user":
+		privilegedVerb = true
+	case "status", "help", "-h", "--help":
+	default:
+		fmt.Fprintf(stderr, "skein-helper: unknown verb %q\n\n%s", verb, usage)
+		return 2
+	}
 	if err := requirePrivilege(privilegedVerb); err != nil {
 		return fail(stdout, err)
 	}

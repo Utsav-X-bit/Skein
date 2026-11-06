@@ -68,16 +68,44 @@ fi
 printf '%s' "$instsec" | grep -q 'skein-helper.exe" install' || note "NSIS install: helper install (re-register + start) missing"
 printf '%s' "$instsec" | grep -q 'Skein\\skein.toml' || note "NSIS install: helper install is not gated on an existing network config (it fails by design on a fresh install)"
 printf '%s' "$instsec" | grep -q 'Abort' || note "NSIS install: no Abort on helper-install failure"
+# Running-desktop precheck: a running skein-desktop.exe locks its own
+# exe, so an install over it aborts mid-copy (after the service was
+# stopped) and an uninstall leaves the exe behind while reporting
+# success. Both entry points must probe tasklist through nsExec before
+# anything is touched, must fail closed when tasklist cannot run, and
+# must never kill the desktop.
+probe=$(awk '/^!macro SkeinDesktopProbe/,/^!macroend/' "$NSIS")
+[ -n "$probe" ] || note "NSIS: running-desktop probe macro missing"
+printf '%s' "$probe" | grep -q 'tasklist' || note "NSIS: desktop probe does not run tasklist"
+printf '%s' "$probe" | grep -q 'nsExec::ExecToStack' || note "NSIS: desktop probe does not use nsExec"
+printf '%s' "$probe" | grep -q 'SkeinDesktopState "unknown"' \
+	|| note "NSIS: desktop probe does not fail closed (no 'unknown' default)"
+oninit=$(awk '/^Function \.onInit/,/^FunctionEnd/' "$NSIS")
+printf '%s' "$oninit" | grep -q 'SkeinDesktopProbe' \
+	|| note "NSIS install: .onInit does not run the desktop probe before the pages"
+printf '%s' "$oninit" | grep -q 'SetErrorLevel' \
+	|| note "NSIS install: silent desktop precheck sets no failure exit code"
+printf '%s' "$oninit" | grep -q 'MessageBox' \
+	|| note "NSIS install: interactive desktop precheck gives no close-desktop guidance"
+grep -qi 'taskkill' "$NSIS" && note "NSIS: must never kill the desktop (fail closed and ask the user to close it)"
 # Uninstall order: helper uninstall must come before the first
 # RMDir in the uninstall section, and the section must ask about
 # purge (moving to .bak) instead of silently deleting %ProgramData%.
 unsec=$(awk '/^Section "uninstall"/,/^SectionEnd/' "$NSIS")
 helper_line=$(printf '%s' "$unsec" | grep -n 'skein-helper.exe" uninstall' | head -1 | cut -d: -f1)
-rmdir_line=$(printf '%s' "$unsec" | grep -n 'RMDir' | head -1 | cut -d: -f1)
+rmdir_line=$(printf '%s' "$unsec" | grep -n '^[[:space:]]*RMDir[[:space:]]' | head -1 | cut -d: -f1)
 [ -n "$helper_line" ] || note "NSIS uninstall: helper uninstall call missing"
 [ -n "$rmdir_line" ] || note "NSIS uninstall: no RMDir found (section changed?)"
 if [ -n "$helper_line" ] && [ -n "$rmdir_line" ] && [ "$helper_line" -gt "$rmdir_line" ]; then
 	note "NSIS uninstall: helper uninstall runs AFTER the first RMDir (service would be deleted around, not stopped first)"
+fi
+# The desktop probe must run before the helper uninstall: RMDir /r
+# cannot delete a locked exe, so uninstalling over a running desktop
+# would delete the shortcuts and uninstall key and leave the exe.
+probe_line=$(printf '%s' "$unsec" | grep -n 'SkeinDesktopProbe' | head -1 | cut -d: -f1)
+[ -n "$probe_line" ] || note "NSIS uninstall: desktop probe missing (RMDir cannot delete a locked exe)"
+if [ -n "$probe_line" ] && [ -n "$helper_line" ] && [ "$probe_line" -gt "$helper_line" ]; then
+	note "NSIS uninstall: desktop probe runs after the helper uninstall (must fail before any mutation)"
 fi
 printf '%s' "$unsec" | grep -q 'MessageBox MB_YESNO' || note "NSIS uninstall: purge question missing"
 printf '%s' "$unsec" | grep -q 'Skein.bak' || note "NSIS uninstall: purge-to-.bak backup missing"
@@ -89,7 +117,8 @@ printf '%s' "$unsec" | grep -q '"\$PROGRAMDATA' && note "NSIS uninstall: \$PROGR
 printf '%s' "$unsec" | grep -q 'ReadEnvStr.*ProgramData' || note "NSIS uninstall: ProgramData not resolved via ReadEnvStr"
 printf '%s' "$unsec" | grep -q 'RMDir /r "\$PROGRAMDATA\\Skein"' \
 	&& note "NSIS uninstall: silent RMDir of %ProgramData%\\Skein (purge must move to .bak, never delete)"
-printf '%s' "$unsec" | grep -q 'Abort' || note "NSIS uninstall: no Abort on helper-uninstall failure"
+printf '%s' "$unsec" | grep -q 'could not stop and remove the service' \
+	|| note "NSIS uninstall: no Abort on helper-uninstall failure"
 # Windows Taskfile must build the system binaries and pass every
 # ARG define to makensis; a define passed nowhere is a dead File.
 grep -q 'task: build:system-binaries' "$WIN_TASK" || note "Windows Taskfile: create:nsis:installer does not depend on build:system-binaries"
@@ -98,6 +127,14 @@ for d in ARG_SKEIND_BINARY ARG_SKEIN_HELPER_BINARY ARG_SKEIN_CLI_BINARY ARG_WINT
 done
 grep -q 'fetch-wintun' "$WIN_TASK" || note "Windows Taskfile: Wintun fetch step missing"
 grep -q 'build:system-binaries' "$WIN_TASK" || note "Windows Taskfile: build:system-binaries task missing"
+# The PowerShell installer (the second, script-only install path)
+# copies the same desktop exe and needs the same running-desktop
+# guard, failing closed and never killing the app.
+PSI=scripts/install-windows.ps1
+[ -f "$PSI" ] || note "missing $PSI"
+grep -q 'IMAGENAME eq skein-desktop.exe' "$PSI" || note "install-windows.ps1: running-desktop probe missing"
+grep -q 'LASTEXITCODE -ne 0' "$PSI" || note "install-windows.ps1: desktop probe does not fail closed when tasklist fails"
+grep -qi 'Stop-Process\|taskkill' "$PSI" && note "install-windows.ps1: must never kill the desktop (fail closed and ask the user to close it)"
 
 # --- Linux nfpm ---------------------------------------------------
 [ -f "$NFPM" ] || note "missing $NFPM"
@@ -124,27 +161,27 @@ grep -q '^g skein' gui/build/linux/nfpm/sysusers.d/skein.conf \
 	|| note "sysusers: 'g skein' group entry missing"
 grep -q '^d /run/skein 0750 root skein' gui/build/linux/nfpm/tmpfiles.d/skein.conf \
 	|| note "tmpfiles: '/run/skein 0750 root skein' entry missing"
-# Polkit: three actions, admin-only for active sessions, pinned path.
+# pkexec selects the policy by executable path; it has no --action flag.
+# A single unambiguous path-pinned action must remain admin-only, local-only,
+# and uncached. Validate the policy structure, not incidental source spelling.
 POLICY=gui/build/linux/nfpm/org.skein.helper.policy
-for a in org.skein.helper.install org.skein.helper.lifecycle org.skein.helper.grants; do
-	grep -q "action id=\"$a\"" "$POLICY" || note "polkit: action $a missing"
-done
-grep -q '<allow_active>auth_admin</allow_active>' "$POLICY" || note "polkit: allow_active is not auth_admin"
-grep -q '/usr/libexec/skein-helper' "$POLICY" || note "polkit: helper path annotation missing"
 if command -v python3 >/dev/null 2>&1; then
-	python3 -c "import xml.etree.ElementTree as ET,sys; ET.parse(sys.argv[1])" "$POLICY" \
-		|| note "polkit: XML does not parse"
-elif command -v xmllint >/dev/null 2>&1; then
-	xmllint --noout "$POLICY" >/dev/null 2>&1 || note "polkit: XML does not parse"
+	python3 - "$POLICY" <<'PY' || note "polkit: unsafe or ambiguous helper authorization policy"
+import sys
+import xml.etree.ElementTree as ET
+actions = ET.parse(sys.argv[1]).getroot().findall("action")
+assert len(actions) == 1
+action = actions[0]
+assert action.get("id") == "org.skein.helper.control"
+for name, value in {"allow_any": "no", "allow_inactive": "no", "allow_active": "auth_admin"}.items():
+    assert action.findtext("defaults/" + name) == value
+paths = [a.text for a in action.findall("annotate") if a.get("key") == "org.freedesktop.policykit.exec.path"]
+assert paths == ["/usr/libexec/skein-helper"]
+assert all(a.get("key") != "org.freedesktop.policykit.exec.allow_gui" for a in action.findall("annotate"))
+PY
 else
-	note "polkit: no XML parser (python3/xmllint) available to verify the policy"
+	note "polkit: python3 required to verify authorization invariants"
 fi
-# GUI must actually request the named actions (a policy nobody
-# requests is the L-16 bug again, in a new form).
-grep -q 'polkitActionForVerb' gui/services/helper_command_unix.go \
-	|| note "GUI: polkitActionForVerb mapping missing from helper_command_unix.go"
-grep -q 'polkitActionForVerb(verb)' gui/services/helper.go \
-	|| note "GUI: runHelper does not request a polkit action"
 # Lifecycle scripts: present, executable, syntax-clean, and with the
 # right ordering guarantees (preremove runs helper uninstall and
 # aborts on failure; postinstall never enables/starts the service;

@@ -87,8 +87,68 @@ OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the i
 !endif
 ShowInstDetails show # This will always show the installation details.
 
+# Running-desktop precheck. A running skein-desktop.exe locks its own
+# exe, so both install and uninstall fail halfway through: NSIS cannot
+# replace a locked file (the copy aborts after the service was already
+# stopped), and RMDir /r cannot delete it (the uninstaller would report
+# success with the exe left behind and the uninstall key gone). The same
+# lock is what the user hit by hand: "copy .\gui\bin\skein-desktop.exe
+# .\dist\: The process cannot access the file ... being used by another
+# process".
+#
+# The probe only ever *reads* process state (tasklist through nsExec);
+# it never kills the desktop. It fails closed: if tasklist cannot be
+# run, or prints something this script cannot classify, the state stays
+# "unknown" and the installer refuses to touch anything rather than
+# assuming the desktop is closed.
+#
+# A match is printed as CSV starting with the quoted image name
+# ("skein-desktop.exe","1234",...); the no-match notice is localized
+# prose and never starts with a quote, so the first character decides.
+# The UNIQ parameter keeps the two insertions (installer and
+# uninstaller) on distinct labels.
+Var SkeinDesktopState
+
+!macro SkeinDesktopProbe UNIQ
+    StrCpy $SkeinDesktopState "unknown"
+    nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH /FO CSV'
+    Pop $0
+    Pop $1
+    # $0 is tasklist's exit code: anything but 0 leaves "unknown".
+    StrCmp $0 "0" 0 skeinProbe${UNIQ}Done
+    # No output at all is not a documented tasklist result: "unknown".
+    StrCmp $1 "" skeinProbe${UNIQ}Done
+    # A match is CSV and starts with the quoted image name; the
+    # no-match notice is prose and never starts with a quote.
+    StrCpy $2 $1 1
+    StrCmp $2 '"' skeinProbe${UNIQ}Running 0
+    StrCpy $SkeinDesktopState "closed"
+    Goto skeinProbe${UNIQ}Done
+    skeinProbe${UNIQ}Running:
+    StrCpy $SkeinDesktopState "running"
+    skeinProbe${UNIQ}Done:
+!macroend
+
 Function .onInit
    !insertmacro wails.checkArchitecture
+
+   # Before any page, file copy, or service mutation.
+   !insertmacro SkeinDesktopProbe Install
+   StrCmp $SkeinDesktopState "closed" skeinDesktopInstallOk
+   StrCmp $SkeinDesktopState "running" 0 skeinDesktopInstallUnknown
+   StrCpy $R0 "Skein Desktop is still running. Close it (quit it from its window, or right-click its taskbar entry and choose Close), then start this installer again. Nothing has been changed yet."
+   Goto skeinDesktopInstallRefuse
+   skeinDesktopInstallUnknown:
+   StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Close Skein Desktop and run this installer again; if this keeps happening, reboot and retry. Nothing has been changed yet."
+   skeinDesktopInstallRefuse:
+   DetailPrint "$R0"
+   IfSilent skeinDesktopInstallSilent
+   MessageBox MB_OK|MB_ICONSTOP "$R0"
+   Quit
+   skeinDesktopInstallSilent:
+   SetErrorLevel 1
+   Abort
+   skeinDesktopInstallOk:
 FunctionEnd
 
 Section
@@ -100,6 +160,9 @@ Section
 
     # Complete-setup install (M9 §2f): the installer is the whole
     # install, not just a file copy.
+    #   0. .onInit already refused to start while skein-desktop.exe
+    #      is running (the desktop locks its own exe, so the copy
+    #      below would abort after the service had been stopped).
     #   1. Stop a running service FIRST (upgrade case): the helper
     #      is already in $INSTDIR from a previous install, and a
     #      running skeind locks its exe, so the File lines below
@@ -179,7 +242,7 @@ Section
         StrCmp $0 0 installServiceOk
         DetailPrint "Skein service registration failed (helper install exit $0)."
         IfSilent installServiceFailedSilent
-        MessageBox MB_OK "Skein install failed: the helper could not register and start the service (helper install exit $0). The files are installed in $INSTDIR. Run this from an elevated prompt to finish the install: \"$INSTDIR\skein-helper.exe\" install"
+        MessageBox MB_OK "Skein install failed: the helper could not register and start the service (helper install exit $0). The files are installed in $INSTDIR. Run this from an elevated prompt to finish the install: $\"$INSTDIR\skein-helper.exe$\" install"
     installServiceFailedSilent:
         Abort
     installServiceOk:
@@ -193,12 +256,38 @@ Section
 SectionEnd
 
 Section "uninstall"
+    # Refuse to uninstall over a running desktop, before the service is
+    # touched: RMDir /r cannot delete a locked skein-desktop.exe, so the
+    # uninstall would delete the shortcuts and the uninstall key and
+    # still leave the exe behind. Same probe as the installer; nothing
+    # below runs when the desktop is running or the probe is unsure.
+    !insertmacro SkeinDesktopProbe Uninstall
+    StrCmp $SkeinDesktopState "closed" unSkeinDesktopOk
+    StrCmp $SkeinDesktopState "running" 0 unSkeinDesktopUnknown
+    StrCpy $R0 "Skein Desktop is still running. Close it (quit it from its window, or right-click its taskbar entry and choose Close), then run the uninstaller again. Nothing has been removed yet."
+    Goto unSkeinDesktopRefuse
+    unSkeinDesktopUnknown:
+    StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Close Skein Desktop and run the uninstaller again; if this keeps happening, reboot and retry. Nothing has been removed yet."
+    unSkeinDesktopRefuse:
+    DetailPrint "$R0"
+    IfSilent unSkeinDesktopSilent
+    MessageBox MB_OK|MB_ICONSTOP "$R0"
+    Quit
+    unSkeinDesktopSilent:
+    SetErrorLevel 1
+    Abort
+    unSkeinDesktopOk:
+
     !insertmacro wails.setShellContext
 
     # Step 11 uninstall order (ADR-001 plan §7.1). The old section
     # deleted $INSTDIR first and never touched the service at all,
     # leaving a running SYSTEM service behind (Agent D P1) — and
     # deleting the helper before it could ever be run.
+    #   0. The desktop precheck above already refused to run while
+    #      skein-desktop.exe is running (RMDir /r cannot delete a
+    #      locked exe, so the uninstall would leave it behind and
+    #      still report success).
     #   1. Run the minimal helper's uninstall verb FIRST: it stops
     #      the service before deleting it (Step 10 stop-then-delete
     #      fix, tolerating 1062 already-stopped and 1060 no-service

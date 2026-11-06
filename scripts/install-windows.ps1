@@ -118,7 +118,22 @@ if ($DesktopPath -eq "") {
     if (Test-Path $candidate) { $DesktopPath = $candidate }
 }
 
-# --- 3. Stop a running service so binaries can be replaced ------------------
+# --- 3. Stop the service, and refuse a running desktop ----------------------
+# A running skein-desktop.exe locks its own exe, so the Copy-Item loop
+# below would fail halfway (after the service was already stopped) with
+# "The process cannot access the file ... because it is being used by
+# another process". Fail before any mutation and let the user close it;
+# the desktop is never killed from here. Same tasklist probe as the NSIS
+# installer, and it fails closed: a tasklist that cannot run is not
+# evidence that the desktop is closed.
+$desktopProbe = & "$env:SystemRoot\System32\tasklist.exe" /FI "IMAGENAME eq skein-desktop.exe" /NH /FO CSV 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Fail "Could not check whether Skein Desktop is running (tasklist exit $LASTEXITCODE). Close Skein Desktop and run this script again; nothing was changed."
+}
+if ($desktopProbe -match '"skein-desktop\.exe"') {
+    Fail "Skein Desktop is running. Close it (quit it from its window, or right-click its taskbar entry and choose Close), then run this script again; nothing was changed."
+}
+
 $service = Get-Service -Name "skein" -ErrorAction SilentlyContinue
 if ($service -and $service.Status -eq "Running") {
     Write-Host "Stopping running skein service..."
