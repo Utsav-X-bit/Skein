@@ -52,7 +52,7 @@ func (s *InviteService) RotateSecret(ctx context.Context) (api.Invite, error) {
 	if err != nil {
 		return api.Invite{}, err
 	}
-	if err := runHelper(ctx, "restart"); err != nil {
+	if err := (&ServiceService{}).Restart(ctx); err != nil {
 		// The secret is rotated, but Wails discards the return
 		// value when the error is non-nil, so the join cannot
 		// travel in this error — and it must never be pasted into

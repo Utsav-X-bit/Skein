@@ -38,6 +38,17 @@ export interface InitRequest {
 }
 
 /**
+ * NetworkResetResult preserves completed destructive work across a later
+ * helper failure. Wails discards a return value when an error is also returned,
+ * so a failed stop must be data: retrying reset would lose the original backup.
+ */
+export interface NetworkResetResult {
+    "backup": string;
+    "firewall_error"?: string;
+    "stop_error"?: string;
+}
+
+/**
  * UpdateInfo describes an available GUI update.
  */
 export interface UpdateInfo {

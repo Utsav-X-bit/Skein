@@ -8,9 +8,6 @@ import * as DiagnosticsService from "../../bindings/github.com/Utsav-X-bit/skein
 import * as FirewallService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/firewallservice";
 import * as ServiceService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/serviceservice";
 import * as HistoryService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/historyservice";
-// M7: UpdateService is exported so About can use its bound method
-// (Check). CheckManifest/Apply/ReloadGrants are NOT in the checked-in
-// binding yet; see lib/bindings.ts guards — do not call them directly.
 import * as UpdateService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/updateservice";
 
 export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService };

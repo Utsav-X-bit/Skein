@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, KeyRound, Network, Server, ShieldCheck } from "lucide-react";
 import * as SetupService from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
@@ -12,7 +13,8 @@ import { LogoMark } from "@/components/brand/LogoMark";
 
 type Mode = "welcome" | "create" | "join" | "done";
 
-export function Onboarding() {
+export function Onboarding({ compact = false }: { compact?: boolean }) {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<Mode>("welcome");
   const [name, setName] = useState("");
   const [port, setPort] = useState("11010");
@@ -41,18 +43,13 @@ export function Onboarding() {
     onSuccess: () => location.reload(),
     onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
-  const resetCfg = useMutation({
-    mutationFn: () => SetupService.Reset(false),
-    onSuccess: () => location.reload(),
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
-  });
-  const busy = create.isPending || join.isPending || start.isPending || importCfg.isPending || resetCfg.isPending;
-  const error = create.error || join.error || start.error || importCfg.error || resetCfg.error;
+  const busy = create.isPending || join.isPending || start.isPending || importCfg.isPending;
+  const error = create.error || join.error || start.error || importCfg.error;
   const alreadyExists = !!error && errText(error).toLowerCase().includes("already exists");
 
   return (
-    <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center py-8">
-      <div className="mb-8 flex items-center gap-4"><LogoMark size={48} animated /><div><div className="mono-label">welcome to</div><h1 className="text-3xl font-medium tracking-tight">Skein</h1><p className="text-sm text-[var(--text-muted)]">A private mesh for your own devices.</p></div></div>
+    <div className={compact ? "space-y-4" : "mx-auto flex min-h-full max-w-3xl flex-col justify-center py-8"}>
+      {!compact && <div className="mb-8 flex items-center gap-4"><LogoMark size={48} animated /><div><div className="mono-label">welcome to</div><h1 className="text-3xl font-medium tracking-tight">Skein</h1><p className="text-sm text-[var(--text-muted)]">A private mesh for up to five of your own devices.</p></div></div>}
       {mode === "welcome" && (
         <div className="grid gap-4 sm:grid-cols-2">
           <button onClick={() => setMode("create")} className="group rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 text-left transition-colors hover:border-[var(--accent)]">
@@ -67,12 +64,13 @@ export function Onboarding() {
             <p className="mt-1 text-sm text-[var(--text-muted)]">Paste a join string from an existing device.</p>
             <span className="mt-4 inline-flex items-center gap-1 text-xs text-[var(--accent)]">Join <ArrowRight size={13} /></span>
           </button>
-          <button onClick={() => start.mutate()} disabled={busy} className="group rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 text-left transition-colors hover:border-[var(--accent)] sm:col-span-2">
+          {!compact && <button onClick={() => start.mutate()} disabled={busy} className="group rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6 text-left transition-colors hover:border-[var(--accent)] sm:col-span-2">
             <Server className="mb-4 text-[var(--accent)]" />
             <div className="text-lg font-medium">Use an existing installation</div>
-            <p className="mt-1 text-sm text-[var(--text-muted)]">The service is stopped but <code>/etc/skein</code> already exists. Start it and keep the current network.</p>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">If a network is already configured on this device, start its service and keep that network.</p>
             <span className="mt-4 inline-flex items-center gap-1 text-xs text-[var(--accent)]">{start.isPending ? "Starting…" : "Start service"} <ArrowRight size={13} /></span>
-          </button>
+          </button>}
+          <Button variant="ghost" className="sm:col-span-2" onClick={() => setImportOpen((v) => !v)}>Import an existing configuration</Button>
         </div>
       )}
       {mode === "create" && (
@@ -87,7 +85,7 @@ export function Onboarding() {
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="secondary" onClick={() => start.mutate()}>Start existing service</Button>
                   <Button size="sm" variant="secondary" onClick={() => setImportOpen(true)}>Import a user config</Button>
-                  <Button size="sm" variant="danger" onClick={() => { if (confirm("Back up the existing root config and identity, then start over? The backup stays on disk.")) resetCfg.mutate(); }}>Reset existing config</Button>
+                  <Button size="sm" variant="secondary" onClick={() => navigate("/settings?network=switch")}>Switch network / Reset</Button>
                 </div>
               )}
             </div>
@@ -97,12 +95,12 @@ export function Onboarding() {
       )}
       {mode === "join" && (
         <Card><CardContent className="space-y-4 pt-5">
-          <div><Label>network join string</Label><Input value={invite} onChange={(e) => setInvite(e.target.value)} placeholder="skein:2:…" autoFocus /></div>
-          <p className="text-xs text-[var(--text-muted)]">The join string contains the network secret. It is sent only to the local helper and is never logged.</p>
+          <div><Label>network join string</Label><Input type="password" autoComplete="off" value={invite} onChange={(e) => setInvite(e.target.value)} placeholder="skein:2:…" autoFocus /></div>
+          <p className="text-xs text-[var(--text-muted)]">The join string contains the network secret. It is sent only to the local daemon over its verified control connection, never logged.</p>
           {error && (
             <div className="space-y-3 rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/5 p-3 text-xs text-[var(--danger)]">
               <div>{errText(error)}</div>
-              <Button size="sm" variant="danger" onClick={() => { if (confirm("Back up the current config and identity, then join a different network? The backup stays on disk.")) resetCfg.mutate(); }}>Reset current config</Button>
+              <Button size="sm" variant="secondary" onClick={() => navigate("/settings?network=switch")}>Switch network / Reset</Button>
             </div>
           )}
           <div className="flex justify-between"><Button variant="ghost" onClick={() => setMode("welcome")}>Back</Button><Button onClick={() => join.mutate()} disabled={busy || !invite}>{busy ? "Joining…" : "Join network"}</Button></div>
@@ -111,7 +109,7 @@ export function Onboarding() {
       {importOpen && (
         <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
           <div className="mono-label">import an existing user config</div>
-          <p className="mt-1 text-xs text-[var(--text-muted)]">Path to a user-mode <code>skein.toml</code> (with <code>identity.key</code> beside it). It will be copied to <code>/etc/skein</code> with the socket transport enabled.</p>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">Path to a user-mode <code>skein.toml</code> with <code>identity.key</code> beside it. The daemon copies it to the system configuration directory using the local control transport.</p>
           <div className="mt-3 flex gap-2"><Input value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/home/you/.config/skein/skein.toml" /><Button onClick={() => importCfg.mutate()} disabled={busy || !importPath}>Import</Button></div>
         </div>
       )}

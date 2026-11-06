@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { CommandBar } from "./CommandBar";
 import { CommandPalette } from "./CommandPalette";
@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 export function AppShell() {
   useTheme();
+  const location = useLocation();
   const [palette, setPalette] = useState(false);
   const qc = useQueryClient();
   const svc = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status(), refetchInterval: 5_000 });
@@ -26,8 +27,8 @@ export function AppShell() {
   // itself only returns "pending".
   useEffect(() => {
     const subs = [
-      Events.On("connection:changed", () => qc.invalidateQueries({ queryKey: ["status"] })),
-      Events.On("peers:changed", () => qc.invalidateQueries({ queryKey: ["peers"] })),
+      Events.On("connection:changed", () => { void qc.invalidateQueries({ queryKey: ["status"] }); void qc.invalidateQueries({ queryKey: ["config"] }); }),
+      Events.On("peers:changed", () => { void qc.invalidateQueries({ queryKey: ["peers"] }); void qc.invalidateQueries({ queryKey: ["config"] }); }),
       Events.On("routes:changed", () => qc.invalidateQueries({ queryKey: ["routes"] })),
       Events.On("activity:sample", () => qc.invalidateQueries({ queryKey: ["activities"] })),
       Events.On("log:entry", () => qc.invalidateQueries({ queryKey: ["logs"] })),
@@ -60,7 +61,7 @@ export function AppShell() {
   if (svc.isLoading) {
     return <div className="h-full bg-[var(--bg)] p-6"><div className="h-64 animate-pulse rounded-lg bg-[var(--surface-raised)]" /></div>;
   }
-  if (svc.data && !svc.data.installed) {
+  if (svc.data?.state === "missing" && location.pathname !== "/settings") {
     return (
       <div className="h-full overflow-auto bg-[var(--bg)] p-6 text-[var(--text)]">
         <Onboarding />
@@ -75,7 +76,7 @@ export function AppShell() {
         <CommandBar onPalette={() => setPalette(true)} />
         {stopped && (
           <div className="border-b border-[var(--warning)]/40 bg-[var(--warning)]/5 px-4 py-2 text-xs text-[var(--warning)]">
-            Service is {svc.data?.state ?? "not running"} — Settings, Security and Diagnostics stay available; start the service from Settings to reconnect.
+            Service is {svc.data?.state ?? "not running"}. <Link className="underline" to="/settings">Open service controls</Link>
           </div>
         )}
         <main className="min-h-0 flex-1 overflow-auto p-4 md:p-6">

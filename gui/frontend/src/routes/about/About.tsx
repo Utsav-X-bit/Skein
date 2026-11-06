@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AppService, ServiceService, errText, errKind } from "@/lib/api";
-import { hasUpdateCheckBinding, hasUpdateApplyBinding, hasReloadGrantsBinding, callCheckManifest, callApplyUpdate, callReloadGrants, type UpdateCheckResult } from "@/lib/bindings";
+import { AppService, ServiceService, UpdateService, errText, errKind } from "@/lib/api";
+import type { UpdateCheckResult } from "../../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -27,10 +27,6 @@ import { toast } from "sonner";
 // apply response alone. Check() is deliberately NOT called: its
 // binding exists but it cannot answer without a manifest path and
 // errors truthfully saying so.
-// Binding gate: CheckManifest/Apply/ReloadGrants are not in the
-// checked-in bindings yet (see lib/bindings.ts). Until a Wails build
-// regenerates them, the update controls are disabled with the exact
-// reason and the version/service sections still work.
 export function About() {
   const version = useQuery({ queryKey: ["app-version"], queryFn: () => AppService.Version() });
   const platform = useQuery({ queryKey: ["app-platform"], queryFn: () => AppService.Platform() });
@@ -44,33 +40,30 @@ export function About() {
   const [polling, setPolling] = useState(false);
   const [appliedAt, setAppliedAt] = useState(0);
 
-  const canCheck = hasUpdateCheckBinding();
-  const canApply = hasUpdateApplyBinding();
-  const canReloadGrants = hasReloadGrantsBinding();
 
   const check = useMutation({
-    mutationFn: () => callCheckManifest(manifestPath),
+    mutationFn: () => UpdateService.CheckManifest(manifestPath),
     onSuccess: (r) => { setLastCheck(r); toast.success(r.update_available ? `Update available: ${r.version} (running ${r.current_version})` : "No update in this manifest — running version is current or newer"); },
     onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const apply = useMutation({
-    mutationFn: () => callApplyUpdate(manifestPath, stagedBinaryPath),
+    mutationFn: () => UpdateService.Apply(manifestPath, stagedBinaryPath),
     onSuccess: (r) => { toast.info(r.detached ? `Detached apply launched for ${r.version} — polling for the outcome; do not assume success yet.` : `Apply returned without a detached process for ${r.version} — polling for the outcome.`); setAppliedAt(Date.now()); setPolling(true); },
     onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
   const reloadGrants = useMutation({
-    mutationFn: () => callReloadGrants(),
+    mutationFn: () => UpdateService.ReloadGrants(),
     onSuccess: () => toast.success("Daemon grants reloaded — running roles now match the grant file, no restart needed"),
     onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
   });
 
   // Poll after apply until LastUpdate moves past the apply moment.
   useEffect(() => {
-    if (!polling || !canCheck || !manifestPath) return;
+    if (!polling || !manifestPath) return;
     const t = setInterval(() => check.mutate(), 3_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [polling, canCheck]);
+  }, [polling, manifestPath]);
   useEffect(() => {
     if (polling && lastCheck?.last_update && lastCheck.last_update.at_ms >= appliedAt - 5_000) {
       setPolling(false);
@@ -111,18 +104,11 @@ export function About() {
             (ed25519 signature + SHA-256; a downgrade is rejected, never hidden), and Apply launches the daemon&apos;s detached apply process. The outcome is only known when a later check reports it:
             applied, rolled back with the error and backup path, or still in progress. If an apply fails, the previous binary and config backup are kept — never deleted on failure.
           </p>
-          {(!canCheck || !canApply) && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3 text-xs text-[var(--text-muted)]">
-              Update check/apply are not callable in this build: the CheckManifest{!canApply ? " and Apply" : ""} Wails bindings have not been regenerated since Step 8.
-              Run a Wails build on a GUI machine to regenerate bindings; these controls then activate with no further code change. The version and service sections above already work.
-              Until then, apply updates from an elevated terminal with the daemon&apos;s signed-manifest flow, not from this screen.
-            </div>
-          )}
           <div><Label>Staged manifest path</Label><Input value={manifestPath} onChange={(e) => setManifestPath(e.target.value)} placeholder="/path/to/manifest.json" /></div>
           <div><Label>Staged binary path (optional — daemon defaults to the manifest staging dir)</Label><Input value={stagedBinaryPath} onChange={(e) => setStagedBinaryPath(e.target.value)} placeholder="/path/to/skeind" /></div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" disabled={!canCheck || !manifestPath || check.isPending} onClick={() => check.mutate()}>Check manifest</Button>
-            <Button variant="secondary" disabled={!canApply || !manifestPath || apply.isPending} onClick={() => setConfirmApply(true)}>Apply update</Button>
+            <Button variant="secondary" disabled={!manifestPath || check.isPending} onClick={() => check.mutate()}>Check manifest</Button>
+            <Button variant="secondary" disabled={!manifestPath || apply.isPending} onClick={() => setConfirmApply(true)}>Apply update</Button>
             <Dialog open={confirmApply} onOpenChange={setConfirmApply}>
               <DialogContent>
                 <DialogTitle>Apply daemon update?</DialogTitle>
@@ -133,7 +119,7 @@ export function About() {
                 <div className="mt-4 flex justify-end gap-2"><Button variant="secondary" onClick={() => { setConfirmApply(false); apply.mutate(); }} disabled={apply.isPending}>Apply update</Button></div>
               </DialogContent>
             </Dialog>
-            <Button variant="secondary" disabled={!canReloadGrants || reloadGrants.isPending} onClick={() => reloadGrants.mutate()}>Reload grants</Button>
+            <Button variant="secondary" disabled={reloadGrants.isPending} onClick={() => reloadGrants.mutate()}>Reload grants</Button>
           </div>
           {check.isError && <ErrorState title="Check failed" message={`${errKind(check.error) ? errKind(check.error) + ": " : ""}${errText(check.error)}`} onRetry={() => check.mutate()} />}
           {lastCheck && (

@@ -32,5 +32,6 @@ export type {
     HistoryRange,
     HistorySummary,
     InitRequest,
+    NetworkResetResult,
     UpdateInfo
 } from "./models.js";

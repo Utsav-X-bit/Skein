@@ -13,11 +13,16 @@ export type {
     FirewallRule,
     FirewallStatus,
     Invite,
+    JoinResult,
+    LeaveResult,
     LogEntry,
     Peer,
     ProbeResult,
     Route,
     SecurityStatus,
     ServiceStatus,
-    Status
+    Status,
+    UpdateApplyResult,
+    UpdateCheckResult,
+    UpdateState
 } from "./models.js";

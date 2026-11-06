@@ -4,6 +4,16 @@
 /**
  * ServiceService manages the daemon service lifecycle. Status reads the OS
  * without elevation; mutations use the elevated helper.
+ * 
+ * The helper's exit status is not the outcome. systemd and the SCM accept a
+ * control and report it before the service finishes moving, and a helper can
+ * fail after it already changed the registration (or fail because the service
+ * was already in the requested state). Every mutation therefore re-reads the
+ * authoritative OS state afterwards, waits out a start/stop transition bounded
+ * by the caller's context, and reports success only when the observed state is
+ * the desired one — and, where state alone cannot prove the intent (install,
+ * restart, purge), only when the helper also succeeded. A state mismatch or an
+ * unreadable state is always an error, even when the helper exited zero.
  * @module
  */
 
@@ -17,6 +27,18 @@ import * as api$0 from "../../internal/api/models.js";
 
 export function Install(): $CancellablePromise<void> {
     return $Call.ByID(2492809939);
+}
+
+/**
+ * InstallWithDaemon is Install with the packaging-known daemon path
+ * (plan §8.1: Install passes --daemon explicitly when the installer
+ * knows it, otherwise the helper resolves it). UninstallWithPurge is
+ * Uninstall with the purge flag the uninstall dialog needs. Both are
+ * new methods — the existing binding signatures above are unchanged,
+ * and the frontend wires these when bindings regenerate (M7).
+ */
+export function InstallWithDaemon(daemonPath: string): $CancellablePromise<void> {
+    return $Call.ByID(991365331, daemonPath);
 }
 
 export function Restart(): $CancellablePromise<void> {
@@ -37,4 +59,8 @@ export function Stop(): $CancellablePromise<void> {
 
 export function Uninstall(): $CancellablePromise<void> {
     return $Call.ByID(953570514);
+}
+
+export function UninstallWithPurge(purge: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2041619681, purge);
 }

@@ -83,6 +83,13 @@ export interface ConfigView {
     "peers": string[] | null;
 
     /**
+     * Departed is the ADR-002 leave flag (Step 7): true means this
+     * node left its network and will not rejoin until a fresh
+     * invite clears it.
+     */
+    "departed"?: boolean;
+
+    /**
      * Secrets are always reported as redacted.
      */
     "network_secret": string;
@@ -145,6 +152,34 @@ export interface Invite {
     "value": string;
     "warning"?: string;
     "snapshot"?: boolean;
+}
+
+/**
+ * JoinResult reports a normal-mode system join. Rejoined is true
+ * only on the departed-clear path (a fresh invite for the same
+ * network after a leave); otherwise the invite added a peer to the
+ * current network.
+ */
+export interface JoinResult {
+    "rejoined": boolean;
+    "peer_id"?: string;
+    "message"?: string;
+}
+
+/**
+ * LeaveResult reports a local leave (ADR-002). Propagated is true only
+ * when the version 5 tombstone announcement reached at least one peer
+ * (M4 gossip); false means no peer was reached, and offline peers learn
+ * the departure from the retained tombstone on reconnect. A peer
+ * that leaves is NOT banned and no other peer is touched — there
+ * is deliberately no "leave this other peer" operation.
+ */
+export interface LeaveResult {
+    "departed": boolean;
+    "propagated": boolean;
+    "peers_left": number;
+    "routes_withdrawn": number;
+    "left_at_ms": number;
 }
 
 /**
@@ -241,4 +276,50 @@ export interface Status {
     "tx_bytes": number;
     "connection": Connection;
     "health": string;
+}
+
+/**
+ * UpdateApplyResult is POST /system/update/apply. Apply is
+ * asynchronous by necessity: the daemon cannot swap its own
+ * service binary and reply from the same process. Applied=false
+ * with Detached=true means the detached apply process was
+ * launched and verified the manifest; its outcome (applied or
+ * rolled back) appears in UpdateCheck's LastUpdate once it
+ * finishes. The caller must poll check, not assume success.
+ */
+export interface UpdateApplyResult {
+    "version": string;
+    "checked": boolean;
+    "detached": boolean;
+    "staged"?: string;
+}
+
+/**
+ * UpdateCheckResult is GET /system/update/check. Downgrades are
+ * not returned as update_available=false: they are rejected with
+ * 409 by the daemon (plan §6.4), so a 200 here always means a
+ * newer, verified manifest.
+ */
+export interface UpdateCheckResult {
+    "version": string;
+    "current_version": string;
+    "checked": boolean;
+    "update_available": boolean;
+    "last_update"?: UpdateState | null;
+}
+
+/**
+ * UpdateState is the daemon's last-known update outcome, reported
+ * by GET /system/update/check and written by the detached apply
+ * process (see daemon.ApplyUpdateDetached). Backup paths are
+ * local filesystem paths, not secrets, and are included so an
+ * operator can recover by hand after a failed apply.
+ */
+export interface UpdateState {
+    "version"?: string;
+    "applied": boolean;
+    "rolled_back": boolean;
+    "error"?: string;
+    "backup"?: string;
+    "at_ms": number;
 }
