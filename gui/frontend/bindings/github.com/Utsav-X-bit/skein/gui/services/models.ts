@@ -13,6 +13,18 @@ export interface HistoryRange {
 }
 
 /**
+ * HistorySample is one recorded aggregate mesh sample. Rates are computed by
+ * the caller over its own window; the store never infers them.
+ */
+export interface HistorySample {
+    "t": number;
+    "rx_per_sec": number;
+    "tx_per_sec": number;
+    "peers_up": number;
+    "peers_total": number;
+}
+
+/**
  * HistorySummary reports the GUI-owned bounded history state.
  */
 export interface HistorySummary {
@@ -46,6 +58,26 @@ export interface NetworkResetResult {
     "backup": string;
     "firewall_error"?: string;
     "stop_error"?: string;
+}
+
+/**
+ * OfflineIdentity is the public half of an offline identity. The private key
+ * stays in identity.key on disk; it is never returned to the frontend.
+ */
+export interface OfflineIdentity {
+    "peer_id": string;
+    "public_key": string;
+    "identity_path": string;
+}
+
+/**
+ * PingResult reports one bounded overlay ping.
+ */
+export interface PingResult {
+    "address": string;
+    "reachable": boolean;
+    "exit_code": number;
+    "output": string;
 }
 
 /**

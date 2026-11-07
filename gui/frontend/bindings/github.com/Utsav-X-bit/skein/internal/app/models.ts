@@ -17,3 +17,21 @@ export interface BootstrapResult {
     "backup"?: string;
     "service": string;
 }
+
+/**
+ * RevokeOutcome describes what a revoke did. Warning is non-empty when
+ * the revoke needed --force; Reloaded reports whether the live daemon
+ * re-read the file (false when the daemon is not running, in which
+ * case the file change takes effect at next start).
+ */
+export interface RevokeOutcome {
+    "Identity": string;
+
+    /**
+     * role the revoked grant held ("" = bare line, read by API interpretation)
+     */
+    "Role": string;
+    "Warning": string;
+    "Reloaded": boolean;
+    "ReloadNote": string;
+}

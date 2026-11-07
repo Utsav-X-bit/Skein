@@ -15,22 +15,46 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
+/**
+ * Clear deletes recorded samples but keeps the opt-in setting.
+ */
 export function Clear(): $CancellablePromise<void> {
     return $Call.ByID(623419176);
 }
 
-export function Export($0: string): $CancellablePromise<string> {
-    return $Call.ByID(890387365, $0);
+/**
+ * Export writes the recorded samples as JSON or CSV through a native save
+ * dialog and returns the chosen path.
+ */
+export function Export(format: string): $CancellablePromise<string> {
+    return $Call.ByID(890387365, format);
 }
 
-export function Samples($0: $models.HistoryRange): $CancellablePromise<any[] | null> {
-    return $Call.ByID(3449682178, $0);
+/**
+ * Record appends one sample when history is enabled. It is a no-op while
+ * disabled, so callers need no enable check of their own.
+ */
+export function Record(sample: $models.HistorySample): $CancellablePromise<void> {
+    return $Call.ByID(4249469534, sample);
 }
 
+/**
+ * Samples returns recorded samples, optionally limited to the last N minutes.
+ */
+export function Samples(r: $models.HistoryRange): $CancellablePromise<$models.HistorySample[] | null> {
+    return $Call.ByID(3449682178, r);
+}
+
+/**
+ * SetEnabled persists the opt-in flag so it survives app restarts.
+ */
 export function SetEnabled(enabled: boolean): $CancellablePromise<void> {
     return $Call.ByID(4277834742, enabled);
 }
 
+/**
+ * Summary reports the store state without exposing sample contents.
+ */
 export function Summary(): $CancellablePromise<$models.HistorySummary> {
     return $Call.ByID(3989638129);
 }

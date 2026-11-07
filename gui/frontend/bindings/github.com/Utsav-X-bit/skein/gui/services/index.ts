@@ -7,9 +7,11 @@ import * as ConnectionService from "./connectionservice.js";
 import * as DiagnosticsService from "./diagnosticsservice.js";
 import * as FirewallService from "./firewallservice.js";
 import * as HistoryService from "./historyservice.js";
+import * as IdentityService from "./identityservice.js";
 import * as InviteService from "./inviteservice.js";
 import * as NetworkService from "./networkservice.js";
 import * as PeerService from "./peerservice.js";
+import * as SecurityService from "./securityservice.js";
 import * as ServiceService from "./serviceservice.js";
 import * as SetupService from "./setupservice.js";
 import * as UpdateService from "./updateservice.js";
@@ -20,9 +22,11 @@ export {
     DiagnosticsService,
     FirewallService,
     HistoryService,
+    IdentityService,
     InviteService,
     NetworkService,
     PeerService,
+    SecurityService,
     ServiceService,
     SetupService,
     UpdateService
@@ -30,8 +34,11 @@ export {
 
 export type {
     HistoryRange,
+    HistorySample,
     HistorySummary,
     InitRequest,
     NetworkResetResult,
+    OfflineIdentity,
+    PingResult,
     UpdateInfo
 } from "./models.js";

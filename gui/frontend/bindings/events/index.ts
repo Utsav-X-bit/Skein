@@ -19,14 +19,59 @@ export const ActivitySample = "activity:sample";
 export const ConnectionChanged = "connection:changed";
 
 /**
+ * Name of the custom event "leave_dataplane_stop_failed".
+ */
+export const LeaveDataplaneStopFailed = "leave_dataplane_stop_failed";
+
+/**
  * Name of the custom event "log:entry".
  */
 export const LogEntry = "log:entry";
 
 /**
+ * Name of the custom event "name_changed".
+ */
+export const NameChanged = "name_changed";
+
+/**
+ * Name of the custom event "peer:leave".
+ */
+export const PeerLeave = "peer:leave";
+
+/**
  * Name of the custom event "peer:probe".
  */
 export const PeerProbe = "peer:probe";
+
+/**
+ * Name of the custom event "peer:rejoined".
+ */
+export const PeerRejoined = "peer:rejoined";
+
+/**
+ * Name of the custom event "peer_added".
+ */
+export const PeerAdded = "peer_added";
+
+/**
+ * Name of the custom event "peer_discovered".
+ */
+export const PeerDiscovered = "peer_discovered";
+
+/**
+ * Name of the custom event "peer_joined".
+ */
+export const PeerJoined = "peer_joined";
+
+/**
+ * Name of the custom event "peer_removed".
+ */
+export const PeerRemoved = "peer_removed";
+
+/**
+ * Name of the custom event "peer_up".
+ */
+export const PeerUp = "peer_up";
 
 /**
  * Name of the custom event "peers:changed".
@@ -39,9 +84,24 @@ export const PeersChanged = "peers:changed";
 export const RoutesChanged = "routes:changed";
 
 /**
+ * Name of the custom event "secret_rotated".
+ */
+export const SecretRotated = "secret_rotated";
+
+/**
  * Name of the custom event "service:changed".
  */
 export const ServiceChanged = "service:changed";
+
+/**
+ * Name of the custom event "system_imported".
+ */
+export const SystemImported = "system_imported";
+
+/**
+ * Name of the custom event "system_reset".
+ */
+export const SystemReset = "system_reset";
 
 /**
  * Name of the custom event "update:available".
