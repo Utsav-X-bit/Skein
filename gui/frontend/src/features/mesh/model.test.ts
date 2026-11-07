@@ -7,6 +7,7 @@ import {
   computeRate,
   dedupeActivities,
   formatAge,
+  formatBytesPerSec,
   formatRate,
   peerHealth,
   presenceOf,
@@ -283,6 +284,21 @@ describe("formatRate", () => {
     expect(formatRate({ rxPerSec: 600, txPerSec: 600 })).toBe("1.2 kB/s");
     expect(formatRate({ rxPerSec: 1_500_000, txPerSec: 0 })).toBe("1.5 MB/s");
     expect(formatRate({ rxPerSec: 0, txPerSec: 0 })).toBe("0.0 B/s");
+  });
+});
+
+describe("formatBytesPerSec", () => {
+  it("shows a dash for invalid or negative values", () => {
+    expect(formatBytesPerSec(Number.NaN)).toBe("—");
+    expect(formatBytesPerSec(-1)).toBe("—");
+    expect(formatBytesPerSec(Number.POSITIVE_INFINITY)).toBe("—");
+  });
+
+  it("formats one direction without summing", () => {
+    expect(formatBytesPerSec(0)).toBe("0.0 B/s");
+    expect(formatBytesPerSec(512)).toBe("512.0 B/s");
+    expect(formatBytesPerSec(1_500)).toBe("1.5 kB/s");
+    expect(formatBytesPerSec(2_500_000)).toBe("2.5 MB/s");
   });
 });
 

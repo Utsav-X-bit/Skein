@@ -243,13 +243,18 @@ export function peerHealth(peer: Peer | null | undefined, presence: Presence): P
   return { tone: "ok", label: "Up", detail: peer.path ? `Via ${peer.path}` : "Via route" };
 }
 
+// formatBytesPerSec renders one direction. Summing RX and TX is only right
+// for a combined total; arrows and inspectors need each direction separately.
+export function formatBytesPerSec(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n < 1_000) return `${n.toFixed(1)} B/s`;
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)} kB/s`;
+  return `${(n / 1_000_000).toFixed(1)} MB/s`;
+}
+
 export function formatRate(rate: Rate | null): string {
   if (!rate) return "—";
-  const total = rate.rxPerSec + rate.txPerSec;
-  if (!Number.isFinite(total) || total < 0) return "—";
-  if (total < 1_000) return `${total.toFixed(1)} B/s`;
-  if (total < 1_000_000) return `${(total / 1_000).toFixed(1)} kB/s`;
-  return `${(total / 1_000_000).toFixed(1)} MB/s`;
+  return formatBytesPerSec(rate.rxPerSec + rate.txPerSec);
 }
 
 export function formatAge(ms: number | undefined): string {

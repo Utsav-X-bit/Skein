@@ -1,83 +1,153 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDownRight, ArrowUpRight, Link2, Users } from "lucide-react";
-import { NetworkService, PeerService, errText, isOffline } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ListTree } from "lucide-react";
+import { ConfigService, ServiceService } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { Metric } from "@/components/ui/metric";
-import { Sparkline } from "@/components/ui/sparkline";
-import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
-import { StatusDot } from "@/components/ui/status-dot";
-import { formatBytes, formatDuration, shortID } from "@/lib/utils";
-import { Link } from "react-router-dom";
+import { formatAge } from "@/features/mesh/model";
+import { formatDuration } from "@/lib/utils";
+import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
+import { usePeerParam } from "@/features/mesh/hooks";
+import { MeshCanvas } from "@/features/mesh/MeshCanvas";
+import { RouteDrawer } from "@/features/mesh/RouteDrawer";
+import { PeerInspector } from "@/features/mesh/PeerInspector";
+import { LinkInspector } from "@/features/mesh/LinkInspector";
+import { ThroughputStrip } from "@/features/mesh/ThroughputStrip";
+import { EventStrip } from "@/features/mesh/EventStrip";
+
+type Link = { from: string; to: string };
 
 export function Overview() {
-  const status = useQuery({ queryKey: ["status"], queryFn: () => NetworkService.Status(), refetchInterval: 2_000 });
-  const peers = useQuery({ queryKey: ["peers"], queryFn: () => PeerService.List(), refetchInterval: 2_000 });
-  const activities = useQuery({ queryKey: ["activities"], queryFn: () => NetworkService.Activities(), refetchInterval: 2_000 });
+  useLiveSampler(true);
+  const mesh = useMesh();
+  const [peerId, setPeerId] = usePeerParam();
+  const [link, setLink] = useState<Link | null>(null);
+  const [routesOpen, setRoutesOpen] = useState(false);
 
+  // Membership and service state are separate facts from connectivity; none
+  // of them is inferred from another.
+  const service = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status(), staleTime: 5_000, retry: 0 });
+  const config = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), staleTime: 15_000, retry: 0 });
 
-  if (status.isLoading) return <div className="grid gap-4 md:grid-cols-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}</div>;
-  if (status.isError) {
-    return <ErrorState title="Daemon offline" message={errText(status.error)} remediation="Start the Skein service or install it from Settings." onRetry={() => status.refetch()} />;
+  const selectPeer = (id: string) => {
+    setLink(null);
+    setPeerId(id);
+  };
+  const selectLink = (next: Link) => {
+    setPeerId(null);
+    setLink(next);
+  };
+  const clearSelection = () => {
+    setPeerId(null);
+    setLink(null);
+  };
+
+  if (mesh.loading && !mesh.status) {
+    return <div className="space-y-4">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-32" />)}</div>;
   }
-  const st = status.data!;
-  const ps = peers.data ?? [];
-  const up = ps.filter((p) => p.state === "up").length;
-  const direct = ps.filter((p) => p.direct).length;
-  const relay = ps.length - direct;
-  const samples = (activities.data ?? []).slice(-60).map((a) => (a.rx_bytes ?? 0) + (a.tx_bytes ?? 0));
-  const connected = st.connection?.state === "connected";
+  if (!mesh.status) {
+    return (
+      <ErrorState
+        title="Daemon offline"
+        message={mesh.error ?? "No status snapshot has arrived."}
+        remediation="Start the Skein service or install it from Settings."
+        onRetry={mesh.refetch}
+      />
+    );
+  }
+
+  const status = mesh.status;
+  const peers = mesh.peers;
+  const up = peers.filter((p) => p.state === "up").length;
+  const membership = config.data ? (config.data.departed ? "departed" : "member") : "unknown";
+  const connectivity = status.connection?.state ?? "unknown";
+  const staleMs = mesh.staleSince ? Date.now() - mesh.staleSince : null;
+  const stale = staleMs !== null && staleMs > 15_000;
 
   return (
-    <div className="space-y-6">
-      <section className="relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
-        <div className="pointer-events-none absolute inset-0 grid-bg opacity-30" />
-        <div className="relative flex flex-wrap items-end justify-between gap-6">
-          <div>
-            <div className="mono-label">mesh status</div>
-            <h1 className="mt-2 text-3xl font-medium tracking-tight">{connected ? "Connected" : st.connection?.state === "paused" ? "Paused" : "Connecting"}</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-[var(--text-muted)]">
-              <StatusDot tone={connected ? "up" : st.connection?.state === "paused" ? "paused" : "down"} pulse={connected} />
-              <span>{st.overlay_ipv4}{st.overlay_ipv6 ? ` · ${st.overlay_ipv6}` : ""}</span>
-              <span>·</span>
-              <span>up {formatDuration(st.uptime_seconds)}</span>
-              {st.connection?.last_error && <Badge tone="danger">{st.connection.last_error}</Badge>}
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
-            <Metric label="peers" value={`${up}/${ps.length}`} hint="up / total" />
-            <Metric label="direct" value={`${direct}`} hint={`${relay} relayed`} />
-            <Metric label="down" value={formatBytes(st.rx_bytes)} hint="received" />
-            <Metric label="up" value={formatBytes(st.tx_bytes)} hint="sent" />
-          </div>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="mono-label">mesh</div>
+          <h1 className="mt-1 text-2xl font-medium tracking-tight">{status.name || "This mesh"}</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            {status.overlay_ipv4}{status.overlay_ipv6 ? ` · ${status.overlay_ipv6}` : ""} · up {formatDuration(status.uptime_seconds)}
+          </p>
         </div>
-      </section>
-
-      <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-        <Card>
-          <CardHeader><CardTitle>Throughput</CardTitle><span className="mono-label">last 60 samples</span></CardHeader>
-          <CardContent>
-            {samples.length > 1 ? <Sparkline values={samples} width={640} height={120} /> : <EmptyState title="No samples yet" description="Traffic appears here once peers exchange packets." />}
-            <div className="mt-3 flex gap-6 text-xs text-[var(--text-muted)]">
-              <span className="inline-flex items-center gap-1"><ArrowDownRight size={13} /> {formatBytes(st.rx_bytes)} total</span>
-              <span className="inline-flex items-center gap-1"><ArrowUpRight size={13} /> {formatBytes(st.tx_bytes)} total</span>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Peers</CardTitle><Link to="/peers" className="text-xs text-[var(--accent)]">View all</Link></CardHeader>
-          <CardContent className="space-y-2">
-            {ps.length === 0 ? <EmptyState title="No peers yet" description="Invite a device to join this mesh." /> : ps.slice(0, 6).map((p) => (
-              <div key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-[var(--border)] px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2"><StatusDot tone={p.state === "up" ? "up" : "down"} /><span className="truncate text-sm">{p.name || shortID(p.id)}</span></div>
-                <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]"><Link2 size={12} />{p.direct ? "direct" : "relay"}{p.rtt_ms ? ` · ${p.rtt_ms.toFixed(1)} ms` : ""}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+        <Button variant="secondary" onClick={() => setRoutesOpen(true)}>
+          <ListTree size={16} /> Routes ({mesh.model.paths.length})
+        </Button>
       </div>
+
+      {stale && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/5 px-4 py-2 text-xs text-[var(--warning)]">
+          <span>Last mesh update was {formatAge(staleMs ?? 0)} ago. Showing the last known snapshot, not current state.</span>
+          <Button size="sm" variant="secondary" onClick={mesh.refetch}>Retry</Button>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+          <Metric label="service" value={service.data?.state ?? "unknown"} />
+          <Metric label="membership" value={membership} />
+          <Metric label="connectivity" value={connectivity} />
+          <Metric label="peers" value={`${up}/${peers.length}`} hint="up / total" />
+          <Metric label="capacity" value={`${1 + peers.length} of 5`} hint="devices" />
+          <Metric label="uptime" value={formatDuration(status.uptime_seconds)} />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-4 min-[1100px]:flex-row">
+        <div className="min-w-0 flex-1 space-y-4">
+          <MeshCanvas
+            model={mesh.model}
+            peers={peers}
+            peerRates={mesh.peerRates}
+            activities={mesh.activities}
+            self={status.id}
+            selectedPeer={peerId}
+            selectedLink={link}
+            onSelectPeer={selectPeer}
+            onSelectLink={selectLink}
+            onEscape={clearSelection}
+          />
+          <ThroughputStrip />
+          <EventStrip />
+        </div>
+        <PeerInspector
+          peerId={peerId}
+          status={status}
+          peers={peers}
+          model={mesh.model}
+          peerRates={mesh.peerRates}
+          lastTrafficAt={mesh.lastTrafficAt}
+          onClose={clearSelection}
+          onViewRoutes={(destination) => {
+            setRoutesOpen(true);
+            selectPeer(destination);
+          }}
+        />
+        <LinkInspector
+          link={link}
+          model={mesh.model}
+          peers={peers}
+          activities={mesh.activities}
+          onClose={() => setLink(null)}
+        />
+      </div>
+
+      <RouteDrawer
+        open={routesOpen}
+        onClose={() => setRoutesOpen(false)}
+        paths={mesh.model.paths}
+        selected={peerId}
+        onSelect={(destination) => {
+          selectPeer(destination);
+          setRoutesOpen(false);
+        }}
+      />
     </div>
   );
 }

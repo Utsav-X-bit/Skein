@@ -168,6 +168,7 @@ export type MeshData = {
   staleSince: number | null;
   loading: boolean;
   error: string | null;
+  refetch: () => void;
 };
 
 /**
@@ -224,6 +225,13 @@ export function useMesh(): MeshData {
 
   const failure = statusQ.error ?? peersQ.error ?? routesQ.error ?? activitiesQ.error;
 
+  const refetch = () => {
+    void statusQ.refetch();
+    void peersQ.refetch();
+    void routesQ.refetch();
+    void activitiesQ.refetch();
+  };
+
   return {
     status: statusQ.data ?? null,
     peers,
@@ -236,5 +244,6 @@ export function useMesh(): MeshData {
     staleSince,
     loading: statusQ.isLoading || peersQ.isLoading || routesQ.isLoading || activitiesQ.isLoading,
     error: failure ? errText(failure) : null,
+    refetch,
   };
 }
