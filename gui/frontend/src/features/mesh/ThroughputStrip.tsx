@@ -19,7 +19,8 @@ function withGaps(samples: HistorySample[], pick: (s: HistorySample) => number):
   return out;
 }
 
-function segments(values: Series, width: number, height: number, max: number): string[] {
+/** segments turns a gap-preserving series into polyline point strings. */
+export function segments(values: Series, width: number, height: number, max: number): string[] {
   const step = values.length > 1 ? width / (values.length - 1) : width;
   const out: string[] = [];
   let current: string[] = [];
