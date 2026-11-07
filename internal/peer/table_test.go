@@ -203,3 +203,61 @@ func TestUpsertPreservesLearnedFields(t *testing.T) {
 		t.Fatalf("upsert dropped learned state: %+v", got)
 	}
 }
+
+func TestSessionTimestampsFollowTheLink(t *testing.T) {
+	ident, _ := identity.Generate()
+	tbl := NewTable()
+	if err := tbl.Upsert(Peer{ID: ident.ID, PublicKey: ident.PublicKey}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().Add(-time.Minute)
+	tbl.MarkSession(ident.ID, start)
+	p, _ := tbl.Get(ident.ID)
+	if !p.SessionStart.Equal(start) || !p.LastHandshake.Equal(start) {
+		t.Fatalf("first handshake = start %v handshake %v, want %v", p.SessionStart, p.LastHandshake, start)
+	}
+
+	// The direct proof moves the link up without restarting the session.
+	tbl.SetActive(ident.ID, netip.MustParseAddrPort("192.0.2.1:11010"), time.Millisecond, "udp", start)
+	rekey := start.Add(30 * time.Second)
+	tbl.MarkSession(ident.ID, rekey)
+	p, _ = tbl.Get(ident.ID)
+	if !p.SessionStart.Equal(start) {
+		t.Fatalf("rekey moved session start to %v, want %v", p.SessionStart, start)
+	}
+	if !p.LastHandshake.Equal(rekey) {
+		t.Fatalf("rekey handshake = %v, want %v", p.LastHandshake, rekey)
+	}
+
+	// A down transition ends the session; a reconnect starts a new one.
+	tbl.SetState(ident.ID, StateDown)
+	p, _ = tbl.Get(ident.ID)
+	if !p.SessionStart.IsZero() || !p.LastHandshake.IsZero() {
+		t.Fatalf("down left timestamps: %+v", p)
+	}
+	reconnect := rekey.Add(time.Minute)
+	tbl.MarkSession(ident.ID, reconnect)
+	p, _ = tbl.Get(ident.ID)
+	if !p.SessionStart.Equal(reconnect) || !p.LastHandshake.Equal(reconnect) {
+		t.Fatalf("reconnect timestamps = %+v, want %v", p, reconnect)
+	}
+
+	// ClearActive forgets the session too.
+	tbl.SetActive(ident.ID, netip.MustParseAddrPort("192.0.2.1:11010"), time.Millisecond, "udp", reconnect)
+	tbl.ClearActive(ident.ID)
+	p, _ = tbl.Get(ident.ID)
+	if !p.SessionStart.IsZero() || !p.LastHandshake.IsZero() {
+		t.Fatalf("ClearActive left timestamps: %+v", p)
+	}
+
+	// Upsert with zero timestamps preserves learned values.
+	tbl.SetState(ident.ID, StateDown)
+	tbl.MarkSession(ident.ID, reconnect)
+	if err := tbl.Upsert(Peer{ID: ident.ID, PublicKey: ident.PublicKey}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ = tbl.Get(ident.ID)
+	if !p.SessionStart.Equal(reconnect) || !p.LastHandshake.Equal(reconnect) {
+		t.Fatalf("upsert dropped session timestamps: %+v", p)
+	}
+}

@@ -597,6 +597,14 @@ func (d *Daemon) Peers() []api.Peer {
 		if !p.LastSeen.IsZero() {
 			row.LastSeenMS = now.Sub(p.LastSeen).Milliseconds()
 		}
+		if !p.SessionStart.IsZero() {
+			ms := p.SessionStart.UnixMilli()
+			row.SessionStartMS = &ms
+		}
+		if !p.LastHandshake.IsZero() {
+			ms := p.LastHandshake.UnixMilli()
+			row.LastHandshakeMS = &ms
+		}
 		for _, c := range p.Candidates {
 			row.Candidates = append(row.Candidates, c.Addr.String())
 		}

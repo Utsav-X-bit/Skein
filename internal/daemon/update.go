@@ -111,11 +111,24 @@ type UpdateManifest struct {
 	Signature  string `json:"signature"`
 	KeyID      string `json:"key_id"`
 	ValidUntil string `json:"valid_until"`
+	// ReleaseNotes is optional operator-facing text. It is not covered by
+	// Signature (legacy manifests must keep verifying unchanged); when
+	// present it is covered by NotesSignature over NotesPayload().
+	ReleaseNotes   string `json:"release_notes,omitempty"`
+	NotesSignature string `json:"notes_signature,omitempty"`
 }
 
 // SignedPayload is the exact byte string the signature covers.
 func (m UpdateManifest) SignedPayload() string {
 	return m.Version + "\n" + m.Binary + "\n" + m.SHA256 + "\n" + m.KeyID + "\n" + m.ValidUntil
+}
+
+// NotesPayload is the exact byte string NotesSignature covers:
+// hex(sha256(ReleaseNotes)). Hashing first keeps the signed payload a fixed
+// size, so the 64 KiB notes cap is a parsing limit, not a signature limit.
+func (m UpdateManifest) NotesPayload() string {
+	sum := sha256.Sum256([]byte(m.ReleaseNotes))
+	return hex.EncodeToString(sum[:])
 }
 
 type semver struct {
@@ -339,6 +352,9 @@ func verifyUpdateManifest(manifestPath, stagingDir string, stagedOverride string
 	if !ed25519.Verify(key, []byte(m.SignedPayload()), sig) {
 		return UpdateManifest{}, "", errors.New("update: signature does not match the release key")
 	}
+	if err := verifyReleaseNotes(key, m); err != nil {
+		return UpdateManifest{}, "", err
+	}
 	// Downgrade protection (plan §6.4, mandatory, no flag):
 	// the new version must be strictly greater than the running
 	// version. A genuine downgrade is a package reinstall, not
@@ -387,6 +403,26 @@ func verifyUpdateManifest(manifestPath, stagingDir string, stagedOverride string
 	return m, staged, nil
 }
 
+func verifyReleaseNotes(key ed25519.PublicKey, m UpdateManifest) error {
+	if m.ReleaseNotes == "" {
+		return nil
+	}
+	if len(m.ReleaseNotes) > 64<<10 {
+		return fmt.Errorf("update: release_notes exceeds the %d byte limit", 64<<10)
+	}
+	if m.NotesSignature == "" {
+		return errors.New("update: release_notes present without notes_signature")
+	}
+	sig, err := base64.StdEncoding.DecodeString(m.NotesSignature)
+	if err != nil {
+		return fmt.Errorf("update: notes_signature: %w", err)
+	}
+	if !ed25519.Verify(key, []byte(m.NotesPayload()), sig) {
+		return errors.New("update: notes_signature does not match release_notes")
+	}
+	return nil
+}
+
 func verifyBinaryHash(path, want string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -431,6 +467,7 @@ func (d *Daemon) UpdateCheck(ctx context.Context, manifestPath string) (api.Upda
 		CurrentVersion:  currentVersion(),
 		Checked:         true,
 		UpdateAvailable: true,
+		ReleaseNotes:    m.ReleaseNotes,
 		LastUpdate:      last,
 	}, nil
 }

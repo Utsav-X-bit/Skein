@@ -61,6 +61,12 @@ type Peer struct {
 	RxBytes        uint64
 	TxBytes        uint64
 	LastSeen       time.Time
+	// SessionStart is when the current direct session was first proven up;
+	// LastHandshake is the latest installed handshake (a rekey refreshes it
+	// without restarting the session). Both are zero when no session has
+	// been observed, so callers must report "unknown", never epoch 0.
+	SessionStart  time.Time
+	LastHandshake time.Time
 	// Added is when this entry first appeared locally. Never-seen peers older
 	// than the stale timeout are pruned.
 	Added  time.Time
@@ -126,6 +132,12 @@ func (t *Table) Upsert(p Peer) error {
 		}
 		if p.LastSeen.IsZero() {
 			p.LastSeen = existing.LastSeen
+		}
+		if p.SessionStart.IsZero() {
+			p.SessionStart = existing.SessionStart
+		}
+		if p.LastHandshake.IsZero() {
+			p.LastHandshake = existing.LastHandshake
 		}
 		if p.RxBytes == 0 {
 			p.RxBytes = existing.RxBytes
@@ -405,15 +417,38 @@ func (t *Table) ClearActive(id uint64) {
 		p.Transport = ""
 		p.RTT = 0
 		p.Direct = false
+		p.SessionStart = time.Time{}
+		p.LastHandshake = time.Time{}
 	}
 }
 
-// SetState updates the link state.
+// MarkSession records an installed handshake. The first handshake after the
+// link left the up state starts the session; a rekey while already up only
+// refreshes LastHandshake.
+func (t *Table) MarkSession(id uint64, at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p, ok := t.peers[id]
+	if !ok {
+		return
+	}
+	if p.State != StateUp {
+		p.SessionStart = at
+	}
+	p.LastHandshake = at
+}
+
+// SetState updates the link state. Leaving the up state ends the session, so
+// both timestamps are cleared rather than left to look fresh.
 func (t *Table) SetState(id uint64, state State) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if p, ok := t.peers[id]; ok {
 		p.State = state
+		if state != StateUp {
+			p.SessionStart = time.Time{}
+			p.LastHandshake = time.Time{}
+		}
 	}
 }
 

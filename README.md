@@ -895,9 +895,17 @@ IPv4/IPv6.
   genuine downgrade is a package reinstall, not an update), and `POST
   /api/v1/system/update/apply` launches a detached apply process with
   verified rollback: on failure the previous binary and config are
-  restored and the `.old`/config backups are never deleted. The GUI
-  About/Updates screen drives check/apply; there is no version-feed
-  endpoint and no automatic check.
+  restored and the `.old`/config backups are never deleted. The
+  manifest may carry operator-facing `release_notes` (max 64 KiB)
+  with a separate `notes_signature`: base64 ed25519 over
+  `hex(sha256(release_notes))`, signed by the same `key_id` key.
+  Notes are optional and never change the legacy signature payload
+  (`version\nbinary\nsha256\nkey_id\nvalid_until`), so older
+  manifests verify unchanged; when present, the check response
+  returns only signature-verified notes and rejects missing,
+  invalid, or oversized signatures. The GUI About/Updates screen
+  drives check/apply; there is no version-feed endpoint and no
+  automatic check.
 - Content assertions: `scripts/packaging-assert.sh` parses both
   manifests and fails if a shipped file, the install directory, the
   uninstall order, or the purge behaviour drifts;

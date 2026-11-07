@@ -1168,6 +1168,9 @@ func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 		}
 		if _, ok := e.peers.Get(peerID); ok {
 			// The confirmation proved the PSK, so the source is authentic.
+			// MarkSession runs before SetActive so a fresh connection records
+			// its session start while the peer is still down.
+			e.peers.MarkSession(peerID, now)
 			e.peers.SetActive(peerID, src, rtt, transport, now)
 			e.peers.AddCandidate(peerID, src, peer.SourceProbe)
 			_ = e.routes.UpdateDirect(route.DirectLink{PeerID: peerID, RTT: rtt})
