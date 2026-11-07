@@ -26,6 +26,23 @@ export function isOffline(e: unknown): boolean {
   return s.includes("daemon not connected") || s.includes("no such file") || s.includes("connection refused") || s.includes("connect:");
 }
 
+// elevationCancelled recognises a dismissed or failed privilege prompt.
+// pkexec exits 126 when the user dismisses it, 127 when authentication
+// fails, and 125 on a polkit error; the Windows helper reports that UAC
+// "may have been cancelled". A raw exit code is not user guidance.
+export function elevationCancelled(e: unknown): boolean {
+  const s = errText(e).toLowerCase();
+  return /exit status 12[567]/.test(s) || s.includes("may have been cancelled");
+}
+
+// errDisplay is what the user should read: the same text as errText,
+// except a dismissed privilege prompt becomes actionable guidance
+// instead of a raw helper exit code.
+export function errDisplay(e: unknown): string {
+  if (elevationCancelled(e)) return "Administrator approval was not completed. Retry and approve only the Skein helper action.";
+  return errText(e);
+}
+
 // errKind is the frontend's best-effort mapping of the Step 8
 // three-state classification onto the error strings the Wails
 // bindings deliver (the Go/CLI classification in internal/ctlerr is

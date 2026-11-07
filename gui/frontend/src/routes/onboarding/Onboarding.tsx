@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, KeyRound, Network, Server, ShieldCheck } from "lucide-react";
 import * as SetupService from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
-import { ServiceService, errText, errKind } from "@/lib/api";
+import { ServiceService, errDisplay, errKind, errText } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -26,22 +26,22 @@ export function Onboarding({ compact = false }: { compact?: boolean }) {
   const create = useMutation({
     mutationFn: () => SetupService.Init({ name, port: Number(port), mtu: Number(mtu) } as never),
     onSuccess: (r) => { setResult(r); setMode("done"); },
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errDisplay(e)}`),
   });
   const join = useMutation({
     mutationFn: () => SetupService.Join(invite),
     onSuccess: (r) => { setResult(r); setMode("done"); },
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errDisplay(e)}`),
   });
   const start = useMutation({
     mutationFn: () => ServiceService.Start(),
     onSuccess: () => location.reload(),
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errDisplay(e)}`),
   });
   const importCfg = useMutation({
     mutationFn: () => SetupService.Import(importPath),
     onSuccess: () => location.reload(),
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errDisplay(e)}`),
   });
   const busy = create.isPending || join.isPending || start.isPending || importCfg.isPending;
   const error = create.error || join.error || start.error || importCfg.error;
@@ -80,7 +80,7 @@ export function Onboarding({ compact = false }: { compact?: boolean }) {
           <p className="text-xs text-[var(--text-muted)]">Skein will ask for administrator approval once, to install the system service and mint a one-time setup token. That approval does not give the app a shell or ongoing root access: after setup, the app talks only to the daemon over its local control socket, and every later privileged step (install/start/stop) asks again.</p>
           {error && (
             <div className="space-y-3 rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/5 p-3 text-xs text-[var(--danger)]">
-              <div>{errText(error)}</div>
+              <div>{errDisplay(error)}</div>
               {alreadyExists && (
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="secondary" onClick={() => start.mutate()}>Start existing service</Button>
@@ -99,7 +99,7 @@ export function Onboarding({ compact = false }: { compact?: boolean }) {
           <p className="text-xs text-[var(--text-muted)]">The join string contains the network secret. It is sent only to the local daemon over its verified control connection, never logged.</p>
           {error && (
             <div className="space-y-3 rounded-md border border-[var(--danger)]/40 bg-[var(--danger)]/5 p-3 text-xs text-[var(--danger)]">
-              <div>{errText(error)}</div>
+              <div>{errDisplay(error)}</div>
               <Button size="sm" variant="secondary" onClick={() => navigate("/settings?network=switch")}>Switch network / Reset</Button>
             </div>
           )}

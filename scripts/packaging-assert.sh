@@ -135,6 +135,9 @@ PSI=scripts/install-windows.ps1
 grep -q 'IMAGENAME eq skein-desktop.exe' "$PSI" || note "install-windows.ps1: running-desktop probe missing"
 grep -q 'LASTEXITCODE -ne 0' "$PSI" || note "install-windows.ps1: desktop probe does not fail closed when tasklist fails"
 grep -qi 'Stop-Process\|taskkill' "$PSI" && note "install-windows.ps1: must never kill the desktop (fail closed and ask the user to close it)"
+# The source install ships the same Wintun payload as NSIS: DLL and licence.
+grep -q 'wintun.dll", "wintun-LICENSE.txt"' "$PSI" \
+	|| note "install-windows.ps1: Wintun licence is not a required install file"
 
 # --- Linux nfpm ---------------------------------------------------
 [ -f "$NFPM" ] || note "missing $NFPM"

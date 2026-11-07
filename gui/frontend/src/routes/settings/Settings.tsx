@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Save, Server } from "lucide-react";
-import { ConfigService, ServiceService, errText, errKind } from "@/lib/api";
+import { ConfigService, ServiceService, errDisplay, errText, errKind } from "@/lib/api";
 import { NetworkRecovery } from "./NetworkRecovery";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -30,19 +30,19 @@ export function Settings() {
     onError: (e) => toast.error(errText(e)),
   });
   const refreshService = () => { void svc.refetch(); void cfg.refetch(); };
-  const serviceAction = useMutation({ mutationFn: (a: "start" | "stop" | "restart") => a === "start" ? ServiceService.Start() : a === "stop" ? ServiceService.Stop() : ServiceService.Restart(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`), onSettled: refreshService });
+  const serviceAction = useMutation({ mutationFn: (a: "start" | "stop" | "restart") => a === "start" ? ServiceService.Start() : a === "stop" ? ServiceService.Stop() : ServiceService.Restart(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errDisplay(e)}`), onSettled: refreshService });
   const [confirmAction, setConfirmAction] = useState<"" | "install" | "uninstall" | "repair">("");
   const [repairStep, setRepairStep] = useState("");
-  const install = useMutation({ mutationFn: () => ServiceService.Install(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}Install failed: ${errText(e)}`), onSuccess: () => toast.success("Service installed and running"), onSettled: refreshService });
-  const uninstall = useMutation({ mutationFn: () => ServiceService.Uninstall(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}Uninstall failed: ${errText(e)}`), onSuccess: () => toast.success("Service uninstalled. Config and identity kept."), onSettled: refreshService });
+  const install = useMutation({ mutationFn: () => ServiceService.Install(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}Install failed: ${errDisplay(e)}`), onSuccess: () => toast.success("Service installed and running"), onSettled: refreshService });
+  const uninstall = useMutation({ mutationFn: () => ServiceService.Uninstall(), onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}Uninstall failed: ${errDisplay(e)}`), onSuccess: () => toast.success("Service uninstalled. Config and identity kept."), onSettled: refreshService });
   const repair = useMutation({
     mutationFn: async () => {
       for (const [step, fn] of [["stopping", ServiceService.Stop], ["reinstalling", ServiceService.Install], ["starting", ServiceService.Start]] as const) {
         setRepairStep(step);
-        try { await fn(); } catch (e) { throw new Error(`repair failed while ${step}: ${errText(e)}`); }
+        try { await fn(); } catch (e) { throw new Error(`repair failed while ${step}: ${errDisplay(e)}`); }
       }
     },
-    onError: (e) => toast.error(`Repair did not finish: ${errText(e)}`),
+    onError: (e) => toast.error(`Repair did not finish: ${errDisplay(e)}`),
     onSuccess: () => toast.success("Service repaired and running"),
     onSettled: () => { setRepairStep(""); refreshService(); },
   });

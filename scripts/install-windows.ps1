@@ -6,8 +6,9 @@
 .DESCRIPTION
     Installs (or upgrades) Skein on Windows in one step:
 
-      1. Copies skeind.exe, skein-helper.exe, skein.exe, wintun.dll
-         (and skein-desktop.exe when present) into the install directory.
+      1. Copies skeind.exe, skein-helper.exe, skein.exe, wintun.dll,
+         wintun-LICENSE.txt (and skein-desktop.exe when present) into
+         the install directory.
       2. Creates the exact Windows Firewall rules the daemon itself
          manages: "Skein underlay" (inbound UDP on the underlay port)
          plus "Skein overlay" / "Skein overlay out" (and the v6 pair),
@@ -15,10 +16,10 @@
       3. Registers the "skein" service through the minimal helper
          (skein-helper install) and verifies it with skein-helper status.
 
-    The script never touches %ProgramData%\Skein, so reinstalling or
-    upgrading keeps your config, identity, and network membership.
-    Uninstall is the helper's job (skein-helper uninstall); purge is
-    the daemon's reset endpoint, not this script.
+    The script does not delete or reset %ProgramData%\Skein, so
+    reinstalling or upgrading keeps your config, identity, and network
+    membership. Uninstall is the helper's job (skein-helper uninstall);
+    purge is the daemon's reset endpoint, not this script.
 
     On a first install there is no network yet, so the service is
     not registered here — it is registered by the bootstrap flow
@@ -26,26 +27,32 @@
     existing config and fails without one). On an upgrade the service
     is re-registered and started, so your network comes back up.
 
-    First install, after this script finishes (the helper mints a
-    single-use bootstrap token and the daemon writes the system
-    config as the single writer):
+    First install, after this script finishes (run these in an elevated
+    PowerShell; the helper mints a single-use bootstrap token and the
+    daemon writes the system config as the single writer):
 
         .\skein.exe system init [--name NAME] [--port PORT]
         .\skein.exe system join "skein:2:…"
 
-    If you built from source, build first (see README "Building") and
-    run this script from the repository root, or pass -SourceDir.
+    If you built from source, build first (see README Installation,
+    Method 2) and run this script from the repository root, or pass
+    -SourceDir.
 
 .PARAMETER InstallDir
-    Destination directory. Default: C:\Program Files\Skein.
+    Destination directory. Default: C:\Program Files\Skein. Keep the
+    default for a first install: bootstrap resolves skeind from the
+    package directory (%ProgramFiles%\Skein). An upgrade may use another
+    directory under %ProgramFiles%; the helper rejects a daemon outside
+    the admin-only Program Files trees.
 
 .PARAMETER SourceDir
     Directory holding the built binaries. Default: the repo's dist/
     next to this script (scripts\..\dist).
 
 .PARAMETER DesktopPath
-    Optional explicit path to skein-desktop.exe. Default: the repo's
-    gui\bin\skein-desktop.exe next to this script, when it exists.
+    Optional explicit path to skein-desktop.exe. Default:
+    skein-desktop.exe in SourceDir when present, else the repo's
+    gui\bin\skein-desktop.exe next to this script.
 
 .PARAMETER Port
     Underlay UDP/TCP port. Default: 11010 (the daemon default).
@@ -65,6 +72,8 @@
 
 .PARAMETER SkipService
     Copy binaries and firewall rules only; do not register the service.
+    A running service is stopped first so its binaries can be replaced,
+    and is left stopped.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
@@ -86,6 +95,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# The helper validates an absolute daemon path, so resolve a relative
+# -InstallDir before copying or registering anything.
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+
 function Fail([string]$Message) {
     Write-Error $Message
     exit 1
@@ -103,19 +116,27 @@ if ($SourceDir -eq "") {
 }
 $SourceDir = (Resolve-Path $SourceDir -ErrorAction SilentlyContinue).Path
 if (-not $SourceDir) {
-    Fail "Source directory not found. Build first (see README 'Building') or pass -SourceDir."
+    Fail "Source directory not found. Build first (see README Installation, Method 2) or pass -SourceDir."
 }
 
-$required = @("skeind.exe", "skein-helper.exe", "skein.exe", "wintun.dll")
+# wintun-LICENSE.txt ships beside the DLL: the fetch scripts install both,
+# and the NSIS installer ships both, so the source install must too.
+$required = @("skeind.exe", "skein-helper.exe", "skein.exe", "wintun.dll", "wintun-LICENSE.txt")
 foreach ($file in $required) {
     if (-not (Test-Path (Join-Path $SourceDir $file))) {
-        Fail "Missing $file in $SourceDir. Build first, and fetch wintun.dll with scripts\fetch-wintun.cmd -Dest dist."
+        Fail "Missing $file in $SourceDir. Build first, and fetch wintun.dll and its licence with scripts\fetch-wintun.cmd -Dest `"$SourceDir`"."
     }
 }
 
 if ($DesktopPath -eq "") {
-    $candidate = Join-Path $PSScriptRoot "..\gui\bin\skein-desktop.exe"
-    if (Test-Path $candidate) { $DesktopPath = $candidate }
+    foreach ($candidate in @(
+        (Join-Path $SourceDir "skein-desktop.exe"),
+        (Join-Path $PSScriptRoot "..\gui\bin\skein-desktop.exe")
+    )) {
+        if (Test-Path $candidate) { $DesktopPath = $candidate; break }
+    }
+} elseif (-not (Test-Path $DesktopPath)) {
+    Fail "Desktop binary not found at $DesktopPath. Build it first, or omit -DesktopPath to auto-detect it."
 }
 
 # --- 3. Stop the service, and refuse a running desktop ----------------------
@@ -146,7 +167,7 @@ New-Item -ItemType Directory -Force $InstallDir | Out-Null
 foreach ($file in $required) {
     Copy-Item (Join-Path $SourceDir $file) $InstallDir -Force
 }
-if ($DesktopPath -and (Test-Path $DesktopPath)) {
+if ($DesktopPath) {
     Copy-Item $DesktopPath $InstallDir -Force
     Write-Host "Installed skein-desktop.exe"
 } else {
@@ -199,7 +220,10 @@ if (-not $SkipService) {
     $hadConfig = Test-Path $systemConfig
     if ($hadConfig) {
         Write-Host "Registering the skein service..."
-        & $helper install
+        # --daemon pins registration to this script's install directory.
+        # Without it the helper searches only %ProgramFiles%\Skein, which
+        # is wrong for a custom -InstallDir.
+        & $helper install --daemon (Join-Path $InstallDir "skeind.exe")
         if ($LASTEXITCODE -ne 0) { Fail "skein-helper install failed (exit $LASTEXITCODE)." }
 
         Write-Host "Verifying service status..."
@@ -214,11 +238,16 @@ if (-not $SkipService) {
 }
 
 Write-Host ""
-if ($hadConfig) {
+if ($hadConfig -and -not $SkipService) {
     Write-Host "Skein installed and the service is running. Your network is back up."
+} elseif ($hadConfig) {
+    # -SkipService stopped the old service to replace its binaries but did
+    # not re-register or start it; say so instead of claiming it is running.
+    Write-Host "Skein installed; service registration was skipped (-SkipService). Start the existing service with:"
+    Write-Host "  & `"$InstallDir\skein-helper.exe`" start"
 } else {
-    Write-Host "Skein installed. Next steps (from $InstallDir):"
+    Write-Host "Skein installed. Next steps (run these in an elevated PowerShell, from $InstallDir):"
     Write-Host "  First node:  .\skein.exe system init [--name NAME]"
     Write-Host "  Joining node: .\skein.exe system join `"skein:2:…`""
 }
-Write-Host "Your config in %ProgramData%\Skein is untouched by reinstalls."
+Write-Host "Your config in %ProgramData%\Skein is kept by reinstalls."

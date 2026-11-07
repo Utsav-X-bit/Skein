@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import * as SetupService from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
 import type { NetworkResetResult } from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/models";
-import { ConnectionService, PeerService, ServiceService, errText } from "@/lib/api";
+import { ConnectionService, PeerService, ServiceService, elevationCancelled, errText } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import { Onboarding } from "@/routes/onboarding/Onboarding";
 
 function recoveryError(error: unknown): string {
   const text = errText(error);
+  if (elevationCancelled(error)) return "Administrator approval was not completed. Retry and approve only the Skein helper action.";
   if (text.includes("different network")) return "This invite belongs to a different network. Switch networks instead; your current configuration must be reset first.";
   if (/403|forbidden|secret role|permission|access denied/i.test(text)) return "Your account cannot change this network. Ask the device owner to grant access, then retry.";
   if (/invite|checksum|base64/i.test(text)) return "The invite could not be accepted. Ask a member of this network for a fresh network invite, then paste it again.";

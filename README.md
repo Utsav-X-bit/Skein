@@ -25,10 +25,9 @@ flowchart LR
 
 `ndual` forwards opaque ciphertext: it never holds the `n4 ↔ n6` session keys.
 
-> Status: `0.1.0-dev`. The architecture below is implemented, and
-> live Linux/Windows install, upgrade, and mesh verification has
-> passed on `dev` (see `docs/engineering/M9-ACCEPTANCE.md`); the
-> final release verdict is still open.
+> Status: `0.1.0-dev`. The architecture below is implemented; the
+> final release verdict is still open (see
+> `docs/engineering/M9-ACCEPTANCE.md`).
 
 ## Contents
 
@@ -365,10 +364,11 @@ given, or produce it once from a checkout on Windows. Producing it
 needs the Windows prerequisites from
 [Method 2](#method-2--build-from-source) (Go, Node.js + npm, Wails 3
 v3.1.0) plus NSIS 3.x with `makensis` on `PATH`; the packaging task
-builds the system binaries and fetches the pinned, SHA-256-verified
-Wintun DLL itself. Run the build from the repository root in a
-PowerShell session where `wails3` and `makensis` are on `PATH` (the
-first line adds the usual Go and NSIS locations for this session):
+builds the system binaries, fetches the pinned, SHA-256-verified Wintun
+DLL, and generates the WebView2 bootstrapper. Run the build from the
+repository root in a PowerShell session where `wails3` and `makensis`
+are on `PATH` (the first line adds the usual Go and NSIS locations for
+this session):
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\go\bin;C:\Program Files (x86)\NSIS;$env:PATH"
@@ -394,8 +394,8 @@ What it does:
   `C:\Program Files\Skein` and creates shortcuts. It does not delete
   your config, identity, or access files: on upgrade the helper may
   rewrite the config only to migrate the control transport, and keeps
-  a timestamped backup beside it. Uninstall without purge keeps
-  everything.
+  a timestamped backup beside it. Uninstall without purge keeps your
+  config, identity, and access files.
 - On an upgrade it stops the running `skein` service first, then —
   only when `%ProgramData%\Skein\skein.toml` already exists — runs
   `skein-helper.exe install` to re-register and start it. A silent
@@ -404,9 +404,12 @@ What it does:
 - On a first install there is no config, so it deliberately skips
   service registration and says so. Open the app and create or join a
   network; that bootstrap step registers the service.
-- Firewall rules are created by the daemon when it starts, not by the
-  installer. Uninstall runs the helper's `uninstall` verb first, so no
-  orphaned service is left behind; without purge, config is kept.
+- Firewall rules are created by the daemon when it starts; the
+  installer itself adds none. Uninstall with
+  `C:\Program Files\Skein\uninstall.exe` (or Settings → Apps): it runs
+  the helper's `uninstall` verb first, so no orphaned service is left
+  behind; without purge, config, identity, and access files are kept.
+  `/S` is silent and never purges.
 
 Launch `C:\Program Files\Skein\skein-desktop.exe` as your normal user
 and choose **Create a network** or **Join a network** (see
@@ -419,6 +422,7 @@ and choose **Create a network** or **Join a network** (see
 | | Linux | Windows |
 |---|---|---|
 | Go | 1.26.10+ (`go.mod`) | 1.26.10+ |
+| Git | any (the steps clone the source) | Git for Windows |
 | Node.js + npm | 22 LTS (CI uses 22; the frontend builds with Vite 8) | 22 LTS (same) |
 | Wails 3 CLI | v3.1.0 | v3.1.0 |
 | Desktop toolkit | GTK4 + WebKitGTK 6.0 development packages, gcc, pkg-config | WebView2 runtime (current Windows 10/11) |
@@ -443,13 +447,13 @@ Linux toolkit packages (pick your distro):
 
 ```bash
 # Arch
-sudo pacman -S --needed go nodejs npm gcc pkgconf gtk4 webkitgtk-6.0 acl polkit
+sudo pacman -S --needed git go nodejs npm gcc pkgconf gtk4 webkitgtk-6.0 acl polkit
 
 # Debian / Ubuntu
-sudo apt install build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev acl policykit-1 nodejs npm
+sudo apt install git build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev acl policykit-1 nodejs npm
 
 # Fedora
-sudo dnf install gcc pkgconf-pkg-config gtk4-devel webkitgtk6.0-devel acl polkit nodejs npm
+sudo dnf install git gcc pkgconf-pkg-config gtk4-devel webkitgtk6.0-devel acl polkit nodejs npm
 ```
 
 If `node --version` reports older than 22, install Node 22 LTS from
@@ -460,6 +464,18 @@ wails3 doctor
 ```
 
 `wails3 doctor` reports anything the package names above missed.
+
+**Ubuntu 24.04+ note.** The desktop is a WebKitGTK app. Ubuntu's
+AppArmor policy restricts unprivileged user namespaces, which the
+WebKit web process needs to sandbox itself: without them the app exits
+at startup with `bwrap: setting up uid map: Permission denied` /
+`Failed to fully launch dbus-proxy`. Allow them (this is the upstream
+kernel default, not a Skein-specific privilege):
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-skein-userns.conf
+```
 
 **Linux — build and install by hand.** The commands clone the
 repository and run from its root. Both the system binaries and the
@@ -484,9 +500,10 @@ getent group skein >/dev/null || sudo groupadd -r skein
 The packaged polkit policy gives `pkexec /usr/libexec/skein-helper`
 a Skein-specific administrator prompt. pkexec selects that policy by
 the helper’s executable path; it does not accept an `--action` flag.
-The `skein` group makes `/run/skein/control.sock` `0660 root:skein`. The helper writes
-the systemd unit itself when the service is registered, so there is no
-unit file to copy here.
+The `skein` group owns `/run/skein/control.sock` (`0660 root:skein`);
+the helper grants the installing/granted uid a per-user socket ACL.
+The helper writes the systemd unit itself when the service is
+registered, so there is no unit file to copy here.
 
 Only on an upgrade or reinstall over an existing network — never on a
 first install — re-register and start the service:
@@ -513,6 +530,22 @@ The script detects ufw (active) → firewalld (running) → raw iptables
 in that order, mirroring the daemon's own detection, and prints the
 manager it used.
 
+**Uninstall (source install).** Run the helper's uninstall verb before
+removing the files it needs; it stops the service and removes the
+firewall rules. The config and identity are kept.
+
+```bash
+sudo /usr/libexec/skein-helper uninstall &&
+  sudo rm -f /usr/local/bin/skeind /usr/local/bin/skein \
+    /usr/local/bin/skein-desktop /usr/libexec/skein-helper \
+    /usr/share/polkit-1/actions/org.skein.helper.policy
+```
+
+`/etc/skein`, `/var/lib/skein/backups`, and the `skein` group are kept.
+Purge is the daemon reset endpoint (before uninstall) or a manual
+removal of `/etc/skein` and `/var/lib/skein/backups`; these commands
+keep both.
+
 To produce a distro package instead of installing by hand, run the
 matching packaging task from `gui/`; it builds the desktop and the
 system binaries into `gui/bin/`:
@@ -520,6 +553,7 @@ system binaries into `gui/bin/`:
 ```bash
 cd gui
 wails3 task linux:create:deb    # or linux:create:rpm / linux:create:aur
+cd ..
 ```
 
 Install the resulting package from `gui/bin/` with your package
@@ -546,6 +580,7 @@ wails3 build                                # -> gui\bin\skein-desktop.exe
 cd ..
 
 .\scripts\fetch-wintun.cmd -Dest gui\bin
+# arm64 host: add -Arch arm64 to the fetch command
 ```
 
 Then install from an elevated PowerShell in the same repository root:
@@ -555,17 +590,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps
 ```
 
 The script copies `skeind.exe`, `skein-helper.exe`, `skein.exe`,
-`wintun.dll`, and `skein-desktop.exe` into `C:\Program Files\Skein`,
-creates the same firewall rules the daemon manages, and — only when
-`%ProgramData%\Skein\skein.toml` already exists — registers and starts
-the service through the helper. On a first install it skips
-registration and prints the next steps. It does not delete your config
-or identity; on upgrade the helper may rewrite the config only to
-migrate the control transport and keeps a timestamped backup beside
-it, so reinstalls keep your network membership. Re-running it upgrades
-in place.
+`wintun.dll`, `wintun-LICENSE.txt`, and `skein-desktop.exe` into
+`C:\Program Files\Skein`, creates the same firewall rules the daemon
+manages, and — only when `%ProgramData%\Skein\skein.toml` already
+exists — registers and starts the service through the helper. On a
+first install it skips registration and prints the next steps. It does
+not delete your config or identity; on upgrade the helper may rewrite
+the config only to migrate the control transport and keeps a
+timestamped backup beside it, so reinstalls keep your network
+membership. Re-running it upgrades in place.
 
-Then create or join a network (see [Usage](#usage)).
+Then create or join a network (see [Usage](#usage)); Windows `system`
+commands need an elevated PowerShell.
+
+**Uninstall (source install).** Close Skein Desktop, then run the
+helper's uninstall verb from an elevated PowerShell before deleting the
+install directory; it stops the service and removes the firewall rules.
+The config and identity in `%ProgramData%\Skein` are kept.
+
+```powershell
+& "C:\Program Files\Skein\skein-helper.exe" uninstall
+if ($LASTEXITCODE -ne 0) { throw "skein-helper uninstall failed; nothing deleted" }
+Remove-Item -Recurse -Force "C:\Program Files\Skein"
+```
+
+To purge, use the daemon reset endpoint before uninstalling, or move or
+delete `%ProgramData%\Skein` by hand; this keeps it.
 
 **Git Bash note:** do not paste the PowerShell commands into Git
 Bash — backslashes escape the next character, so
