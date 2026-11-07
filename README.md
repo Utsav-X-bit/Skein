@@ -99,16 +99,37 @@ $env:PATH = "$env:USERPROFILE\go\bin;$env:PATH"
 wails3 doctor
 ```
 
-`wails3 doctor` must report no issues. NSIS must provide `makensis` on
-`PATH`; for a portable/extracted NSIS tree, set `$env:NSISDIR` and pass
-`MAKENSIS=<path>` to the build task.
+`wails3 doctor` must report no issues. If `makensis` is installed but still
+not found, NSIS is usually at
+`C:\Program Files (x86)\NSIS\makensis.exe`; the build script below detects
+that path automatically. To skip the manual tool setup, pass
+`-InstallPrerequisites` to the script.
 
 **2. Build the complete setup**:
 
 ```powershell
-cd $env:USERPROFILE\Downloads\Skein-test\gui
+cd $env:USERPROFILE\Downloads\Skein-test
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1
+```
+
+The script finds Go, Node.js, Wails and NSIS even when the current shell's
+`PATH` is stale, sets the npm noise down, runs the packaging task, and
+verifies the artifact:
+
+```text
+gui\bin\skein-desktop-amd64-installer.exe
+```
+
+Useful switches: `-InstallPrerequisites` (winget/go install of missing build
+tools), `-Arch arm64`, `-RunInstaller`. It never installs Skein and never
+starts the service.
+
+Manual equivalent, if you prefer the task directly:
+
+```powershell
+$env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
+cd gui
 wails3 task windows:create:nsis:installer ARCH=amd64
-# -> bin\skein-desktop-amd64-installer.exe
 ```
 
 The task builds the system binaries and desktop, fetches the SHA-256-pinned
@@ -118,7 +139,7 @@ payload fails the build.
 **3. Run the installer**:
 
 ```powershell
-Start-Process .\bin\skein-desktop-amd64-installer.exe
+Start-Process .\gui\bin\skein-desktop-amd64-installer.exe
 ```
 
 Approve the UAC prompt (silent: add `/S`). It installs into
