@@ -89,6 +89,9 @@ export function Activity() {
     queryKey: historySummaryKey,
     queryFn: () => HistoryService.Summary(),
     staleTime: 30_000,
+    // stored_points grows while recording; refresh so Export/Clear enable
+    // without a reload or focus change.
+    refetchInterval: (q) => (q.state.data?.enabled ? 30_000 : false),
     retry: 0,
   });
   const enabled = summaryQ.data?.enabled === true;
