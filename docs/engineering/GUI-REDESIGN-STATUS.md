@@ -2,7 +2,7 @@
 
 Date: 2026-11-07. Branch: `GUI-redesign`, based on `GUI` at `20a388d`.
 
-**Verdict: PHASE 0 ACCEPTANCE VERIFIED; THE REDESIGN IS NOT COMPLETE.** Phase 1 visual design and Phase 2 redesign have not started. The owner authorized Skein-only lifecycle testing and complete application removal on the supplied Windows test PC, and isolated acceptance on a disposable Linux VM; both are recorded below. The Linux daily-use node was not reset or reinstalled. Nothing was pushed. Remaining non-Phase-0 items are listed at the end.
+**Verdict: PHASE 0 ACCEPTANCE VERIFIED; PHASE 1 DESIGN IN REVIEW; THE REDESIGN IS NOT COMPLETE.** The revised [Phase 1 design](../superpowers/specs/2026-11-07-mesh-first-redesign-design.md) preserves full operator parity and records the owner's explicit deferral of invitation expiry, active-invite inventory and invite-use attribution. The previous implementation plan is marked non-executable pending design review. No Phase 2 application changes have started. The owner authorized Skein-only lifecycle testing and complete application removal on the supplied Windows test PC, and isolated acceptance on a disposable Linux VM; both are recorded below. The Linux daily-use node was not reset or reinstalled. Nothing was pushed.
 
 Working bug ledger, parity map, plan and raw evidence: `~/workspace/skein-work/` (`BUGS.md`, `PARITY.md`, `PHASE-0-PLAN.md`). The linked worktree is `~/workspace/skein-work/desktop/`; the original checkout and its pre-existing edits remain intact.
 
@@ -74,7 +74,7 @@ Windows source acceptance used a committed-source archive instead of cloning the
 
 ## Remaining items after Phase 0
 
-1. Product/API decision: requested invitation expiry, active-invite inventory and invite-use attribution have no daemon/protocol data contract. Do not fabricate them or implement deferred F-01 revocation; resolve the treatment in Phase 1.
+1. Owner-approved deferral during Phase 1: invitation expiry, active-invite inventory and invite-use attribution. Current network invites contain a reusable network secret; UI-only expiry/tracking cannot enforce admission or establish use attribution. Generation, QR/copy, snapshot warnings and network-wide secret rotation remain in scope. F-01 per-peer revocation remains deferred.
 2. Documentation acceptance is bounded honestly: the literal public clone, prerequisite installation, Wails/Node toolchain, documented Linux install/uninstall and Windows source build/install were executed. The unpushed candidate was supplied to those clones through a local bundle, so the commands are verified but not against the public branch. The Linux distribution packages (`deb`/`rpm`/`aur`) were not built or installed, and native Windows packaging was compiled and executed in the earlier session, not re-run here.
 3. Observations for Phase 1, not Phase 0 blockers: a remote tombstone keeps a rejoining peer unlinked for up to 180 s while the GUI reports the mesh resumed; and the Windows node did not list the Linux peer even while the Linux node held an `up` link to it.
 
