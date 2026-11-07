@@ -27,6 +27,9 @@ const (
 	EventPeerDiscovered           = "peer_discovered"
 	EventPeerAdded                = "peer_added"
 	EventPeerRemoved              = "peer_removed"
+	EventPeerDown                 = "peer_down"
+	EventPeerDeparted             = "peer_departed"
+	EventDialerFallback           = "dialer_fallback"
 	EventPeerLeave                = "peer:leave"
 	EventPeerRejoined             = "peer:rejoined"
 	EventNameChanged              = "name_changed"
@@ -45,6 +48,9 @@ var lifecycleEvent = map[string]bool{
 	EventPeerDiscovered:           true,
 	EventPeerAdded:                true,
 	EventPeerRemoved:              true,
+	EventPeerDown:                 true,
+	EventPeerDeparted:             true,
+	EventDialerFallback:           true,
 	EventPeerLeave:                true,
 	EventPeerRejoined:             true,
 	EventNameChanged:              true,

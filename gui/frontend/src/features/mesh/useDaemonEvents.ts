@@ -61,12 +61,14 @@ function setProbe(result: ProbeResult) {
   useLive.setState((s) => ({ probes: { ...s.probes, [result.peer_id]: result } }));
 }
 
-const peerLifecycle: Partial<Record<LifecycleEvent, true>> = {
+export const peerLifecycle: Partial<Record<LifecycleEvent, true>> = {
   peer_up: true,
   peer_joined: true,
   peer_discovered: true,
   peer_added: true,
   peer_removed: true,
+  peer_down: true,
+  peer_departed: true,
   "peer:leave": true,
   "peer:rejoined": true,
 };
@@ -74,6 +76,7 @@ const peerLifecycle: Partial<Record<LifecycleEvent, true>> = {
 // Only events that change what the user is doing are worth an interruption;
 // the rest live in the session feed.
 const toastText: Partial<Record<LifecycleEvent, (ev: DaemonEvent) => string>> = {
+  peer_departed: () => "Peer left the mesh",
   "peer:leave": () => "Left the network",
   "peer:rejoined": () => "Rejoined the network",
   secret_rotated: () => "Network secret rotated — restart the service to apply it",
