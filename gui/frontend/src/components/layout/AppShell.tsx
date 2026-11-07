@@ -7,10 +7,14 @@ import { useTheme } from "@/lib/useTheme";
 import { useQuery } from "@tanstack/react-query";
 import { ServiceService } from "@/lib/api";
 import { Onboarding } from "@/routes/onboarding/Onboarding";
+import { useHistoryRecorder } from "@/features/activity/useHistoryRecorder";
 import { useDaemonEvents } from "@/features/mesh/useDaemonEvents";
 
 export function AppShell() {
   useTheme();
+  // One writer for the whole app: opted-in history collects while the app
+  // runs, not only while the Activity page is mounted.
+  useHistoryRecorder();
   // The one event subscription in the app: typed snapshots write the query
   // cache, lifecycle events feed the session store. Pages never subscribe.
   useDaemonEvents();

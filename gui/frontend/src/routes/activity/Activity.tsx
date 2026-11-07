@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { HistoryService, errText } from "@/lib/api";
-import type { HistorySample, HistorySummary } from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/models";
+import type { HistorySummary } from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/models";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,11 +16,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { formatBytes, shortID } from "@/lib/utils";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
-import { useSessionHistory, useSessionHistoryStore } from "@/features/mesh/useSessionHistory";
 import { bucketActivities, formatAge } from "@/features/mesh/model";
 import { ThroughputStrip } from "@/features/mesh/ThroughputStrip";
 import { useSessionEvents } from "@/features/notifications/store";
 import { StoredChart, Timeline } from "@/features/activity/Timeline";
+import { HistoryKey, historySummaryKey } from "@/features/activity/useHistoryRecorder";
 
 /** Stored history is shown for one hour; the store keeps up to a day. */
 const HistoryWindowMinutes = 60;
@@ -28,8 +28,6 @@ const HistoryWindowMinutes = 60;
 const BucketMs = 10_000;
 /** Past two collection intervals the last link sample no longer describes now. */
 const ExpiredAfterMs = 15_000;
-
-const HistoryKey = ["history"] as const;
 
 function FilterChips({
   label,
@@ -85,8 +83,10 @@ export function Activity() {
 
   // History is GUI-local and opt-in. The summary is the only thing that says
   // whether recording is on; the store itself is the source of truth for it.
+  // The same key is read by the app-wide writer in AppShell, so toggling here
+  // starts and stops collection immediately.
   const summaryQ = useQuery({
-    queryKey: [...HistoryKey, "summary"],
+    queryKey: historySummaryKey,
     queryFn: () => HistoryService.Summary(),
     staleTime: 30_000,
     retry: 0,
@@ -103,53 +103,11 @@ export function Activity() {
     retry: 0,
   });
 
-  const samples = useSessionHistory();
-  const nodeId = useSessionHistoryStore((s) => s.nodeId);
-  const uptime = useSessionHistoryStore((s) => s.uptime);
-  const lastRecorded = useRef<number | null>(null);
-  const baseline = useRef<{ node: string | null; uptime: number } | null>(null);
-  // The store reports its own collection interval; the ring samples faster
-  // (2 s), so the writer thins it to the interval the store advertises.
-  const intervalMs = (summaryQ.data?.interval_s || 5) * 1000;
-
-  // The one writer. It reads the session ring — the only place a proven rate
-  // exists — and appends it when the user opted in. The sampler never records,
-  // so no second component can duplicate a point.
-  useEffect(() => {
-    if (!enabled) {
-      baseline.current = null;
-      return;
-    }
-    const latest = samples[samples.length - 1];
-    if (!latest) return;
-    const previous = baseline.current;
-    const changed = previous !== null && (previous.node !== nodeId || uptime < previous.uptime);
-    baseline.current = { node: nodeId, uptime };
-    if (changed) {
-      // A restart or a different node breaks the counters the rate was
-      // measured on: keep the timestamp but never bridge the discontinuity.
-      lastRecorded.current = latest.t;
-      return;
-    }
-    if (lastRecorded.current !== null && latest.t - lastRecorded.current < intervalMs) return;
-    lastRecorded.current = latest.t;
-    void HistoryService.Record({
-      t: latest.t,
-      rx_per_sec: latest.rxPerSec,
-      tx_per_sec: latest.txPerSec,
-      peers_up: latest.peersUp,
-      peers_total: latest.peersTotal,
-    } satisfies HistorySample).catch(() => {
-      // Recording is best effort: the next sample retries and a failed append
-      // is not worth interrupting the user for.
-    });
-  }, [enabled, samples, nodeId, uptime, intervalMs]);
-
   const toggle = useMutation({
     mutationFn: (next: boolean) => HistoryService.SetEnabled(next),
     onSuccess: (_result, next) => {
-      qc.setQueryData<HistorySummary | undefined>([...HistoryKey, "summary"], (old) => (old ? { ...old, enabled: next } : old));
-      void qc.invalidateQueries({ queryKey: [...HistoryKey, "summary"] });
+      qc.setQueryData<HistorySummary | undefined>(historySummaryKey, (old) => (old ? { ...old, enabled: next } : old));
+      void qc.invalidateQueries({ queryKey: historySummaryKey });
       void qc.invalidateQueries({ queryKey: [...HistoryKey, "samples"] });
       toast(next ? "Recording history on this device" : "History recording off");
     },
