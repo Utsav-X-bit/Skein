@@ -14,6 +14,36 @@ export { AppService, ConnectionService, PeerService, NetworkService, ConfigServi
 
 export type { Connection, Status, Peer, Route, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
 
+// DaemonEvent is the lifecycle envelope from internal/api.Event. The Go
+// bridge (gui/services/events.go) forwards each one as a Wails event named
+// after its type, so the payload arrives as this object. Lifecycle events
+// describe what happened; they are not telemetry.
+export type DaemonEvent = {
+  id?: number;
+  type: string;
+  peer_id?: string;
+  detail?: string;
+  time_ms: number;
+};
+
+// lifecycleEvents mirrors the forwarding allowlist in gui/services/events.go.
+export const lifecycleEvents = [
+  "peer_up",
+  "peer_joined",
+  "peer_discovered",
+  "peer_added",
+  "peer_removed",
+  "peer:leave",
+  "peer:rejoined",
+  "name_changed",
+  "secret_rotated",
+  "system_reset",
+  "system_imported",
+  "leave_dataplane_stop_failed",
+] as const;
+
+export type LifecycleEvent = (typeof lifecycleEvents)[number];
+
 export function errText(e: unknown): string {
   if (!e) return "Unknown error";
   if (typeof e === "string") return e;

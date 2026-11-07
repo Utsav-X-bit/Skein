@@ -22,6 +22,24 @@ const (
 	EventPeerProbe         = "peer:probe"
 )
 
+// lifecycleEvent is the allowlist of daemon events that carry an api.Event
+// envelope. They are forwarded verbatim so the frontend's session feed can
+// show what happened; an unknown type is dropped rather than guessed at.
+var lifecycleEvent = map[string]bool{
+	"peer_up":                     true,
+	"peer_joined":                 true,
+	"peer_discovered":             true,
+	"peer_added":                  true,
+	"peer_removed":                true,
+	"peer:leave":                  true,
+	"peer:rejoined":               true,
+	"name_changed":                true,
+	"secret_rotated":              true,
+	"system_reset":                true,
+	"system_imported":             true,
+	"leave_dataplane_stop_failed": true,
+}
+
 var EventPayloads = map[string]any{
 	EventConnectionChanged: api.Connection{},
 	EventPeersChanged:      []api.Peer{},
@@ -107,6 +125,14 @@ func (s *AppService) emitEvent(name, data string) {
 		}
 	case EventServiceChanged:
 		var v api.ServiceStatus
+		if json.Unmarshal([]byte(data), &v) == nil {
+			app.Event.Emit(name, v)
+		}
+	default:
+		if !lifecycleEvent[name] {
+			return
+		}
+		var v api.Event
 		if json.Unmarshal([]byte(data), &v) == nil {
 			app.Event.Emit(name, v)
 		}
