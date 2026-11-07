@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Background, Controls, MarkerType, ReactFlow, type Node, type NodeProps, Position } from "@xyflow/react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { Background, Controls, Handle, MarkerType, ReactFlow, type Node, type NodeProps, Position } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Activity, Peer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { MeshTable } from "./MeshTable";
 import { useMotionAllowed } from "./hooks";
 import {
   activityWindow,
+  facingSides,
   shouldFlow,
   type MeshModel,
   type MeshNode,
@@ -30,6 +31,7 @@ type LayoutEntry = { id: string; direct: boolean; hops: number | null };
 const Center = { x: 360, y: 250 };
 const InnerRadius = 150;
 const OuterRadius = 270;
+const HandlePositions = [Position.Top, Position.Right, Position.Bottom, Position.Left];
 
 // Positions depend only on the sorted node-id list plus direct/hop facts, so
 // a new model object every 2 s never moves a node.
@@ -110,6 +112,12 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
         "focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
       )}
     >
+      {HandlePositions.map((position) => (
+        <Fragment key={position}>
+          <Handle id={`source-${position}`} type="source" position={position} isConnectable={false} style={{ visibility: "hidden" }} />
+          <Handle id={`target-${position}`} type="target" position={position} isConnectable={false} style={{ visibility: "hidden" }} />
+        </Fragment>
+      ))}
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-xs font-medium">{node.label}</span>
         <span
@@ -188,8 +196,6 @@ export function MeshCanvas({
         // React Flow's default node wrapper is white; the themed card inside
         // must be the only surface.
         style: { background: "transparent", border: "none", padding: 0, boxShadow: "none" },
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
       })),
     [model.nodes, positions, selectedPeer, onSelectPeer, mode],
   );
@@ -202,10 +208,15 @@ export function MeshCanvas({
         const flowing = shouldFlow(edge.evidence, rate, motion);
         const selected = selectedLink?.from === edge.from && selectedLink?.to === edge.to;
         const color = edge.evidence === "direct" ? "var(--accent)" : edge.evidence === "observed" ? "var(--info)" : "var(--text-faint)";
+        const from = positions.get(edge.from) ?? Center;
+        const to = positions.get(edge.to) ?? Center;
+        const [sourceSide, targetSide] = facingSides(to.x - from.x, to.y - from.y);
         return {
           id: edge.id,
           source: edge.from,
           target: edge.to,
+          sourceHandle: `source-${sourceSide}`,
+          targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
           data: { flowing, color },
@@ -218,7 +229,7 @@ export function MeshCanvas({
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
       }),
-    [model.edges, self, peerRates, rates, motion, selectedLink],
+    [model.edges, positions, self, peerRates, rates, motion, selectedLink],
   );
 
   useEffect(() => {
@@ -262,6 +273,7 @@ export function MeshCanvas({
           inert={mode === "table" ? true : undefined}
         >
           <ReactFlow
+            key={layoutKey}
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}

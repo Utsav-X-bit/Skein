@@ -29,11 +29,25 @@ Unicode true
 ## !define UNINST_KEY_NAME     "UninstKeyInRegistry"  # Default "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
 ####
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
-## !define WAILS_INSTALL_SCOPE     "user"             # Default "machine" - set to "user" for per-user install ($LOCALAPPDATA) without UAC prompt
+####
+## Per-user installs (WAILS_INSTALL_SCOPE=user) are deliberately NOT
+## supported: Skein ships a SYSTEM service and a Wintun driver, so the
+## complete package is machine-wide, admin-only, under %ProgramFiles%.
 ####
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
+
+# Fail the build, not the user, if someone asks for a scope this
+# installer cannot deliver. A per-user copy would install a VPN
+# service and driver into $LOCALAPPDATA without the admin-only ACLs
+# the daemon/helper trust.
+!if "${WAILS_INSTALL_SCOPE}" == "user"
+    !error "Skein: per-user installs are not supported. The complete VPN package is machine-wide under %ProgramFiles% and requires administrator rights."
+!endif
+!if "${REQUEST_EXECUTION_LEVEL}" != "admin"
+    !error "Skein: the installer must request administrator rights (REQUEST_EXECUTION_LEVEL=admin)."
+!endif
 
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
@@ -57,6 +71,17 @@ ManifestDPIAware true
 !define MUI_FINISHPAGE_NOAUTOCLOSE # Wait on the INSTFILES page so the user can take a look into the details of the installation steps
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
 
+# Finish action: launch the desktop, but never as an elevated child
+# of this installer. The installer runs as admin; launching the GUI
+# with Exec here would inherit that token, and the desktop is meant
+# to run with the logged-on user's normal token (helper elevation is
+# per-operation). MUI_FINISHPAGE_RUN must be defined for MUI2 to show
+# the checkbox; the function takes precedence over that value.
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION "SkeinLaunchDesktop"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch Skein Desktop (create or join a network)"
+!define MUI_FINISHPAGE_TEXT "Skein is installed. Launch it below to create or join a network. Your configuration and identity are kept across upgrades and uninstalls."
+
 !insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
 # !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
 !insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
@@ -73,18 +98,18 @@ ManifestDPIAware true
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
-!if "${WAILS_INSTALL_SCOPE}" == "user"
-    InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
-!else
-    # Step 11: single directory, NOT $PROGRAMFILES64\Skein\Skein.
-    # The old company\product layout did not match the GUI's
-    # canonical fallback (C:\Program Files\Skein\skein-helper.exe,
-    # gui/services/helper_command_windows.go), so the fallback
-    # pointed at a directory the installer never created (Agent D
-    # P1). All exes live in this one directory; the GUI finds the
-    # helper beside its own exe first and this directory second.
-    InstallDir "$PROGRAMFILES64\${INFO_PRODUCTNAME}"
-!endif
+# Step 11: single directory, NOT $PROGRAMFILES64\Skein\Skein.
+# The old company\product layout did not match the GUI's
+# canonical fallback (C:\Program Files\Skein\skein-helper.exe,
+# gui/services/helper_command_windows.go), so the fallback
+# pointed at a directory the installer never created (Agent D
+# P1). All exes live in this one directory; the GUI finds the
+# helper beside its own exe first and this directory second.
+# The user may choose another directory, but it must stay under
+# %ProgramFiles% (validated in .onVerifyInstDir and again in the
+# install section): the daemon and helper trust only admin-only
+# parents, and the complete package is machine-wide.
+InstallDir "$PROGRAMFILES64\${INFO_PRODUCTNAME}"
 ShowInstDetails show # This will always show the installation details.
 
 # Running-desktop precheck. A running skein-desktop.exe locks its own
@@ -102,12 +127,22 @@ ShowInstDetails show # This will always show the installation details.
 # "unknown" and the installer refuses to touch anything rather than
 # assuming the desktop is closed.
 #
+# The desktop's window Close button only hides it to the system tray;
+# the process (and its locked exe) stays alive. The refusal text must
+# therefore tell the user to Quit from the tray menu, never "close the
+# window".
+#
 # A match is printed as CSV starting with the quoted image name
 # ("skein-desktop.exe","1234",...); the no-match notice is localized
 # prose and never starts with a quote, so the first character decides.
 # The UNIQ parameter keeps the two insertions (installer and
 # uninstaller) on distinct labels.
 Var SkeinDesktopState
+# "1" when an existing configured install exists, so a trusted custom
+# subdirectory of %ProgramFiles% is allowed (helper install --daemon
+# re-registers it). "0" on a first install: the desktop's bootstrap
+# searches only the canonical package directory.
+Var SkeinAllowCustomDir
 
 !macro SkeinDesktopProbe UNIQ
     StrCpy $SkeinDesktopState "unknown"
@@ -129,6 +164,78 @@ Var SkeinDesktopState
     skeinProbe${UNIQ}Done:
 !macroend
 
+# The installer is machine-wide only: the daemon and helper trust
+# admin-only parents, and the GUI's canonical fallback is under
+# %ProgramFiles%. Reject any other target before a file is written.
+# Sets $R9 to "ok" or "bad"; clobbers $0, $1 and $R1-$R5.
+Function SkeinValidateTrustedDir
+    StrCpy $R9 "bad"
+    # NSIS GetFullPathName empties the result for a fresh, absent directory.
+    # The Windows API normalizes ".." without requiring that directory.
+    System::Call 'kernel32::GetFullPathNameW(w "$INSTDIR", i ${NSIS_MAX_STRLEN}, w .r0, p 0) i .r1'
+    IntCmp $1 0 skeinDirDone skeinDirDone
+    IntCmp $1 ${NSIS_MAX_STRLEN} skeinDirDone 0 skeinDirDone
+    StrCpy $INSTDIR $0
+    # Canonicalize a trailing separator chosen on the directory page.
+    StrCpy $R1 "$INSTDIR" "" -1
+    StrCmp $R1 "\" 0 skeinDirCanonical
+        StrCpy $INSTDIR "$INSTDIR" -1
+    skeinDirCanonical:
+    # Require $INSTDIR to be a strict subdirectory of $PROGRAMFILES64:
+    # the prefix must match and be followed by a separator.
+    StrLen $R2 "$PROGRAMFILES64"
+    StrCpy $R3 "$INSTDIR" $R2
+    StrCmp $R3 "$PROGRAMFILES64" 0 skeinDirDone
+    StrCpy $R4 "$INSTDIR" 1 $R2
+    StrCmp $R4 "\" 0 skeinDirDone
+    StrLen $R5 "$INSTDIR"
+    IntCmp $R5 $R2 skeinDirDone skeinDirDone skeinDirValid
+    skeinDirValid:
+        StrCpy $R9 "ok"
+    skeinDirDone:
+FunctionEnd
+
+# MUI calls this when the directory page's path changes; Abort keeps
+# the Next button disabled for a path outside %ProgramFiles%. Whether a
+# custom path is usable on this run is checked in the section (it needs
+# an existing config; see .onInit) so the user gets a clear message.
+Function .onVerifyInstDir
+    Call SkeinValidateTrustedDir
+    StrCmp $R9 "ok" skeinVerifyDirOk
+    Abort
+    skeinVerifyDirOk:
+FunctionEnd
+
+# Verify WebView2 from the registry AFTER the bootstrapper ran. The
+# wails macro ignores the bootstrapper's exit code and its "ok" label
+# only means "was already installed or launch attempted", so a launch
+# alone must never be reported as success. This check is the one that
+# decides; a missing runtime aborts before any Skein file is copied.
+!macro SkeinVerifyWebView2
+    !ifndef WAILS_SKIP_WEBVIEW2
+    SetRegView 64
+    ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    StrCmp $0 "" 0 skeinWebView2Ok
+    ReadRegStr $0 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    StrCmp $0 "" skeinWebView2Missing skeinWebView2Ok
+    skeinWebView2Missing:
+        DetailPrint "WebView2 Runtime is not installed after the bootstrapper ran."
+        IfSilent skeinWebView2Silent
+        MessageBox MB_OK|MB_ICONSTOP "Skein could not install the Microsoft Edge WebView2 Runtime, which the desktop app requires. Install the Evergreen WebView2 Runtime, then run this installer again. Nothing has been installed."
+        skeinWebView2Silent:
+        SetErrorLevel 1
+        Abort
+    skeinWebView2Ok:
+    !endif
+!macroend
+
+# Finish-page action. The installer runs elevated; handing the path to
+# the interactive shell starts the desktop with the logged-on user's
+# normal token instead of inheriting this installer's admin token.
+Function SkeinLaunchDesktop
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
+FunctionEnd
+
 Function .onInit
    !insertmacro wails.checkArchitecture
 
@@ -136,10 +243,10 @@ Function .onInit
    !insertmacro SkeinDesktopProbe Install
    StrCmp $SkeinDesktopState "closed" skeinDesktopInstallOk
    StrCmp $SkeinDesktopState "running" 0 skeinDesktopInstallUnknown
-   StrCpy $R0 "Skein Desktop is still running. Close it (quit it from its window, or right-click its taskbar entry and choose Close), then start this installer again. Nothing has been changed yet."
+   StrCpy $R0 "Skein Desktop is still running. Quit it from its system-tray menu, then start this installer again. Nothing has been changed yet."
    Goto skeinDesktopInstallRefuse
    skeinDesktopInstallUnknown:
-   StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Close Skein Desktop and run this installer again; if this keeps happening, reboot and retry. Nothing has been changed yet."
+   StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Quit Skein Desktop from its system-tray menu and run this installer again; if this keeps happening, reboot and retry. Nothing has been changed yet."
    skeinDesktopInstallRefuse:
    DetailPrint "$R0"
    IfSilent skeinDesktopInstallSilent
@@ -149,12 +256,92 @@ Function .onInit
    SetErrorLevel 1
    Abort
    skeinDesktopInstallOk:
+
+   # Decide whether a custom directory is usable on this run. The
+   # desktop's first-setup bootstrap registers the service through the
+   # package search (only %ProgramFiles%\Skein), so a fresh install must
+   # use the canonical directory. Once a config exists, an upgrade may
+   # keep a trusted custom subdirectory: the helper install below pins
+   # the exact path with --daemon.
+   StrCpy $SkeinAllowCustomDir "0"
+   ReadEnvStr $R8 "ProgramData"
+   IfFileExists "$R8\Skein\skein.toml" skeinHasConfig skeinSetDefault
+
+   skeinHasConfig:
+   StrCpy $SkeinAllowCustomDir "1"
+   SetRegView 64
+   # Prefer the directory this installer recorded on the last run.
+   ReadRegStr $R7 HKLM "${UNINST_KEY}" "InstallLocation"
+   StrCmp $R7 "" skeinTryServiceDir
+   StrCpy $INSTDIR "$R7"
+   Call SkeinValidateTrustedDir
+   StrCmp $R9 "ok" skeinExistingDirOk
+
+   # Older/source installs have no InstallLocation: derive the directory
+   # from the registered service's ImagePath
+   # ("<dir>\skeind.exe" run -c "<config>") when it is quoted.
+   skeinTryServiceDir:
+   ReadRegStr $R7 HKLM "SYSTEM\CurrentControlSet\Services\skein" "ImagePath"
+   StrCmp $R7 "" skeinSetDefault
+   StrCpy $R4 $R7 1
+   StrCmp $R4 '"' 0 skeinSetDefault
+   StrCpy $R7 "$R7" "" 1
+   StrLen $R6 $R7
+   StrCpy $R5 0
+   skeinImageScan:
+   StrCmp $R5 $R6 skeinSetDefault
+   StrCpy $R4 $R7 1 $R5
+   StrCmp $R4 '"' skeinImageFound
+   IntOp $R5 $R5 + 1
+   Goto skeinImageScan
+   skeinImageFound:
+   StrCpy $R7 $R7 $R5
+   StrLen $R6 "\skeind.exe"
+   StrCpy $R4 $R7 $R6 -$R6
+   StrCmp $R4 "\skeind.exe" 0 skeinSetDefault
+   StrCpy $R7 $R7 -$R6
+   StrCpy $INSTDIR "$R7"
+   Call SkeinValidateTrustedDir
+   StrCmp $R9 "ok" skeinExistingDirOk
+
+   skeinSetDefault:
+   StrCpy $INSTDIR "$PROGRAMFILES64\${INFO_PRODUCTNAME}"
+   skeinExistingDirOk:
 FunctionEnd
 
 Section
     !insertmacro wails.setShellContext
 
+    # 0. Fail closed before any mutation: the directory must be a
+    #    strict subdirectory of %ProgramFiles%, and on a first install
+    #    it must be the canonical one the desktop's bootstrap searches.
+    #    .onVerifyInstDir already disables Next for an untrusted path;
+    #    this check also covers silent installs (no directory page) and
+    #    gives the user a reason instead of a silently disabled button.
+    Call SkeinValidateTrustedDir
+    StrCmp $R9 "ok" installDirTrustedOk
+    StrCpy $R0 "Skein must be installed under $PROGRAMFILES64 (for example $PROGRAMFILES64\${INFO_PRODUCTNAME}), because the VPN service runs as SYSTEM and the binaries must be admin-only. Choose a folder under $PROGRAMFILES64 and run the installer again. Nothing has been installed."
+    Goto installDirRefuse
+    installDirTrustedOk:
+    StrCmp $SkeinAllowCustomDir "1" installDirOk
+    StrCmp $INSTDIR "$PROGRAMFILES64\${INFO_PRODUCTNAME}" installDirOk
+    StrCpy $R0 "On a first install, Skein must be installed in $PROGRAMFILES64\${INFO_PRODUCTNAME}: the desktop's first-setup flow starts the daemon from the standard package directory. A custom subdirectory is supported only when upgrading an existing configured install. Nothing has been installed."
+    installDirRefuse:
+    DetailPrint "$R0"
+    IfSilent installDirFailedSilent
+    MessageBox MB_OK|MB_ICONSTOP "$R0"
+    installDirFailedSilent:
+    SetErrorLevel 1
+    Abort
+    installDirOk:
+
+    # 1. WebView2: install it if missing, then verify it from the
+    #    registry AFTER the bootstrapper ran. The wails macro's "ok"
+    #    label only means "already installed or launch attempted"; a
+    #    launch is not an install, so a missing runtime aborts here,
+    #    before any Skein file is copied.
     !insertmacro wails.webview2runtime
+    !insertmacro SkeinVerifyWebView2
 
     SetOutPath $INSTDIR
 
@@ -167,19 +354,21 @@ Section
     #      is already in $INSTDIR from a previous install, and a
     #      running skeind locks its exe, so the File lines below
     #      would fail on locked files. The helper stop tolerates
-    #      already-stopped (1062) and no-service (1060); a stop
-    #      failure is logged but does not abort — the file copy
-    #      will surface a genuinely locked file. A fresh install
-    #      has no helper yet, so this is skipped.
+    #      already-stopped (1062) and no-service (1060). Any other
+    #      failure aborts BEFORE a file is overwritten: carrying on
+    #      would replace some binaries around a service that is
+    #      still running. A fresh install has no helper yet, so this
+    #      is skipped.
     #   2. Copy the files (desktop via wails.files, system files
-    #      via the File lines below).
+    #      via the File lines below) and verify each one exists.
     #   3. If a network already exists, re-register + start the
-    #      service through the helper (install verb). On a fresh
-    #      install there is no config yet, and helper install fails
-    #      by design ("no system config: run init or import
-    #      first") — the service is registered by the bootstrap
-    #      flow when the user creates or joins a network, so the
-    #      installer skips it and says so instead of failing.
+    #      service through the helper (install verb, pinned to this
+    #      exact $INSTDIR\skeind.exe). On a fresh install there is
+    #      no config yet, and helper install fails by design ("no
+    #      system config: run init or import first") — the service
+    #      is registered by the bootstrap flow when the user creates
+    #      or joins a network, so the installer skips it and says so
+    #      instead of failing.
     # scripts/packaging-assert.sh enforces this order (stop before
     # the first File line; helper install gated on an existing
     # network config; Abort on helper-install failure).
@@ -187,7 +376,13 @@ Section
     installStopService:
         DetailPrint "Stopping running skein service for upgrade..."
         ExecWait '"$INSTDIR\skein-helper.exe" stop' $0
-        DetailPrint "Service stop exit: $0"
+        StrCmp $0 0 installCopyFiles
+        DetailPrint "Service stop failed (helper stop exit $0); aborting before overwriting installed files."
+        IfSilent installStopFailedSilent
+        MessageBox MB_OK|MB_ICONSTOP "Skein install failed: the running service could not be stopped (helper stop exit $0), so no files were replaced. Stop it manually ($SYSDIR\sc.exe stop skein) and run the installer again."
+        installStopFailedSilent:
+        SetErrorLevel 1
+        Abort
     installCopyFiles:
 
     !insertmacro wails.files
@@ -219,11 +414,41 @@ Section
     !ifndef ARG_WINTUN_LICENSE
         !error "Skein: ARG_WINTUN_LICENSE is required (fetch Wintun for the target arch first)"
     !endif
+    # Missing build inputs must fail compilation; runtime write failures
+    # are checked before service registration below.
+    ClearErrors
     File "/oname=skeind.exe" "${ARG_SKEIND_BINARY}"
+    IfErrors installCopyFailed
+    ClearErrors
     File "/oname=skein-helper.exe" "${ARG_SKEIN_HELPER_BINARY}"
+    IfErrors installCopyFailed
+    ClearErrors
     File "/oname=skein.exe" "${ARG_SKEIN_CLI_BINARY}"
+    IfErrors installCopyFailed
+    ClearErrors
     File "/oname=wintun.dll" "${ARG_WINTUN_DLL}"
+    IfErrors installCopyFailed
+    ClearErrors
     File "/oname=wintun-LICENSE.txt" "${ARG_WINTUN_LICENSE}"
+    IfErrors installCopyFailed
+
+    # Detect a copy failure even if NSIS swallowed the write error:
+    # a missing required file is a failed install, never a success.
+    IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 installCopyFailed
+    IfFileExists "$INSTDIR\skeind.exe" 0 installCopyFailed
+    IfFileExists "$INSTDIR\skein-helper.exe" 0 installCopyFailed
+    IfFileExists "$INSTDIR\skein.exe" 0 installCopyFailed
+    IfFileExists "$INSTDIR\wintun.dll" 0 installCopyFailed
+    IfFileExists "$INSTDIR\wintun-LICENSE.txt" 0 installCopyFailed
+    Goto installCopyOk
+    installCopyFailed:
+        DetailPrint "Copying the Skein files into $INSTDIR failed."
+        IfSilent installCopyFailedSilent
+        MessageBox MB_OK|MB_ICONSTOP "Skein install failed: a file could not be written to $INSTDIR. Close anything using these files, make sure you are running the installer as administrator, and try again. The installed files may be incomplete."
+        installCopyFailedSilent:
+        SetErrorLevel 1
+        Abort
+    installCopyOk:
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -238,12 +463,16 @@ Section
     IfFileExists "$R9\Skein\skein.toml" installRegisterService installFreshInstall
     installRegisterService:
         DetailPrint "Registering and starting the skein service..."
-        ExecWait '"$INSTDIR\skein-helper.exe" install' $0
+        # --daemon pins registration to the exact installed binary. The
+        # helper otherwise searches only its package directory, which
+        # is wrong for a user-chosen subdirectory of %ProgramFiles%.
+        ExecWait '"$INSTDIR\skein-helper.exe" install --daemon "$INSTDIR\skeind.exe"' $0
         StrCmp $0 0 installServiceOk
         DetailPrint "Skein service registration failed (helper install exit $0)."
         IfSilent installServiceFailedSilent
-        MessageBox MB_OK "Skein install failed: the helper could not register and start the service (helper install exit $0). The files are installed in $INSTDIR. Run this from an elevated prompt to finish the install: $\"$INSTDIR\skein-helper.exe$\" install"
+        MessageBox MB_OK|MB_ICONSTOP "Skein install failed: the helper could not register and start the service (helper install exit $0). The files are installed in $INSTDIR. Run this from an elevated prompt to finish the install: $\"$INSTDIR\skein-helper.exe$\" install --daemon $\"$INSTDIR\skeind.exe$\""
     installServiceFailedSilent:
+        SetErrorLevel 1
         Abort
     installServiceOk:
         DetailPrint "Skein service is running."
@@ -251,6 +480,12 @@ Section
     installFreshInstall:
         DetailPrint "No network configured yet; the service will be registered when you create or join a network."
     installServiceDone:
+
+    # Record the exact directory for the next upgrade (.onInit reads it
+    # back and revalidates it). wails.writeUninstaller owns the rest of
+    # the key and runs after this.
+    SetRegView 64
+    WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
 
     !insertmacro wails.writeUninstaller
 SectionEnd
@@ -264,10 +499,10 @@ Section "uninstall"
     !insertmacro SkeinDesktopProbe Uninstall
     StrCmp $SkeinDesktopState "closed" unSkeinDesktopOk
     StrCmp $SkeinDesktopState "running" 0 unSkeinDesktopUnknown
-    StrCpy $R0 "Skein Desktop is still running. Close it (quit it from its window, or right-click its taskbar entry and choose Close), then run the uninstaller again. Nothing has been removed yet."
+    StrCpy $R0 "Skein Desktop is still running. Quit it from its system-tray menu, then run the uninstaller again. Nothing has been removed yet."
     Goto unSkeinDesktopRefuse
     unSkeinDesktopUnknown:
-    StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Close Skein Desktop and run the uninstaller again; if this keeps happening, reboot and retry. Nothing has been removed yet."
+    StrCpy $R0 "Could not check whether Skein Desktop is running (tasklist exit $0). Quit Skein Desktop from its system-tray menu and run the uninstaller again; if this keeps happening, reboot and retry. Nothing has been removed yet."
     unSkeinDesktopRefuse:
     DetailPrint "$R0"
     IfSilent unSkeinDesktopSilent
@@ -324,7 +559,11 @@ Section "uninstall"
     helperPresent:
         ExecWait '"$INSTDIR\skein-helper.exe" uninstall' $0
         ${If} $0 != 0
-            MessageBox MB_OK "Skein uninstall failed: the helper could not stop and remove the service (exit $0). Nothing was deleted, so no orphaned service is left behind. Fix the service state and run the uninstaller again."
+            DetailPrint "Skein uninstall failed: helper uninstall exit $0; nothing was deleted."
+            IfSilent unHelperFailedSilent
+            MessageBox MB_OK|MB_ICONSTOP "Skein uninstall failed: the helper could not stop and remove the service (exit $0). Nothing was deleted, so no orphaned service is left behind. Fix the service state and run the uninstaller again."
+            unHelperFailedSilent:
+            SetErrorLevel 1
             Abort
         ${EndIf}
         Goto helperDone
@@ -367,8 +606,10 @@ Section "uninstall"
         DetailPrint "Skein configuration kept at %ProgramData%\Skein"
     purgeDone:
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath (this app's data, not the shared runtime)
 
+    # Only this app's own directory: the shared WebView2 Runtime
+    # installation and the Wintun driver/adapter are never removed here.
     RMDir /r $INSTDIR
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"

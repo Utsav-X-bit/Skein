@@ -41,6 +41,12 @@ export const StateInterval = 5_000;
 const StaleAfterMs = 15_000;
 const ActiveWindowMs = 10_000;
 
+/** Attach a straight link to the two card sides facing one another. */
+export function facingSides(dx: number, dy: number): [string, string] {
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? ["right", "left"] : ["left", "right"];
+  return dy > 0 ? ["bottom", "top"] : ["top", "bottom"];
+}
+
 // computeRate turns two cumulative counter samples into per-second rates.
 // A null result means the window proves nothing: no previous sample, no
 // elapsed time, a daemon restart (uptime went backwards) or a counter rollback.

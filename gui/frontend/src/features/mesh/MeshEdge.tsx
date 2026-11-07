@@ -1,4 +1,4 @@
-import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, getStraightPath, type Edge, type EdgeProps } from "@xyflow/react";
 
 export type MeshEdgeData = { flowing: boolean; color: string };
 export type MeshFlowEdge = Edge<MeshEdgeData, "mesh">;
@@ -14,20 +14,16 @@ export function MeshEdge({
   sourceY,
   targetX,
   targetY,
-  sourcePosition,
-  targetPosition,
   markerEnd,
   interactionWidth,
   style,
   data,
 }: EdgeProps<MeshFlowEdge>) {
-  const [edgePath] = getBezierPath({
+  const [edgePath] = getStraightPath({
     sourceX,
     sourceY,
-    sourcePosition,
     targetX,
     targetY,
-    targetPosition,
   });
   return (
     <>

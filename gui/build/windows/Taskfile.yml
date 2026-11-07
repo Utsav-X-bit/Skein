@@ -139,8 +139,13 @@ tasks:
       - task: build
       - task: build:system-binaries
     preconditions:
-      - sh: '[ "{{.INSTALL_SCOPE}}" = "user" ] || [ "{{.INSTALL_SCOPE}}" = "machine" ]'
-        msg: "INSTALL_SCOPE must be 'user' or 'machine', got '{{.INSTALL_SCOPE}}'"
+      # Skein is a machine-wide VPN service (SYSTEM daemon, Wintun
+      # driver, admin-only %ProgramFiles% payload). A per-user package
+      # would produce an installer that cannot register the service or
+      # satisfy the helper's admin-only parent check, so refuse it at
+      # build time instead of shipping a broken package.
+      - sh: '[ "{{.INSTALL_SCOPE}}" = "machine" ]'
+        msg: "INSTALL_SCOPE must be 'machine' (got '{{.INSTALL_SCOPE}}'). Per-user installs are not supported: Skein installs machine-wide under %ProgramFiles% with admin rights."
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
@@ -156,14 +161,17 @@ tasks:
         {{end}}
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun-LICENSE.txt" project.nsi
+        "{{.MAKENSIS_BIN}}" -DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}\{{.BIN_DIR}}\wintun-staging\wintun-LICENSE.txt" project.nsi
         {{else}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun-LICENSE.txt" project.nsi
+        "{{.MAKENSIS_BIN}}" -DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_SKEIND_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skeind.exe" -DARG_SKEIN_HELPER_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein-helper.exe" -DARG_SKEIN_CLI_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/skein.exe" -DARG_WINTUN_DLL="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun.dll" -DARG_WINTUN_LICENSE="{{.ROOT_DIR}}/{{.BIN_DIR}}/wintun-staging/wintun-LICENSE.txt" project.nsi
         {{end}}
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
       ARG_FLAG: '{{if eq .ARCH "amd64"}}AMD64{{else}}ARM64{{end}}'
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
+      # Override MAKENSIS for a compiler not on PATH (e.g. an extracted
+      # NSIS tree). NSISDIR is read from the environment by makensis.
+      MAKENSIS_BIN: '{{.MAKENSIS | default "makensis"}}'
 
   create:msix:package:
     summary: Creates an MSIX package

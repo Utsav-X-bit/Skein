@@ -597,6 +597,42 @@ func TestUnknownPeerIsAcceptedWhenItProvesTheSecret(t *testing.T) {
 	}
 }
 
+func TestDuplicateCandidateHandshakesPreserveReadySession(t *testing.T) {
+	p := newPair(t)
+	bm, err := NewManager(p.bIdent, p.psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm.SetAcceptUnknown(true)
+	attempt, msg1, err := p.a.Begin(p.bID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, _, err := bm.HandleHandshake(p.aID, msg1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.a.HandleReply(p.bID, attempt, reply); err != nil {
+		t.Fatal(err)
+	}
+	// Copies from other candidate addresses can arrive before the confirmation.
+	for range 3 {
+		_, _, _ = bm.HandleHandshake(p.aID, msg1)
+	}
+	if err := confirmPair(t, p.a, p.bID, bm, p.aID, attempt); err != nil {
+		t.Fatalf("duplicate candidates broke confirmation: %v", err)
+	}
+	ad, plaintext := []byte("data-ad"), []byte("after duplicate handshakes")
+	epoch, counter, ciphertext, err := p.a.Seal(p.bID, ad, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bm.Open(p.aID, epoch, counter, ad, ciphertext)
+	if err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("joined data = %q, error = %v", got, err)
+	}
+}
+
 func TestUnknownPeerWithMismatchedIDIsRejected(t *testing.T) {
 	p := newPair(t)
 	bm, err := NewManager(p.bIdent, p.psk)

@@ -36,7 +36,7 @@ UNIT=gui/build/linux/nfpm/skein.service
 # build failure; this check makes a deleted File line one too.
 grep -q 'wails.files' "$NSIS" || note "NSIS: wails.files (desktop exe) missing"
 for f in skeind.exe skein-helper.exe skein.exe wintun.dll wintun-LICENSE.txt; do
-	grep -q "File \"/oname=$f\"" "$NSIS" || note "NSIS: File line for $f missing"
+	grep -q "File .*\"/oname=$f\"" "$NSIS" || note "NSIS: File line for $f missing"
 done
 for d in ARG_SKEIND_BINARY ARG_SKEIN_HELPER_BINARY ARG_SKEIN_CLI_BINARY ARG_WINTUN_DLL ARG_WINTUN_LICENSE; do
 	grep -q "!ifndef $d" "$NSIS" || note "NSIS: !error guard for $d missing"
@@ -60,7 +60,7 @@ grep -q 'InstallDir "\$PROGRAMFILES64\\\${INFO_COMPANYNAME}\\\${INFO_PRODUCTNAME
 instsec=$(awk '/^Section$/,/^SectionEnd/' "$NSIS")
 [ -n "$instsec" ] || note "NSIS install: install section not found"
 stop_line=$(printf '%s' "$instsec" | grep -n 'skein-helper.exe" stop' | head -1 | cut -d: -f1)
-first_file_line=$(printf '%s' "$instsec" | grep -n 'File "/oname=' | head -1 | cut -d: -f1)
+first_file_line=$(printf '%s' "$instsec" | grep -n 'File .*"/oname=' | head -1 | cut -d: -f1)
 [ -n "$stop_line" ] || note "NSIS install: helper stop before file copy missing (upgrade over a running service locks the binaries)"
 if [ -n "$stop_line" ] && [ -n "$first_file_line" ] && [ "$stop_line" -gt "$first_file_line" ]; then
 	note "NSIS install: helper stop runs AFTER the first File line (service must stop first)"

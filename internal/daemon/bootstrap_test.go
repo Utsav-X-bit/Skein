@@ -45,6 +45,8 @@ func newBootstrapFixture(t *testing.T, verb string) *bootstrapFixture {
 	t.Helper()
 	t.Setenv("SKEIN_NO_STUN", "1")
 	dir := t.TempDir()
+	// Commit clears the connection pause flag; keep it inside the fixture.
+	t.Setenv("SKEIN_STATE_FILE", filepath.Join(dir, "state.json"))
 	cfgPath := filepath.Join(dir, "skein.toml")
 	keyPath := filepath.Join(dir, "identity.key")
 	accPath := filepath.Join(dir, "access")
@@ -78,6 +80,23 @@ func (f *bootstrapFixture) call(t *testing.T, method, path string, caller api.Ca
 }
 
 func kernelCaller() api.Caller { return api.Caller{UID: 1000, Transport: api.TransportKernel} }
+
+func TestBootstrapClearsPersistedPause(t *testing.T) {
+	f := newBootstrapFixture(t, bootstrap.VerbInit)
+	state := filepath.Join(f.dir, "connection-state.json")
+	t.Setenv("SKEIN_STATE_FILE", state)
+	if err := os.WriteFile(state, []byte(`{"paused":true,"paused_reason":"user"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.call(t, "POST", "/api/v1/bootstrap/init", kernelCaller(),
+		`{"token":`+jsonStr(f.token)+`,"name":"resumed","stun":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("init = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatal("a new network must not inherit the old connection pause")
+	}
+}
 
 func TestBootstrapStatusAndRefusedEndpoints(t *testing.T) {
 	f := newBootstrapFixture(t, bootstrap.VerbInit)
@@ -448,6 +467,8 @@ func TestBootstrapServeOverUnixSocket(t *testing.T) {
 	}
 	t.Setenv("SKEIN_NO_STUN", "1")
 	dir := t.TempDir()
+	// Commit clears the connection pause flag; keep it inside the fixture.
+	t.Setenv("SKEIN_STATE_FILE", filepath.Join(dir, "state.json"))
 	cfgPath := filepath.Join(dir, "skein.toml")
 	keyPath := filepath.Join(dir, "identity.key")
 	accPath := filepath.Join(dir, "access")
@@ -569,6 +590,8 @@ func startServedBootstrap(t *testing.T, verb string) *servedBootstrap {
 	}
 	t.Setenv("SKEIN_NO_STUN", "1")
 	dir := t.TempDir()
+	// Commit clears the connection pause flag; keep it inside the fixture.
+	t.Setenv("SKEIN_STATE_FILE", filepath.Join(dir, "state.json"))
 	cfgPath := filepath.Join(dir, "skein.toml")
 	keyPath := filepath.Join(dir, "identity.key")
 	accPath := filepath.Join(dir, "access")
@@ -963,6 +986,8 @@ func TestBootstrapServeCancellationStopsListener(t *testing.T) {
 	}
 	t.Setenv("SKEIN_NO_STUN", "1")
 	dir := t.TempDir()
+	// Commit clears the connection pause flag; keep it inside the fixture.
+	t.Setenv("SKEIN_STATE_FILE", filepath.Join(dir, "state.json"))
 	cfgPath := filepath.Join(dir, "skein.toml")
 	keyPath := filepath.Join(dir, "identity.key")
 	accPath := filepath.Join(dir, "access")

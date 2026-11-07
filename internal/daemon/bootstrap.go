@@ -447,6 +447,12 @@ func (b *Bootstrap) commit(cfg conf.Config, id identity.Identity, callerID strin
 	if err := b.mgr.Delete(); err != nil {
 		return fmt.Errorf("bootstrap: delete state: %w", err)
 	}
+	// A reset leaves the connection pause flag behind. A newly created or
+	// joined network must start connected; honoring that stale flag made a
+	// fresh member come up paused with no dataplane at all.
+	if err := os.Remove(stateFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("bootstrap: clear paused state: %w", err)
+	}
 	return nil
 }
 

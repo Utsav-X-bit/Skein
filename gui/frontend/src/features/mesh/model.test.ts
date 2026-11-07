@@ -6,6 +6,7 @@ import {
   bucketActivities,
   computeRate,
   dedupeActivities,
+  facingSides,
   formatAge,
   formatBytesPerSec,
   formatRate,
@@ -49,6 +50,15 @@ const activity = (over: Partial<Activity> = {}): Activity => ({
   expires_ms: 60_000,
   path: null,
   ...over,
+});
+
+it("attaches straight links to facing card sides in every direction", () => {
+  expect(facingSides(0, -150)).toEqual(["top", "bottom"]);
+  expect(facingSides(0, 150)).toEqual(["bottom", "top"]);
+  expect(facingSides(150, 0)).toEqual(["right", "left"]);
+  expect(facingSides(-150, 0)).toEqual(["left", "right"]);
+  expect(facingSides(150, -40)).toEqual(["right", "left"]);
+  expect(facingSides(-40, 150)).toEqual(["bottom", "top"]);
 });
 
 describe("computeRate", () => {

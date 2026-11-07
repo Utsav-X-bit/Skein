@@ -700,8 +700,9 @@ func (m *Manager) HandleHandshake(peerID uint64, payload []byte) (reply []byte, 
 	}
 	done, err := hs.Read(payload)
 	if err != nil {
-		if !hs.initiator {
-			// Never let a forged message-one delete our own outbound attempt.
+		// Preserve outbound attempts and completed responders. A duplicate
+		// message one must not replace keys already sent to the initiator.
+		if !hs.initiator && !hs.done {
 			ps.mu.Lock()
 			delete(ps.pending, attempt)
 			ps.mu.Unlock()

@@ -323,11 +323,10 @@ Skein ships as five pieces:
 | `skein-desktop` | Wails desktop control surface (unprivileged) |
 | `wintun.dll` | Windows tunnel driver (Windows only) |
 
-There are exactly two ways to install Skein. **Method 1** is the
-universal, complete Windows setup executable: one artifact that
-installs all five pieces. **Method 2** builds from source, with a
-Linux path and a Windows path. Both end at the same place: create or
-join a network (see [Usage](#usage)).
+For Linux, use the automatic Bash installer below. For Windows 10/11,
+**Method 1** is a complete setup executable. **Method 2** retains the
+manual source-build steps for developers. Every path finishes by creating
+or joining a network (see [Usage](#usage)).
 
 Three facts apply to every install:
 
@@ -351,8 +350,49 @@ Three facts apply to every install:
   `secure_path`) and `C:\Program Files\Skein\skein-helper.exe` on
   Windows.
 
+### Automatic Linux installer (recommended)
+
+From this checkout, run as your normal desktop user:
+
+```bash
+bash scripts/install-linux.sh
+```
+
+The script detects Arch-family, Debian 13+/Ubuntu 24.04+, and
+Fedora 40+/RHEL 10+ systems with systemd and GTK4/WebKitGTK 6.0. It installs
+the distro dependencies, builds all four executables as your normal user
+with pinned Wails v3.1.0, then uses sudo for root-owned binaries, the helper,
+polkit policy, desktop entry/icon and socket-access group. Older distro
+Node versions use a private, SHA-256-checked Node 22 download; system
+Go/Node installations are not overwritten. The distro Go toolchain may
+download the Go version required by `go.mod`.
+
+```bash
+bash scripts/install-linux.sh --dry-run
+bash scripts/install-linux.sh --binary-dir gui/bin  # compatible prebuilt binaries
+```
+
+The script can also be copied out of the checkout and run standalone:
+it clones the official repository's `main` into a private temporary
+directory, or a branch/tag/commit selected with `--source-ref`. Unpublished
+changes require a local checkout (`--source-dir /path/to/Skein`); standalone
+mode cannot fetch an unpushed branch. When invoked as root without sudo,
+use `--build-user USER` so builds still run unprivileged.
+
+On upgrade, validation/builds finish before the service is stopped.
+Config, identity and access grants are kept; the helper re-registers and
+starts the service, and the script verifies running+enabled. On a first
+install, launch `skein-desktop` as your normal user and choose **Create**
+or **Join**; that choice registers the service and applies firewall rules
+from the actual network config. The installer never invents a network.
+Where Ubuntu restricts user namespaces, it installs a narrow AppArmor
+profile for the desktop rather than disabling the global restriction.
+Quit the desktop from its tray menu before upgrading.
+
 ### Method 1 — Windows setup executable (recommended)
 
+The same x64 setup executable supports Windows 10 and Windows 11. It is
+machine-wide (Administrator approval required), not a per-user VPN install.
 The setup executable is the universal, complete install: one artifact
 ships the desktop, `skeind.exe`, `skein-helper.exe`, `skein.exe`, and
 the Wintun DLL and licence, and installs them into
@@ -400,7 +440,8 @@ What it does:
   only when `%ProgramData%\Skein\skein.toml` already exists — runs
   `skein-helper.exe install` to re-register and start it. A silent
   install aborts if that fails; the interactive installer shows the
-  full path and command to finish by hand.
+  full path and command to finish by hand. Quit the desktop from its
+  system-tray menu before upgrading; closing its window only hides it.
 - On a first install there is no config, so it deliberately skips
   service registration and says so. Open the app and create or join a
   network; that bootstrap step registers the service.
@@ -410,6 +451,9 @@ What it does:
   the helper's `uninstall` verb first, so no orphaned service is left
   behind; without purge, config, identity, and access files are kept.
   `/S` is silent and never purges.
+- Installs WebView2 when needed and verifies that the runtime is present
+  before copying Skein. The finish-page launch uses the interactive shell
+  so the desktop does not inherit the installer's elevated token.
 
 Launch `C:\Program Files\Skein\skein-desktop.exe` as your normal user
 and choose **Create a network** or **Join a network** (see

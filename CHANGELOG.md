@@ -31,6 +31,26 @@ required them.
   Retry-stop-only partial completion, one-time bootstrap secret.
 - Command palette, session notifications, cross-surface filters.
 
+### Fixed
+
+- Duplicate multi-address handshakes no longer delete a completed responder
+  handshake, which previously left a joining peer permanently unadmitted.
+- Handshake replies to an address owned by a stale down peer are addressed to
+  the sender instead of the old peer ID; only up/degraded peers count as
+  relays.
+- Create/join now clears a persisted connection pause, so a new network does
+  not start with no dataplane after a reset.
+- Mesh cards expose connection handles and use straight links between facing
+  sides; the map refits when the layout changes.
+
+### Added
+
+- `scripts/install-linux.sh` (Arch/Debian/RPM families, prebuilt or source,
+  standalone clone, dry-run) and `scripts/install-linux-test.sh`.
+- Windows setup hardening: WebView2 verified after installation, trusted
+  install-directory validation, controlled copy/stop failures, tray-aware
+  running-desktop refusal, machine-wide-only builds.
+
 ### Changed
 
 - The desktop starts maximised on every platform so a 1280x800 window is not
@@ -39,6 +59,8 @@ required them.
   service/config cadence is 30 s.
 - The mesh node card uses explicit theme values inside React Flow, where
   inherited custom properties resolved to the light palette in WebKit.
+- Mesh cards now expose invisible connection handles; links render as straight
+  segments between facing card sides instead of missing links or Bézier detours.
 
 ### Deferred
 
@@ -59,5 +81,7 @@ required them.
   fresh source install (Overview, Security with kernel/secret caller and SID
   grant, Activity, Settings) followed by scoped removal with SSH/PATH/firewall
   invariants intact.
-- Not exercised: multi-node/relay traffic, upgrade/NSIS packaging, Linux
-  distribution packages.
+- Phase 4: real Linux↔Windows direct mesh, bidirectional overlay ping and
+  sustained 240/240 packet delivery; live throughput and opt-in local history.
+  Native Linux rendering verified the repaired straight map link.
+- Real three-node relay and Windows 11 runtime remain unexercised.
