@@ -99,6 +99,31 @@ type SecurityStatus struct {
 	FirewallManager string   `json:"firewall_manager"`
 }
 
+// CallerSecurity is the security screen's view of the calling process. It
+// carries the kernel identity and the resolved role, never a token or a
+// secret. IsRoot marks the implicit-secret callers (Unix root, Windows
+// SYSTEM / Administrators) that no grant line applies to.
+type CallerSecurity struct {
+	ID        string `json:"id"`
+	Transport string `json:"transport"`
+	Role      string `json:"role"`
+	IsRoot    bool   `json:"is_root"`
+}
+
+// GrantRecord is one authorisation-table entry: an identity (uid: or SID)
+// and the role it holds.
+type GrantRecord struct {
+	Identity string `json:"identity"`
+	Role     string `json:"role"`
+}
+
+// AccessGrantsView is the secret-gated grants read: who is asking and the
+// whole live identity→role table the daemon authorises against.
+type AccessGrantsView struct {
+	Caller CallerSecurity `json:"caller"`
+	Grants []GrantRecord  `json:"grants"`
+}
+
 // DiagnosticBundle is the redacted support export.
 type DiagnosticBundle struct {
 	GeneratedMS int64      `json:"generated_ms"`
