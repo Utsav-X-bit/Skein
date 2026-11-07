@@ -40,6 +40,8 @@ export function Record(sample: $models.HistorySample): $CancellablePromise<void>
 
 /**
  * Samples returns recorded samples, optionally limited to the last N minutes.
+ * Rows past the retention window are dropped even when no append has trimmed
+ * the file yet, so a long-idle app never reports samples it would discard.
  */
 export function Samples(r: $models.HistoryRange): $CancellablePromise<$models.HistorySample[] | null> {
     return $Call.ByID(3449682178, r);

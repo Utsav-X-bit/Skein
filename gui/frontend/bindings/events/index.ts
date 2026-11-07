@@ -19,6 +19,11 @@ export const ActivitySample = "activity:sample";
 export const ConnectionChanged = "connection:changed";
 
 /**
+ * Name of the custom event "dialer_fallback".
+ */
+export const DialerFallback = "dialer_fallback";
+
+/**
  * Name of the custom event "leave_dataplane_stop_failed".
  */
 export const LeaveDataplaneStopFailed = "leave_dataplane_stop_failed";
@@ -54,9 +59,19 @@ export const PeerRejoined = "peer:rejoined";
 export const PeerAdded = "peer_added";
 
 /**
+ * Name of the custom event "peer_departed".
+ */
+export const PeerDeparted = "peer_departed";
+
+/**
  * Name of the custom event "peer_discovered".
  */
 export const PeerDiscovered = "peer_discovered";
+
+/**
+ * Name of the custom event "peer_down".
+ */
+export const PeerDown = "peer_down";
 
 /**
  * Name of the custom event "peer_joined".

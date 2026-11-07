@@ -17,6 +17,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "activity:sample": api$0.Activity;
             "connection:changed": api$0.Connection;
+            "dialer_fallback": api$0.Event;
             "leave_dataplane_stop_failed": api$0.Event;
             "log:entry": api$0.LogEntry;
             "name_changed": api$0.Event;
@@ -24,7 +25,9 @@ declare module "@wailsio/runtime" {
             "peer:probe": api$0.ProbeResult;
             "peer:rejoined": api$0.Event;
             "peer_added": api$0.Event;
+            "peer_departed": api$0.Event;
             "peer_discovered": api$0.Event;
+            "peer_down": api$0.Event;
             "peer_joined": api$0.Event;
             "peer_removed": api$0.Event;
             "peer_up": api$0.Event;
