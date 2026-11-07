@@ -40,6 +40,10 @@ required them.
   relays.
 - Create/join now clears a persisted connection pause, so a new network does
   not start with no dataplane after a reset.
+- Windows first setup now launches the helper through UAC and returns the
+  bootstrap token over a random, user-only named pipe, so the normal
+  unprivileged desktop can create or join without manual elevation. The
+  helper verifies that the pipe server is the desktop before writing.
 - Mesh cards expose connection handles and use straight links between facing
   sides; the map refits when the layout changes.
 
