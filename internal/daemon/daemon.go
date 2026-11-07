@@ -54,6 +54,10 @@ type Daemon struct {
 	http  *http.Server
 	start time.Time
 
+	// handoff is the control listener bound by bootstrap mode, adopted
+	// by Run instead of rebinding it (B16).
+	handoff *ControlHandoff
+
 	events      chan api.Event
 	hub         *api.Hub
 	logs        *logRing
@@ -346,6 +350,11 @@ func (d *Daemon) sessionEstablished(peerID uint64) {
 	d.emitPeerChanged()
 	d.emitRouteChanged()
 }
+
+// AdoptControlHandoff makes Run serve the control API on the listener
+// bootstrap mode already bound, instead of closing and rebinding it.
+// It must be called before Run.
+func (d *Daemon) AdoptControlHandoff(h *ControlHandoff) { d.handoff = h }
 
 // Run runs every loop until ctx is cancelled. The dataplane (interface,
 // routes, TUN, link, engine) is owned by connLoop so it can be paused and

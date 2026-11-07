@@ -14,10 +14,12 @@ import (
 )
 
 // Serve is the Windows counterpart of bootstrap_serve_unix.go: it
-// binds the bootstrap named pipe and serves ONLY the bootstrap
-// handler until one bootstrap succeeds or ctx is cancelled. Same
-// guarantees: no TUN, no UDP, no mDNS, no firewall, graceful
-// shutdown after the successful response. Windows runtime is
+// binds the bootstrap named pipe and serves ONLY the bootstrap handler
+// until one bootstrap succeeds or ctx is cancelled. On success it keeps
+// the pipe bound in a ControlHandoff for the normal daemon to adopt, so
+// a client that connects immediately after success does not see "The
+// pipe has been ended" while the normal pipe is being created. Same
+// guarantees: no TUN, no UDP, no mDNS, no firewall. Windows runtime is
 // compile-checked only here (M3 Tier 5).
 func (b *Bootstrap) Serve(ctx context.Context) (BootstrapOutcome, error) {
 	if b.opts.Pipe == "" {
@@ -31,44 +33,35 @@ func (b *Bootstrap) Serve(ctx context.Context) (BootstrapOutcome, error) {
 		return BootstrapOutcome{}, fmt.Errorf("daemon: bootstrap control pipe %s: %w", b.opts.Pipe, err)
 	}
 	srv := &http.Server{
-		Handler:           b.Handler(),
 		ConnContext:       api.CallerContext,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
-	done := make(chan struct{})
-	go func() {
-		for {
-			if _, ok := b.Outcome(); ok {
-				close(done)
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}
-	}()
 	serveErr := make(chan error, 1)
+	h := newControlHandoff(srv, ln, b.Handler(), "", serveErr)
+	b.mu.Lock()
+	b.handoff = h
+	b.mu.Unlock()
 	go func() {
 		serveErr <- srv.Serve(ln)
 	}()
 	select {
-	case <-done:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = srv.Shutdown(shutdownCtx)
-		cancel()
-		<-serveErr
+	case <-b.success:
 		out, _ := b.Outcome()
 		return out, nil
+	case <-b.closed:
+		if out, ok := b.Outcome(); ok {
+			return out, nil
+		}
+		h.Stop()
+		return BootstrapOutcome{}, context.Canceled
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = srv.Shutdown(shutdownCtx)
-		cancel()
-		<-serveErr
+		if out, ok := b.Outcome(); ok {
+			return out, nil
+		}
+		h.Stop()
 		return BootstrapOutcome{}, ctx.Err()
 	}
 }

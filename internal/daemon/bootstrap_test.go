@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -437,8 +439,9 @@ func TestBootstrapValidationFailureDoesNotConsumeToken(t *testing.T) {
 // TestBootstrapServeOverUnixSocket exercises the real bootstrap
 // listener: a client dialing the socket is identified by SO_PEERCRED,
 // so the token must be minted for the test process's own uid. On
-// success Serve shuts down gracefully and returns the outcome for
-// the in-process transition.
+// success Serve returns the outcome and keeps the transport bound in a
+// handoff (the in-process transition adopts it); Close stops it when no
+// normal daemon takes over.
 func TestBootstrapServeOverUnixSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket test")
@@ -547,4 +550,463 @@ func TestBootstrapNoMeshActivityInHandler(t *testing.T) {
 	// checks the file set only, not lock release — lock release is
 	// covered by Close() in app.RunBootstrap's transition.)
 	_ = context.Background
+}
+
+// servedBootstrap is a bootstrap daemon serving over a real Unix
+// socket. Tests that need the listener keep their own client so the
+// dial hook can prove when a request actually reached the transport.
+type servedBootstrap struct {
+	bs       *Bootstrap
+	token    string
+	socket   string
+	serveErr chan error
+}
+
+func startServedBootstrap(t *testing.T, verb string) *servedBootstrap {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket test")
+	}
+	t.Setenv("SKEIN_NO_STUN", "1")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "skein.toml")
+	keyPath := filepath.Join(dir, "identity.key")
+	accPath := filepath.Join(dir, "access")
+	statePath := filepath.Join(dir, "bootstrap.json")
+	socketPath := filepath.Join(dir, "control.sock")
+	caller := fmt.Sprintf("uid:%d", os.Getuid())
+	raw, err := bootstrap.Mint(statePath, caller, verb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs, err := NewBootstrap(BootstrapOptions{
+		ConfigPath: cfgPath, IdentityPath: keyPath,
+		StatePath: statePath, AccessPath: accPath, Socket: socketPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(func() {
+		cancel()
+		_ = bs.Close()
+	})
+	serveErr := make(chan error, 1)
+	go func() {
+		_, err := bs.Serve(ctx)
+		serveErr <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bootstrap socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return &servedBootstrap{
+		bs: bs, token: base64.RawURLEncoding.EncodeToString(raw),
+		socket: socketPath, serveErr: serveErr,
+	}
+}
+
+// dialClient dials the bootstrap socket directly (this test lives in the
+// daemon package, so it does not run the client's server verification).
+// Each successful dial is reported on dialed.
+func dialClient(socketPath string, dialed chan<- struct{}) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			if err == nil {
+				select {
+				case dialed <- struct{}{}:
+				default:
+				}
+			}
+			return conn, err
+		},
+	}}
+}
+
+func drainDialed(dialed <-chan struct{}) {
+	for {
+		select {
+		case <-dialed:
+		default:
+			return
+		}
+	}
+}
+
+func postBootstrapInit(t *testing.T, client *http.Client, token string) {
+	t.Helper()
+	body := `{"token":` + jsonStr(token) + `,"name":"handoff","stun":false}`
+	resp, err := client.Post("http://bootstrap/api/v1/bootstrap/init", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		t.Fatalf("bootstrap init = %d: %s", resp.StatusCode, msg)
+	}
+}
+
+func waitServeDone(t *testing.T, s *servedBootstrap) {
+	t.Helper()
+	select {
+	case err := <-s.serveErr:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after a successful bootstrap")
+	}
+}
+
+// B16: after bootstrap success the control transport must stay bound.
+// A client that connects immediately is held until the normal handler
+// is adopted and then served by it — never by bootstrap status and
+// never with "pipe/socket ended".
+func TestBootstrapHandoffServesNormalHandlerAfterSuccess(t *testing.T) {
+	s := startServedBootstrap(t, bootstrap.VerbInit)
+	dialed := make(chan struct{}, 8)
+	client := dialClient(s.socket, dialed)
+	postBootstrapInit(t, client, s.token)
+	waitServeDone(t, s)
+	drainDialed(dialed)
+
+	h := s.bs.TakeHandoff()
+	if h == nil {
+		t.Fatal("Serve success must leave a control handoff")
+	}
+	defer h.Stop()
+
+	type result struct {
+		status int
+		body   string
+		err    error
+	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := client.Get("http://bootstrap/api/v1/status")
+		if err != nil {
+			got <- result{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		got <- result{status: resp.StatusCode, body: string(body)}
+	}()
+	select {
+	case <-dialed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("status request could not dial the still-bound control socket")
+	}
+	// The request must not be answered from bootstrap mode while the
+	// transition is pending: it stays held until the normal handler is
+	// adopted.
+	select {
+	case r := <-got:
+		t.Fatalf("status was answered before adoption: %+v", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+	h.Adopt(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"state":"normal"}`)
+	}))
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Fatalf("status during transition: %v", r.err)
+		}
+		if r.status != http.StatusOK || !strings.Contains(r.body, `"state":"normal"`) {
+			t.Fatalf("status after success = %d %s, want the adopted normal handler", r.status, r.body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("status request stayed blocked after the handler was adopted")
+	}
+}
+
+// stubListener satisfies net.Listener for the handoff failure test; no
+// connection is ever accepted.
+type stubListener struct{}
+
+func (stubListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (stubListener) Close() error              { return nil }
+func (stubListener) Addr() net.Addr            { return stubAddr{} }
+
+type stubAddr struct{}
+
+func (stubAddr) Network() string { return "stub" }
+func (stubAddr) String() string  { return "stub" }
+
+// A failed transition must resolve waiting clients with an explicit 503,
+// not a dead transport or bootstrap state. This exercises the waiter
+// directly (no network race): whether the request starts before or after
+// Fail, it must see the failure, never bootstrap mode.
+func TestBootstrapHandoffFailureReturns503(t *testing.T) {
+	serveErr := make(chan error, 1)
+	serveErr <- http.ErrServerClosed
+	h := newControlHandoff(&http.Server{}, &stubListener{}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), "", serveErr)
+	h.BeginTransition()
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		h.awaitReady(rec, httptest.NewRequest("GET", "/api/v1/status", nil))
+		close(done)
+	}()
+	h.Fail(errors.New("transition refused"))
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting request was not released by the failure")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed transition = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "transition refused") {
+		t.Fatalf("failed transition body = %q, want the failure reason", rec.Body.String())
+	}
+}
+
+// reset --keep-identity preserves identity.key; the next init must reuse
+// that key (same node ID and public key) instead of generating one.
+func TestBootstrapInitReusesPreservedIdentity(t *testing.T) {
+	kept, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newBootstrapFixture(t, bootstrap.VerbInit)
+	if err := os.WriteFile(f.keyPath, kept.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.call(t, "POST", "/api/v1/bootstrap/init", kernelCaller(),
+		`{"token":`+jsonStr(f.token)+`,"name":"kept","stun":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("init with preserved identity = %d: %s", rec.Code, rec.Body.String())
+	}
+	var res BootstrapResult
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.NodeID != fmt.Sprintf("%016x", kept.ID) {
+		t.Fatalf("node id = %s, want preserved %016x", res.NodeID, kept.ID)
+	}
+	key, err := os.ReadFile(f.keyPath)
+	if err != nil || !bytes.Equal(key, kept.PrivateKey) {
+		t.Fatalf("preserved key changed: %v", err)
+	}
+	out, ok := f.bs.Outcome()
+	if !ok || out.ID.ID != kept.ID {
+		t.Fatalf("outcome identity = %016x, want %016x", out.ID.ID, kept.ID)
+	}
+}
+
+// Join after keep-identity must hash the overlay from the preserved ID,
+// so the node comes back on the same address it would have chosen.
+func TestBootstrapJoinReusesPreservedIdentity(t *testing.T) {
+	kept, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inviter, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, identity.KeySize)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	invite, err := identity.EncodeNetworkInvite(identity.NetworkInvite{
+		Secret: secret, ID: inviter.ID, PublicKey: inviter.PublicKey,
+		PrefixV4: mustPrefix(t, "10.144.144.0/24"),
+		PrefixV6: mustPrefix(t, "fd00:6d65:7368::/64"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newBootstrapFixture(t, bootstrap.VerbJoin)
+	if err := os.WriteFile(f.keyPath, kept.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.call(t, "POST", "/api/v1/bootstrap/join", kernelCaller(),
+		`{"token":`+jsonStr(f.token)+`,"invite":`+jsonStr(invite)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("join with preserved identity = %d: %s", rec.Code, rec.Body.String())
+	}
+	cfg, err := conf.Load(f.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := conf.NextFreeOverlayHashed(mustPrefix(t, "10.144.144.0/24"), nil, kept.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Node.OverlayIPv4 != want {
+		t.Fatalf("overlay = %s, want preserved-ID choice %s", cfg.Node.OverlayIPv4, want)
+	}
+	key, _ := os.ReadFile(f.keyPath)
+	if !bytes.Equal(key, kept.PrivateKey) {
+		t.Fatal("join overwrote the preserved identity")
+	}
+}
+
+// Import after keep-identity adopts the source config but must not
+// clobber the preserved key with the source's identity.
+func TestBootstrapImportKeepsPreservedIdentity(t *testing.T) {
+	kept, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcDir := t.TempDir()
+	srcCfg := conf.Default()
+	srcCfg.Node.Name = "imported"
+	srcCfg.Node.OverlayIPv4 = mustAddr(t, "10.144.144.9")
+	srcCfg.API.Listen = ""
+	srcCfg.API.Socket = "/run/skein/control.sock"
+	if runtime.GOOS == "windows" {
+		srcCfg.API.Socket = filepath.Join(srcDir, "control.sock")
+	}
+	secret := make([]byte, identity.KeySize)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	srcCfg.Node.NetworkSecret = secret
+	text, err := conf.Render(srcCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for dir := srcDir; dir != "/tmp" && dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	srcPath := filepath.Join(srcDir, "skein.toml")
+	if err := os.WriteFile(srcPath, text, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "identity.key"), srcID.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newBootstrapFixture(t, bootstrap.VerbImport)
+	if err := os.WriteFile(f.keyPath, kept.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := f.call(t, "POST", "/api/v1/bootstrap/import", kernelCaller(),
+		`{"token":`+jsonStr(f.token)+`,"source":`+jsonStr(srcPath)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import with preserved identity = %d: %s", rec.Code, rec.Body.String())
+	}
+	var res BootstrapResult
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res.NodeID != fmt.Sprintf("%016x", kept.ID) {
+		t.Fatalf("node id = %s, want preserved %016x", res.NodeID, kept.ID)
+	}
+	cfg, err := conf.Load(f.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Node.Name != "imported" {
+		t.Fatalf("imported config name = %q", cfg.Node.Name)
+	}
+	key, _ := os.ReadFile(f.keyPath)
+	if !bytes.Equal(key, kept.PrivateKey) {
+		t.Fatal("import overwrote the preserved identity")
+	}
+}
+
+// A failed attempt must not delete a preserved key: it may be the only
+// copy of that node's identity.
+func TestBootstrapRollbackKeepsPreservedIdentity(t *testing.T) {
+	kept, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newBootstrapFixture(t, bootstrap.VerbInit)
+	if err := os.WriteFile(f.keyPath, kept.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.cfgPath, []byte("# partial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.bs.identityKept = true
+	f.bs.rollback()
+	if _, err := os.Stat(f.keyPath); err != nil {
+		t.Fatalf("rollback deleted the preserved identity: %v", err)
+	}
+	if _, err := os.Stat(f.cfgPath); !os.IsNotExist(err) {
+		t.Fatal("rollback must remove the partial config")
+	}
+}
+
+// Cancelling bootstrap serve (service stop before a token is posted) must
+// stop the listener and remove the Unix socket, leaving no half-open
+// control plane behind.
+func TestBootstrapServeCancellationStopsListener(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket test")
+	}
+	t.Setenv("SKEIN_NO_STUN", "1")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "skein.toml")
+	keyPath := filepath.Join(dir, "identity.key")
+	accPath := filepath.Join(dir, "access")
+	statePath := filepath.Join(dir, "bootstrap.json")
+	socketPath := filepath.Join(dir, "control.sock")
+	raw, err := bootstrap.Mint(statePath, fmt.Sprintf("uid:%d", os.Getuid()), bootstrap.VerbInit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(raw)
+	bs, err := NewBootstrap(BootstrapOptions{
+		ConfigPath: cfgPath, IdentityPath: keyPath,
+		StatePath: statePath, AccessPath: accPath, Socket: socketPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bs.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	serveErr := make(chan error, 1)
+	go func() {
+		_, err := bs.Serve(ctx)
+		serveErr <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bootstrap socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Serve = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after cancellation")
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("cancelled bootstrap left the socket behind: %v", err)
+	}
 }

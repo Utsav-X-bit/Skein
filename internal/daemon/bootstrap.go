@@ -13,9 +13,11 @@
 // the lifetime lock it already holds), grants the bootstrap caller
 // the secret role, deletes the state file, and returns the outcome to
 // app.Run, which transitions in-process to a normal Daemon (same
-// process, no service restart). If the transition itself fails, the
-// process exits and the service manager restarts it into normal mode,
-// because a config now exists.
+// process, no service restart). An identity.key preserved by
+// `system reset --keep-identity` is reused for init/join/import rather
+// than regenerated, so the node keeps its peer ID and public key. If
+// the transition itself fails, the process exits and the service
+// manager restarts it into normal mode, because a config now exists.
 //
 // Token verification order and burn semantics live in
 // internal/bootstrap.Manager.Verify and are not re-implemented here.
@@ -91,6 +93,27 @@ type Bootstrap struct {
 	cfg    conf.Config
 	id     identity.Identity
 	caller string
+
+	// identityKept records that build reused an identity.key already on
+	// disk (preserved by reset --keep-identity). commit then skips the
+	// write, and a failed attempt must not delete the preserved key.
+	identityKept bool
+
+	// success is closed once a bootstrap commits. Serve waits on it
+	// instead of polling Outcome.
+	success chan struct{}
+
+	// closed is closed by Close, so Serve stops even when the caller
+	// closes bootstrap without cancelling its context.
+	closed    chan struct{}
+	closeOnce sync.Once
+
+	// handoff is the control listener Serve bound. It survives the
+	// transition so the normal daemon can adopt the same transport
+	// rather than closing and rebinding it (B16: clients that
+	// connected right after success saw a dead socket/pipe).
+	handoff      *ControlHandoff
+	handoffTaken bool
 }
 
 // NewBootstrap opens the config store (lifetime lock held from here,
@@ -131,17 +154,45 @@ func NewBootstrap(opts BootstrapOptions) (*Bootstrap, error) {
 		}
 		return nil, bootstrap.ErrExpired
 	}
-	return &Bootstrap{opts: opts, store: store, mgr: mgr}, nil
+	return &Bootstrap{
+		opts: opts, store: store, mgr: mgr,
+		success: make(chan struct{}), closed: make(chan struct{}),
+	}, nil
 }
 
 // Close releases the config lock. After a successful bootstrap the
 // caller (app.Run) closes bootstrap before constructing the normal
-// daemon, so the new daemon can re-acquire the lock.
+// daemon, so the new daemon can re-acquire the lock. If the control
+// handoff was not taken by a normal daemon, Close also stops it: a
+// bootstrap that ends without a transition must not leave a listener
+// running.
 func (b *Bootstrap) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	b.mu.Lock()
+	h, taken := b.handoff, b.handoffTaken
+	b.mu.Unlock()
+	if h != nil && !taken {
+		h.Stop()
+	}
 	if b.store != nil {
 		return b.store.Close()
 	}
 	return nil
+}
+
+// TakeHandoff transfers the control listener bound by Serve to the
+// caller, for the normal daemon to adopt. It returns nil when Serve
+// never bound one (handler-only use) or when it was already taken. The
+// caller owns the handoff: Close no longer stops it, and the normal
+// daemon's shutdown does.
+func (b *Bootstrap) TakeHandoff() *ControlHandoff {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.handoff == nil || b.handoffTaken {
+		return nil
+	}
+	b.handoffTaken = true
+	return b.handoff
 }
 
 // GrantSecret applies a secret grant to a live daemon's authorisation
@@ -165,6 +216,12 @@ func (b *Bootstrap) Handler() http.Handler {
 			http.Error(w, "bootstrap: kernel control transport required", code)
 			return
 		}
+		// Re-check after the outer gate: a request that passed the gate
+		// just before the bootstrap committed must not report bootstrap
+		// state after success.
+		if b.transitioning(w, r) {
+			return
+		}
 		writeBootstrapJSON(w, http.StatusOK, map[string]any{
 			"state":      "bootstrap",
 			"configured": false,
@@ -183,7 +240,36 @@ func (b *Bootstrap) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bootstrap mode: only /api/v1/status and /api/v1/bootstrap/* are available", http.StatusGone)
 	})
-	return mux
+	// A request that arrives after the bootstrap committed belongs to
+	// the normal daemon, not to bootstrap mode. Waiting for the adopted
+	// handler here (instead of answering "bootstrap" or closing the
+	// listener) is what makes the in-process transition invisible to
+	// clients: the connection stays open and the response is the real
+	// one.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if b.transitioning(w, r) {
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// transitioning reports whether this request must be deferred to the
+// normal handler because the bootstrap already succeeded. It returns
+// true when it handled the response (normal handler, a bounded wait,
+// or an explicit 503), false while bootstrap mode still owns it. A
+// Bootstrap without a bound listener (handler-only use, tests) keeps
+// answering from the bootstrap mux, including its "already completed"
+// response.
+func (b *Bootstrap) transitioning(w http.ResponseWriter, r *http.Request) bool {
+	b.mu.Lock()
+	done, h := b.done, b.handoff
+	b.mu.Unlock()
+	if !done || h == nil {
+		return false
+	}
+	h.awaitReady(w, r)
+	return true
 }
 
 // bootstrapCaller enforces the transport gate before any token work:
@@ -266,7 +352,8 @@ func (b *Bootstrap) serveBootstrap(w http.ResponseWriter, r *http.Request, verb 
 // user can retry without re-elevating. The token is marked used
 // atomically before any config write, so a crash after that point
 // cannot replay the same token. Any failure after marking used
-// removes partial config/identity files, leaving the node
+// removes the partial config/identity files this attempt created
+// (a preserved identity is never removed), leaving the node
 // unconfigured but the token spent — a fresh elevation is then
 // required, which is the safe failure mode, not a silent retry.
 func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token []byte, req bootstrapRequest) (BootstrapResult, int, error) {
@@ -306,14 +393,12 @@ func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token 
 	}
 	// From here on, any failure cleans up partial files.
 	if err := b.commit(cfg, id, callerID); err != nil {
-		_ = os.Remove(b.opts.IdentityPath)
-		_ = os.Remove(b.opts.ConfigPath)
+		b.rollback()
 		return BootstrapResult{}, http.StatusInternalServerError, err
 	}
 	res, err := b.resultFor(ctx, cfg, id)
 	if err != nil {
-		_ = os.Remove(b.opts.IdentityPath)
-		_ = os.Remove(b.opts.ConfigPath)
+		b.rollback()
 		return BootstrapResult{}, http.StatusInternalServerError, err
 	}
 	b.done = true
@@ -321,6 +406,12 @@ func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token 
 	b.id = id
 	b.caller = callerID
 	b.result = res
+	// Every request that arrives from this instant is deferred to the
+	// normal handler by transitioning; the listener itself stays open.
+	if b.handoff != nil {
+		b.handoff.BeginTransition()
+	}
+	close(b.success)
 	return res, http.StatusOK, nil
 }
 
@@ -329,13 +420,18 @@ func (b *Bootstrap) bootstrap(ctx context.Context, verb, callerID string, token 
 // the token's bound caller the secret role in the access file, and
 // deletes the state file — in that order, so a grant is never
 // recorded for a bootstrap that did not persist, and a spent token
-// never lingers after a successful bootstrap.
+// never lingers after a successful bootstrap. A preserved identity
+// (reset --keep-identity) is already on disk and is not rewritten:
+// overwriting it would change the node's peer ID, and configstore's
+// WriteIdentity correctly refuses to overwrite.
 func (b *Bootstrap) commit(cfg conf.Config, id identity.Identity, callerID string) error {
-	if err := b.store.WriteIdentity(b.opts.IdentityPath, id); err != nil {
-		return fmt.Errorf("bootstrap: write identity: %w", err)
-	}
-	if err := fileperm.Root(b.opts.IdentityPath); err != nil {
-		return fmt.Errorf("bootstrap: own identity: %w", err)
+	if !b.identityKept {
+		if err := b.store.WriteIdentity(b.opts.IdentityPath, id); err != nil {
+			return fmt.Errorf("bootstrap: write identity: %w", err)
+		}
+		if err := fileperm.Root(b.opts.IdentityPath); err != nil {
+			return fmt.Errorf("bootstrap: own identity: %w", err)
+		}
 	}
 	if err := b.store.Write(cfg); err != nil {
 		return fmt.Errorf("bootstrap: write config: %w", err)
@@ -352,6 +448,17 @@ func (b *Bootstrap) commit(cfg conf.Config, id identity.Identity, callerID strin
 		return fmt.Errorf("bootstrap: delete state: %w", err)
 	}
 	return nil
+}
+
+// rollback removes the files this attempt created. A preserved identity
+// (reset --keep-identity) is not ours to delete: removing it would
+// destroy the very key the operator asked to retain, and it may be the
+// only copy of that node's identity.
+func (b *Bootstrap) rollback() {
+	if !b.identityKept {
+		_ = os.Remove(b.opts.IdentityPath)
+	}
+	_ = os.Remove(b.opts.ConfigPath)
 }
 
 // resultFor renders the public metadata plus the peer invite and the
@@ -434,6 +541,24 @@ func (b *Bootstrap) controlConfig(cfg *conf.Config) {
 	cfg.Path = b.opts.ConfigPath
 }
 
+// existingIdentity loads an identity.key already on disk. That file is
+// what `reset --keep-identity` preserves: the node must come back with
+// the same peer ID and public key, so init/join reuse it instead of
+// generating and writing a new one. A missing key means a fresh node.
+// Any other error (wrong length, group/other-readable mode) fails the
+// attempt before the token is burned, so the operator can fix the key
+// and retry without a new elevation.
+func (b *Bootstrap) existingIdentity() (identity.Identity, bool, error) {
+	id, err := identity.Load(b.opts.IdentityPath)
+	if err == nil {
+		return id, true, nil
+	}
+	if os.IsNotExist(err) {
+		return identity.Identity{}, false, nil
+	}
+	return identity.Identity{}, false, fmt.Errorf("bootstrap: preserved identity %s: %w", b.opts.IdentityPath, err)
+}
+
 func (b *Bootstrap) buildInit(req bootstrapRequest) (conf.Config, identity.Identity, error) {
 	cfg := conf.Default()
 	if req.Name != "" {
@@ -483,9 +608,16 @@ func (b *Bootstrap) buildInit(req bootstrapRequest) (conf.Config, identity.Ident
 		return conf.Config{}, identity.Identity{}, fmt.Errorf("bootstrap init: random secret: %w", err)
 	}
 	cfg.Node.NetworkSecret = secret
-	id, err := identity.Generate()
+	id, kept, err := b.existingIdentity()
 	if err != nil {
 		return conf.Config{}, identity.Identity{}, err
+	}
+	b.identityKept = kept
+	if !kept {
+		id, err = identity.Generate()
+		if err != nil {
+			return conf.Config{}, identity.Identity{}, err
+		}
 	}
 	b.controlConfig(&cfg)
 	if err := conf.Validate(cfg); err != nil {
@@ -502,9 +634,16 @@ func (b *Bootstrap) buildJoin(req bootstrapRequest) (conf.Config, identity.Ident
 	if err != nil {
 		return conf.Config{}, identity.Identity{}, err
 	}
-	id, err := identity.Generate()
+	id, kept, err := b.existingIdentity()
 	if err != nil {
 		return conf.Config{}, identity.Identity{}, err
+	}
+	b.identityKept = kept
+	if !kept {
+		id, err = identity.Generate()
+		if err != nil {
+			return conf.Config{}, identity.Identity{}, err
+		}
 	}
 	cfg := conf.Default()
 	cfg.Node.NetworkSecret = inv.Secret
@@ -531,6 +670,17 @@ func (b *Bootstrap) buildImport(req bootstrapRequest) (conf.Config, identity.Ide
 	cfg, id, err := loadImportSource(strings.TrimSpace(req.Source))
 	if err != nil {
 		return conf.Config{}, identity.Identity{}, err
+	}
+	// reset --keep-identity followed by import must not clobber the
+	// preserved key with the source's. The imported config is adopted;
+	// the node keeps the identity the operator asked to retain.
+	keptID, kept, err := b.existingIdentity()
+	if err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
+	b.identityKept = kept
+	if kept {
+		id = keptID
 	}
 	if cfg.Node.OverlayIPv4.IsValid() {
 		if !cfg.Node.OverlayIPv4Prefix.Contains(cfg.Node.OverlayIPv4) {

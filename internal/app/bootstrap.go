@@ -3,7 +3,8 @@
 // unconfigured daemon with a valid bootstrap state and runs it in
 // bootstrap mode before transitioning in-process to normal mode
 // (RunBootstrap). The daemon is the only config writer throughout;
-// the helper writes only the bootstrap-state file and service
+// the helper writes the bootstrap-state file, a least-privilege
+// (read) transport admission for the invoking user, and service
 // registration; the daemon writes config, identity, and (on success)
 // the access-file grant.
 package app
@@ -23,6 +24,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/configstore"
 	"github.com/Utsav-X-bit/skein/internal/daemon"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/service"
 )
 
@@ -36,13 +38,20 @@ func BootstrapStatePath() string {
 // (init, join, or import) and starts the service in bootstrap mode.
 // It runs elevated, under a brief config lock: it fails fast with
 // ErrLocked if a daemon already holds the lock, fails if a system
-// config or identity already exists, and fails if a valid bootstrap
-// is already in progress. The plaintext token is returned as a
-// base64url string for the helper's stdout JSON only; the byte slice
-// is zeroed here after encoding, and the token is never logged and
-// never written to disk. A service-start failure does NOT delete the
-// state: the token stays valid for its 10 minutes, so the GUI can
-// retry the start without a fresh elevation.
+// config already exists, and fails if a valid bootstrap is already in
+// progress. An identity.key preserved by `system reset --keep-identity`
+// is allowed (and validated): the daemon reuses it rather than
+// generating a new identity. Before the service starts, the invoking
+// user is admitted to the control socket/pipe with the least role
+// (read), because the listener's admission list is derived from the
+// access file and a fresh install has no skein group or prior grant;
+// the single-use token is still the only bootstrap authorisation.
+// The plaintext token is returned as a base64url string for the
+// helper's stdout JSON only; the byte slice is zeroed here after
+// encoding, and the token is never logged and never written to disk.
+// A service-start failure does NOT delete the state: the token stays
+// valid for its 10 minutes, so the GUI can retry the start without a
+// fresh elevation.
 // mintBootstrapToken is the testable core of MintBootstrap: lock,
 // already-configured refusal, caller binding, and minting — without
 // the root-ownership step or the service install/start, which need a
@@ -84,10 +93,14 @@ func mintBootstrapToken(verb, cfgPath, keyPath, statePath string) (string, error
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("bootstrap: %w", err)
 	}
-	if _, err := os.Stat(keyPath); err == nil {
-		return "", fmt.Errorf("bootstrap: %s already exists; use reset first", keyPath)
-	} else if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("bootstrap: %w", err)
+	// A key may legitimately exist after `system reset --keep-identity`
+	// (or after an interrupted bootstrap that wrote only the key). The
+	// daemon reuses it for init/join/import instead of generating a new
+	// one, so minting must allow it. Validate it here so a malformed or
+	// too-permissive key fails before any elevation work; a missing key
+	// is the ordinary fresh-install case.
+	if _, err := identity.Load(keyPath); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("bootstrap: existing identity: %w", err)
 	}
 	caller, err := bootstrap.InvokingCallerID()
 	if err != nil {
@@ -112,11 +125,22 @@ func MintBootstrap(verb string) (string, error) {
 		_ = os.Remove(statePath)
 		return "", fmt.Errorf("bootstrap: own state file: %w", err)
 	}
+	// The daemon derives the control socket/pipe admission list from the
+	// access file when it binds. A fresh Linux install has no skein group
+	// and no grant for the invoking user, so without this the token's
+	// holder cannot connect to post it. This writes the least role
+	// (read), never secret or mutate; the token remains the bootstrap
+	// authorisation and commit upgrades the bound caller on success.
+	if err := grantBootstrapTransportAccess(); err != nil {
+		_ = os.Remove(statePath)
+		return "", fmt.Errorf("bootstrap: grant transport access: %w", err)
+	}
 	// Install the service pointing at the daemon binary with the
 	// system config path, then start it. This deliberately does NOT
 	// use EnsureService: there is no config to load yet, no firewall
-	// port to open (bootstrap mode binds no UDP port), and no grant
-	// to write (the daemon grants the bootstrap caller on success).
+	// port to open (bootstrap mode binds no UDP port), and the only
+	// access-file write here is the read transport admission above —
+	// the daemon grants the bootstrap caller secret on success.
 	// Step 6: the install goes through RegisterDaemon — package
 	// skeind only, validated (skeind basename, regular non-symlink,
 	// non-world-writable parent). The Step 4 deployment blocker
@@ -183,8 +207,8 @@ func RunBootstrap(ctx context.Context, configPath string) error {
 		return err
 	}
 	out, err := bs.Serve(ctx)
-	bs.Close()
 	if err != nil {
+		bs.Close()
 		// A stop/shutdown during bootstrap serve is a clean stop,
 		// not a service failure: the normal path (d.Run via
 		// connLoop) likewise returns nil on ctx cancellation, and
@@ -196,24 +220,39 @@ func RunBootstrap(ctx context.Context, configPath string) error {
 		}
 		return fmt.Errorf("bootstrap: %w", err)
 	}
+	// Take the control listener before releasing the config lock: the
+	// normal daemon re-acquires that lock in daemon.New, and the
+	// listener must stay bound across the whole transition so a client
+	// that connected right after success is served by the normal API
+	// (B16), not by a closed socket/pipe.
+	handoff := bs.TakeHandoff()
+	bs.Close()
+	fail := func(err error) error {
+		if handoff != nil {
+			handoff.Fail(err)
+		}
+		return err
+	}
 	// The bootstrap wrote config + identity; the normal path's
 	// permission and ownership checks now apply, before any mesh work.
 	// Step 5: the transition into normal mode is also a service
 	// path, so a committed config that somehow still sets api.listen
 	// refuses here instead of serving dev TCP as a service.
 	if err := checkSystemDevTCP(configPath, out.Config); err != nil {
-		return err
+		return fail(err)
 	}
 	if err := conf.CheckPermissions(configPath); err != nil {
-		return err
+		return fail(err)
 	}
 	if err := checkSystemOwnership(configPath); err != nil {
-		return err
+		return fail(err)
 	}
 	d, err := daemon.New(out.Config, out.ID)
 	if err != nil {
-		return err
+		return fail(err)
 	}
+	d.AdoptControlHandoff(handoff)
+	handoff = nil
 	defer d.Close()
 	// Live-server grant, in addition to the persisted access file the
 	// daemon just loaded at construction: the bootstrap caller holds

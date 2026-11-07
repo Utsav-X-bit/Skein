@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Utsav-X-bit/skein/internal/bootstrap"
+	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 // mintBootstrapToken is the helper's mint core without the service
@@ -71,5 +72,49 @@ func TestMintBootstrapTokenHappyAndSecondMintRefused(t *testing.T) {
 	}
 	if _, err := mintBootstrapToken("bogus", cfgPath, keyPath, statePath); err == nil {
 		t.Fatal("unknown verb must fail")
+	}
+}
+
+// reset --keep-identity leaves identity.key in place. The helper must
+// still be able to mint a token: the daemon reuses the preserved key
+// for init/join/import rather than generating a new identity.
+func TestMintBootstrapTokenAllowsPreservedIdentity(t *testing.T) {
+	t.Setenv("PKEXEC_UID", "1000")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "skein.toml")
+	keyPath := filepath.Join(dir, "identity.key")
+	statePath := filepath.Join(dir, "bootstrap.json")
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, id.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mintBootstrapToken("init", cfgPath, keyPath, statePath); err != nil {
+		t.Fatalf("mint with preserved identity: %v", err)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("state file missing after mint: %v", err)
+	}
+}
+
+// A malformed preserved key must fail the mint before any elevation,
+// instead of being discovered by the daemon after the token is spent.
+func TestMintBootstrapTokenRejectsInvalidPreservedIdentity(t *testing.T) {
+	t.Setenv("PKEXEC_UID", "1000")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "skein.toml")
+	keyPath := filepath.Join(dir, "identity.key")
+	statePath := filepath.Join(dir, "bootstrap.json")
+	if err := os.WriteFile(keyPath, []byte("not-a-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := mintBootstrapToken("init", cfgPath, keyPath, statePath)
+	if err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("mint with invalid identity = %v, want an identity error", err)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatal("refused mint must not leave a state file")
 	}
 }
