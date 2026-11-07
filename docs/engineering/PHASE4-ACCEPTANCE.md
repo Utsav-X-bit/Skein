@@ -101,6 +101,21 @@ Windows 11 was not available for a runtime run; the same x64 artifact targets
 Windows 10 and 11. Per-user installs are rejected at build time because the
 VPN service is machine-wide.
 
+### Windows UAC bootstrap pipe
+
+The normal-token desktop now creates a random named pipe whose DACL admits
+only the current user, SYSTEM and Administrators, then launches the helper
+through UAC. The helper verifies that the pipe server image is
+`skein-desktop.exe`, mints the token and writes the JSON envelope back over
+that pipe. The token never enters argv, a temp file, or a log.
+
+Verified on Windows 10: the pipe server round-trip test passed, and the real
+helper connected to a desktop-named server, passed the server-image check and
+wrote a JSON envelope over the pipe (non-destructive run against the
+configured node, which correctly reported the existing config lock). A
+successful clean-config UAC create/join remains to be exercised after the
+owner upgrades the installed build.
+
 ## Cleanup and limitations
 
 - Windows: helper uninstall plus scoped removal of install/data/profile and
