@@ -1,14 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
 import { CommandBar } from "./CommandBar";
 import { CommandPalette } from "./CommandPalette";
 import { useTheme } from "@/lib/useTheme";
-import { useQuery } from "@tanstack/react-query";
-import { ServiceService } from "@/lib/api";
+import { ConfigService, NetworkService, ServiceService, errText, isOffline } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import { Onboarding } from "@/routes/onboarding/Onboarding";
 import { useHistoryRecorder } from "@/features/activity/useHistoryRecorder";
 import { useDaemonEvents } from "@/features/mesh/useDaemonEvents";
+
+/** One shell banner: a single fact and the single action that owns it. */
+function ShellBanner({ tone, children, action }: { tone: "warning" | "danger"; children: ReactNode; action: ReactNode }) {
+  const border = tone === "danger" ? "border-[var(--danger)]/40 bg-[var(--danger)]/5 text-[var(--danger)]" : "border-[var(--warning)]/40 bg-[var(--warning)]/5 text-[var(--warning)]";
+  return (
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2 text-xs ${border}`} role="status">
+      <span className="min-w-0 flex-1">{children}</span>
+      {action}
+    </div>
+  );
+}
 
 export function AppShell() {
   useTheme();
@@ -19,8 +32,19 @@ export function AppShell() {
   // cache, lifecycle events feed the session store. Pages never subscribe.
   useDaemonEvents();
   const location = useLocation();
+  const qc = useQueryClient();
   const [palette, setPalette] = useState(false);
   const svc = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status(), refetchInterval: 5_000 });
+  // Observers only: the command bar owns the interval for these keys, and the
+  // daemon pushes `connection:changed` / `peers:changed` on top of it.
+  const config = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), retry: 0 });
+  const status = useQuery({ queryKey: ["status"], queryFn: () => NetworkService.Status(), retry: 0 });
+  const start = useMutation({
+    mutationFn: () => ServiceService.Start(),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["service"] }),
+    onError: (e) => toast.error(errText(e)),
+  });
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((v) => !v); }
@@ -28,6 +52,7 @@ export function AppShell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
   // Step 8: do not lock stopped-service users out of the shell. The
   // old gate showed Onboarding whenever the service was not running
   // — including while the status query was still loading, and for an
@@ -46,16 +71,54 @@ export function AppShell() {
       </div>
     );
   }
-  const stopped = svc.data && svc.data.state !== "running";
+
+  // Three independent facts, never inferred from one another: membership
+  // (left the network), service lifecycle, and connectivity (daemon reachable
+  // / connection healthy).
+  const departed = config.data?.departed === true;
+  const serviceState = svc.data?.state ?? "unknown";
+  const serviceDown = serviceState !== "running" && serviceState !== "missing";
+  const offline = status.isError && isOffline(status.error);
+  const connectionError = !offline && status.data?.connection?.state === "error";
+  const connectionDetail = status.data?.connection?.last_error;
+
   return (
     <div className="flex h-full min-h-0 bg-[var(--bg)] text-[var(--text)]">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <CommandBar onPalette={() => setPalette(true)} />
-        {stopped && (
-          <div className="border-b border-[var(--warning)]/40 bg-[var(--warning)]/5 px-4 py-2 text-xs text-[var(--warning)]">
-            Service is {svc.data?.state ?? "not running"}. <Link className="underline" to="/settings">Open service controls</Link>
-          </div>
+        {departed && (
+          <ShellBanner tone="warning" action={<Link className="underline" to="/settings?network=rejoin">Rejoin network</Link>}>
+            This device has left the network. Peers and routes below are the last known state.
+          </ShellBanner>
+        )}
+        {serviceDown && (
+          <ShellBanner
+            tone={serviceState === "error" ? "danger" : "warning"}
+            action={
+              serviceState === "stopped" ? (
+                <Button size="sm" variant="secondary" disabled={start.isPending} onClick={() => start.mutate()}>
+                  {start.isPending ? "Starting…" : "Start service"}
+                </Button>
+              ) : (
+                <Link className="underline" to="/settings">Service controls</Link>
+              )
+            }
+          >
+            {serviceState === "error"
+              ? `Service is in an error state${svc.data?.last_error ? `: ${svc.data.last_error}` : "."}`
+              : `Service is ${serviceState}. Settings and Diagnostics stay available; daemon-backed pages show the last known state.`}
+          </ShellBanner>
+        )}
+        {offline && (
+          <ShellBanner tone="danger" action={<Link className="underline" to="/settings">Service controls</Link>}>
+            The daemon is not reachable. Nothing on this screen is live until it is back.
+          </ShellBanner>
+        )}
+        {connectionError && (
+          <ShellBanner tone="danger" action={<Link className="underline" to="/settings?network=rejoin">Recovery</Link>}>
+            {`Connection error${connectionDetail ? `: ${connectionDetail}` : "."}`}
+          </ShellBanner>
         )}
         <main className="min-h-0 flex-1 overflow-auto p-4 md:p-6">
           <Outlet />

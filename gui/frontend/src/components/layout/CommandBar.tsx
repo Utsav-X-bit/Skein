@@ -5,14 +5,17 @@ import { ConfigService, ConnectionService, NetworkService, ServiceService, errTe
 import { Button } from "@/components/ui/button";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import { useUI } from "@/lib/store";
+import { NotificationsPopover } from "./NotificationsPopover";
 import { toast } from "sonner";
 
 export function CommandBar({ onPalette }: { onPalette: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const label = useUI((s) => s.networkLabel);
-  const status = useQuery({ queryKey: ["status"], queryFn: () => NetworkService.Status(), refetchInterval: 2_000 });
-  const config = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), retry: 0, refetchInterval: 15_000 });
+  // Connection state arrives as a `connection:changed` event, so this is a
+  // reconciliation read, not the app's live clock: one interval while visible.
+  const status = useQuery({ queryKey: ["status"], queryFn: () => NetworkService.Status(), refetchInterval: 30_000 });
+  const config = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), retry: 0, refetchInterval: 30_000 });
   const departed = config.data?.departed === true;
   const start = useMutation({
     mutationFn: () => ServiceService.Start(),
@@ -50,6 +53,7 @@ export function CommandBar({ onPalette }: { onPalette: () => void }) {
         </div>
       </div>
       <div className="flex items-center gap-2 no-drag">
+        <NotificationsPopover />
         <Button variant="secondary" size="sm" onClick={onPalette} aria-label="Open command palette">
           <Command size={15} /> <span className="hidden sm:inline">Command</span>
           <kbd className="ml-1 rounded border border-[var(--border)] px-1 font-mono text-[10px] text-[var(--text-faint)]">⌘K</kbd>
