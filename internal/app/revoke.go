@@ -152,15 +152,8 @@ func revokeGrantFromFile(path, identity string, force bool) (RevokeOutcome, erro
 // test cannot do, and the helper runs elevated in production, so the
 // temp file already has the right owner.
 //
-// The DACL is set first and explicitly. CreateTemp already creates the
-// file 0600 on Unix, but on Windows set-owner replaces the system
-// directory's DACL with protected, non-inheritable ACEs, so a temp file
-// created there inherits nothing (deny-all) — and even Chmod, which is
-// attribute-based on Windows, would then be refused. Without this the
-// renamed access file is deny-all (the "access file DACL empty after
-// set-owner" report) and the daemon cannot read its own grants on the
-// next start. Restrict grants the creator, SYSTEM, and Administrators;
-// set-owner then widens it to the interactive user.
+// An explicit DACL keeps replacement grants scoped to their creator,
+// SYSTEM, and Administrators. set-owner then adds the interactive user.
 func writeAccessFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -183,12 +176,8 @@ func writeAccessFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// A destination left deny-all by the pre-fix writers cannot be
-	// replaced: the rename needs DELETE on it, and an empty DACL grants
-	// nobody DELETE (the owner only gets implicit READ_CONTROL and
-	// WRITE_DAC). Restrict is the repair, not an optimisation: a real
-	// failure is reported here rather than left to the rename. A
-	// missing destination is the normal first write.
+	// Normalize any pre-existing grants DACL before replacement.
+	// Report real failures; absence is normal on the first write.
 	if err := fileperm.Restrict(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("repair %s: %w", path, err)
 	}

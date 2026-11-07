@@ -11,21 +11,15 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
-// TestBackupSystemKeepsDACLInProtectedDir is the regression for the
-// rotate/reset/import backup path after set-owner. set-owner gives the
-// system directory a protected, non-inheritable DACL, so the timestamped
-// backup directory and the files written inside it inherit no ACEs at
-// all: the directory is deny-all, the file writes are refused, and a
-// rotate that fails here has no readable backup to fall back on.
+// Updating directory ownership must preserve access to existing config/identity
+// files, and their backups must remain readable and private.
 func TestBackupSystemKeepsDACLInProtectedDir(t *testing.T) {
 	sid, err := api.CurrentSID()
 	if err != nil {
 		t.Fatalf("current SID: %v", err)
 	}
 	d, dir := newSystemDaemon(t)
-	// The shape set-owner leaves %ProgramData%\Skein in: SYSTEM,
-	// Administrators, and the interactive user, protected and
-	// non-inheritable, so a new child inherits nothing.
+	// Match set-owner after the fixture has created its files.
 	if err := fileperm.GrantUser(dir, sid); err != nil {
 		t.Fatalf("grant system dir: %v", err)
 	}

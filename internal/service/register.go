@@ -332,11 +332,8 @@ func RollbackDaemon(reg Registration, configPath string) error {
 // It is a byte copy used for binary/config backups, not a config
 // write: it never parses or modifies content.
 //
-// A destination created inside a directory whose DACL set-owner
-// protected inherits no ACEs at all, so on Windows the new file would be
-// deny-all (the write succeeds through the handle, but the backup is then
-// unreadable when a rollback needs it). RestrictDACL sets that DACL and
-// leaves the Unix mode from the create call untouched.
+// The explicit DACL keeps Windows copies private without overriding the
+// source's Unix mode, including executable bits.
 func copyFile(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -366,12 +363,8 @@ func copyFile(src, dst string) error {
 // directory, so a rollback config restore never leaves a half-written
 // config behind.
 //
-// The DACL is set before the mode: after set-owner the destination
-// directory's DACL is protected with non-inheritable ACEs, so the temp
-// file inherits nothing (deny-all on Windows) — and Chmod, which is
-// attribute-based there, would itself be refused. Restrict runs first;
-// the source mode is then applied on Unix, where it is the access
-// control.
+// Restrict the temporary DACL before path-based operations, then preserve
+// the source mode on Unix.
 func copyFileAtomic(src, dst string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
 	if err != nil {

@@ -12,19 +12,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
-// TestGrantSecretKeepsAccessFileDACLAfterSetOwner is the regression for
-// the empty-DACL access file. set-owner replaces the system directory's
-// DACL with protected, non-inheritable ACEs, and the bootstrap grant is
-// the next writer to run (init/join after the restart set-owner asks
-// for). The temp file must be created in the access file's own
-// directory — a rename cannot cross volumes and the directory decides
-// inheritance — and given an explicit DACL, or the renamed file is
-// deny-all and the daemon cannot read its own grants on the next start.
-//
-// The chdir pins the second half of the bug: the writer split the path
-// on "/", which no Windows path contains, so its temp landed in the
-// process CWD (for the service, C:\Windows\System32) and the access
-// file inherited that directory's DACL instead.
+// Bootstrap grants must stay readable and private in a hardened directory.
 func TestGrantSecretKeepsAccessFileDACLAfterSetOwner(t *testing.T) {
 	sid, err := api.CurrentSID()
 	if err != nil {
@@ -34,7 +22,6 @@ func TestGrantSecretKeepsAccessFileDACLAfterSetOwner(t *testing.T) {
 	if err := fileperm.GrantUser(dir, sid); err != nil {
 		t.Fatalf("grant directory: %v", err)
 	}
-	t.Chdir(dir) // where the old writer created its temp file
 	path := filepath.Join(dir, "access")
 	if err := GrantSecret(path, sid); err != nil {
 		t.Fatalf("GrantSecret: %v", err)

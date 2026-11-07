@@ -56,27 +56,15 @@ func GrantSecret(accessPath, callerID string) error {
 }
 
 func writeGrantFile(path string, data []byte) error {
-	// The temp file goes in the target's own directory: a rename
-	// cannot cross volumes, and the directory the file lands in is
-	// what its DACL is inherited from. Splitting on "/" put the temp
-	// in the process CWD on Windows (backslash paths), so the access
-	// file inherited the CWD's DACL instead of the system
-	// directory's.
+	// Keep the temporary file beside its destination: a rename cannot
+	// cross volumes, including when Windows uses a different temp drive.
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".access-*.tmp")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	// The DACL is set first and explicitly. CreateTemp already creates
-	// the file 0600 on Unix, but on Windows set-owner replaces the
-	// system directory's DACL with protected, non-inheritable ACEs, so
-	// a temp file created there inherits nothing (deny-all) — and even
-	// Chmod, which is attribute-based on Windows, would then be
-	// refused. Without this the renamed access file is deny-all and
-	// the daemon cannot read its own grants on the next start.
-	// Restrict grants the creator, SYSTEM, and Administrators, like
-	// the bootstrap state writer does.
+	// Keep the grants private independently of inherited permissions.
 	if err := fileperm.Restrict(name); err != nil {
 		tmp.Close()
 		return err
@@ -92,12 +80,8 @@ func writeGrantFile(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// A destination left deny-all by the pre-fix writers cannot be
-	// replaced: the rename needs DELETE on it, and an empty DACL grants
-	// nobody DELETE (the owner only gets implicit READ_CONTROL and
-	// WRITE_DAC). Restrict is the repair, not an optimisation: a real
-	// failure is reported here rather than left to the rename. A
-	// missing destination is the normal first write.
+	// Normalize an existing grants DACL before replacement.
+	// Report real failures; absence is normal on the first write.
 	if err := fileperm.Restrict(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("bootstrap: repair %s: %w", path, err)
 	}

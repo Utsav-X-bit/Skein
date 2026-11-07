@@ -11,12 +11,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
-// TestCopyHelpersSetDACLInProtectedDir is the regression for the
-// upgrade/rollback byte copies after set-owner. set-owner gives the system
-// directory a protected, non-inheritable DACL, so a file created inside it
-// inherits no ACEs at all and is deny-all: the config backup would be
-// unreadable by the rollback that restores it. The helpers must set the
-// DACL themselves.
+// Byte copies must remain readable and private beneath hardened directory ACLs.
 func TestCopyHelpersSetDACLInProtectedDir(t *testing.T) {
 	sid, err := api.CurrentSID()
 	if err != nil {
@@ -27,9 +22,7 @@ func TestCopyHelpersSetDACLInProtectedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	dstDir := t.TempDir()
-	// The shape set-owner leaves the system directory in: SYSTEM,
-	// Administrators, and the interactive user, protected and
-	// non-inheritable.
+	// Match set-owner's directory ownership policy.
 	if err := fileperm.GrantUser(dstDir, sid); err != nil {
 		t.Fatalf("grant destination dir: %v", err)
 	}

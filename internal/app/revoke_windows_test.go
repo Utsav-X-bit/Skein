@@ -11,22 +11,14 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
-// TestWriteAccessFileAtomicKeepsDACLAfterSetOwner is the regression for
-// the empty-DACL access file: set-owner replaces the system directory's
-// DACL with protected, non-inheritable ACEs (fileperm.GrantUser), so a
-// temp file created in that directory inherits nothing. Without an
-// explicit DACL on the temp, the rename leaves a deny-all access file
-// and the daemon cannot read its own grants on the next start (the
-// "access file DACL empty after set-owner/restart" report).
+// Atomic grants must stay readable and private after directory hardening.
 func TestWriteAccessFileAtomicKeepsDACLAfterSetOwner(t *testing.T) {
 	sid, err := api.CurrentSID()
 	if err != nil {
 		t.Fatalf("current SID: %v", err)
 	}
 	dir := t.TempDir()
-	// The shape set-owner leaves the system directory in: SYSTEM,
-	// Administrators, and the interactive user, protected and
-	// non-inheritable.
+	// Match set-owner's directory ownership policy.
 	if err := fileperm.GrantUser(dir, sid); err != nil {
 		t.Fatalf("grant directory: %v", err)
 	}

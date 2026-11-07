@@ -103,11 +103,8 @@ func (d *Daemon) backupSystem(kind string) (string, error) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return "", fmt.Errorf("daemon: backup dir: %w", err)
 	}
-	// The backup directory is created inside the config's directory,
-	// which set-owner gives a protected, non-inheritable DACL: a new
-	// child inherits no ACEs at all on Windows, so the directory would
-	// be deny-all and the file writes below would be refused. Restrict
-	// the DACL explicitly; the Unix mode stays 0700 from MkdirAll.
+	// Backups stay private even when set-owner grants an interactive
+	// user access to the parent. The Unix mode remains 0700.
 	if err := fileperm.RestrictDACL(dst); err != nil {
 		return "", fmt.Errorf("daemon: backup dir: %w", err)
 	}
@@ -129,12 +126,8 @@ func (d *Daemon) backupSystem(kind string) (string, error) {
 // refuses to write non-config paths). Used for backups and the
 // update-state file, both of which live in the system directory.
 //
-// The temp file gets an explicit DACL: CreateTemp already creates it
-// 0600 on Unix, and after set-owner the system directory's DACL is
-// protected with non-inheritable ACEs, so a temp created there inherits
-// nothing (deny-all on Windows) — and Chmod, which is attribute-based
-// there, would itself be refused. Restrict keeps the file readable only
-// by its creator, SYSTEM, and Administrators.
+// Explicit DACLs keep replacement backup/update files scoped to their creator,
+// SYSTEM, and Administrators. Unix CreateTemp already supplies mode 0600.
 func writeBytesAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")

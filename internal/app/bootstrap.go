@@ -65,6 +65,11 @@ func mintBootstrapToken(verb, cfgPath, keyPath, statePath string) (string, error
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o750); err != nil {
 		return "", fmt.Errorf("bootstrap: create config dir: %w", err)
 	}
+	// An older directory ACL may have stripped the existing lock's permissions.
+	// Restore inherited Windows access before configstore opens it.
+	if err := fileperm.RestrictDACL(filepath.Dir(cfgPath)); err != nil {
+		return "", fmt.Errorf("bootstrap: config directory DACL: %w", err)
+	}
 	store, err := configstore.Open(cfgPath)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap: %w", err)

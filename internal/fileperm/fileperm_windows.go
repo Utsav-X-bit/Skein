@@ -116,11 +116,14 @@ func grantUser(path, user string) error {
 	)
 }
 
+// Directory ACL updates must preserve inherited access on existing children.
+// Non-inheritable ACEs strip inherited permissions from config/lock files.
+// These flags do not change access on objects without children.
 func allow(sid *windows.SID) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: windows.GENERIC_ALL,
 		AccessMode:        windows.GRANT_ACCESS,
-		Inheritance:       windows.NO_INHERITANCE,
+		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{
 			TrusteeForm:  windows.TRUSTEE_IS_SID,
 			TrusteeType:  windows.TRUSTEE_IS_USER,
