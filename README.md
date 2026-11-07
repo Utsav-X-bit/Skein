@@ -86,18 +86,44 @@ is open, stops a running service before an upgrade, and never deletes
 `%ProgramData%\Skein` on uninstall.
 
 A first install deliberately skips service registration: open the desktop
-and create or join a network, which registers the service. Build the artifact
-from a checkout:
+and create or join a network, which registers the service.
+
+**1. Install the build prerequisites** (PowerShell):
 
 ```powershell
-cd gui
-wails3 task windows:create:nsis:installer ARCH=amd64
-# -> gui\bin\skein-desktop-amd64-installer.exe
+winget install GoLang.Go
+winget install OpenJS.NodeJS.LTS
+winget install NSIS.NSIS
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0
+$env:PATH = "$env:USERPROFILE\go\bin;$env:PATH"
+wails3 doctor
 ```
 
-Requires Go, Node.js 22, Wails v3.1.0, and NSIS 3.x with `makensis` on
-`PATH`. `-DARG_*` payload paths are supplied by the task; missing binaries
-fail the build.
+`wails3 doctor` must report no issues. NSIS must provide `makensis` on
+`PATH`; for a portable/extracted NSIS tree, set `$env:NSISDIR` and pass
+`MAKENSIS=<path>` to the build task.
+
+**2. Build the complete setup**:
+
+```powershell
+cd $env:USERPROFILE\Downloads\Skein-test\gui
+wails3 task windows:create:nsis:installer ARCH=amd64
+# -> bin\skein-desktop-amd64-installer.exe
+```
+
+The task builds the system binaries and desktop, fetches the SHA-256-pinned
+Wintun DLL, generates the WebView2 bootstrapper, and compiles NSIS. A missing
+payload fails the build.
+
+**3. Run the installer**:
+
+```powershell
+Start-Process .\bin\skein-desktop-amd64-installer.exe
+```
+
+Approve the UAC prompt (silent: add `/S`). It installs into
+`C:\Program Files\Skein`. Then launch the desktop as your normal user and
+create or join a network as described below.
 
 ## Use
 
