@@ -121,7 +121,9 @@ export function AccessPanel() {
               remediation={
                 errKind(grants.error) === "Daemon offline"
                   ? "The daemon is not reachable. Start the Skein service, then reopen this screen."
-                  : "The table is secret-gated: it needs the secret role over the local kernel socket. A bearer (development TCP) connection is capped at read and can never see it. Ask an administrator to grant this user the secret role, then reopen this screen."
+                  : /404|not found/i.test(errText(grants.error))
+                    ? "This daemon build does not expose the grants endpoint. Update the daemon to the matching release, then reopen this screen. The running version is shown in About."
+                    : "The table is secret-gated: it needs the secret role over the local kernel socket. A bearer (development TCP) connection is capped at read and can never see it. Ask an administrator to grant this user the secret role, then reopen this screen."
               }
               onRetry={() => grants.refetch()}
             />

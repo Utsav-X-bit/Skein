@@ -4,6 +4,7 @@ import "@xyflow/react/dist/style.css";
 import type { Activity, Peer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn, shortID } from "@/lib/utils";
+import { useUI } from "@/lib/store";
 import { MeshEdge, type MeshFlowEdge } from "./MeshEdge";
 import { MeshTable } from "./MeshTable";
 import { useMotionAllowed } from "./hooks";
@@ -76,8 +77,15 @@ function linkRates(activities: Activity[]): Map<string, Rate> {
   return rates;
 }
 
+// React Flow's node subtree resolves inherited theme variables to the light
+// palette in WebKit (the card rendered light on a dark shell). The node uses
+// explicit theme values from the store so its surface cannot drift.
 function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
   const { node, selected, interactive, onSelect } = data;
+  const light = useUI((s) => s.theme) === "light";
+  const palette = light
+    ? { card: "#fbfaf6", text: "#14171c", border: "#7c7466", muted: "#4b5563", faint: "#66707e", accent: "#0b6b5a", up: "#17663a", relay: "#8a4e0a" }
+    : { card: "#161b22", text: "#f4f6f8", border: "#66788f", muted: "#a7b0be", faint: "#8a94a3", accent: "#4fe3c1", up: "#7be3a0", relay: "#f2b35d" };
   return (
     <div
       role={interactive ? "button" : undefined}
@@ -91,29 +99,34 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
         }
       }}
       onClick={() => onSelect(node.id)}
+      style={{
+        background: palette.card,
+        color: palette.text,
+        borderColor: selected ? palette.accent : palette.border,
+        boxShadow: selected ? `0 0 0 1px ${palette.accent}` : undefined,
+      }}
       className={cn(
         "w-[168px] cursor-pointer rounded-lg border px-3 py-2 text-left shadow-lg outline-none",
-        selected ? "border-[var(--accent)] ring-1 ring-[var(--accent)]" : "border-[var(--border-strong)]",
         "focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
       )}
-      style={{ background: "var(--surface-raised)", color: "var(--text)" }}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-xs font-medium">{node.label}</span>
         <span
           aria-hidden
-          className={cn(
-            "h-2 w-2 shrink-0 rounded-full",
-            node.state === "up" || node.kind === "self"
-              ? "bg-[var(--success)]"
-              : node.state === "degraded"
-                ? "bg-[var(--relay)]"
-                : "bg-[var(--text-faint)]",
-          )}
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{
+            background:
+              node.state === "up" || node.kind === "self"
+                ? palette.up
+                : node.state === "degraded"
+                  ? palette.relay
+                  : palette.faint,
+          }}
         />
       </div>
-      <div className="mono-label mt-1 truncate">{node.overlay ?? shortID(node.id)}</div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--text-muted)]">
+      <div className="mono-label mt-1 truncate" style={{ color: palette.faint }}>{node.overlay ?? shortID(node.id)}</div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px]" style={{ color: palette.muted }}>
         <span className="truncate">{node.kind === "self" ? "up · this device" : `${node.state} · ${node.transport ?? "unknown"}`}</span>
         <span className="tabular shrink-0">{node.rttMs !== undefined ? `${Math.round(node.rttMs)} ms` : "—"}</span>
       </div>
@@ -172,6 +185,9 @@ export function MeshCanvas({
         data: { node, selected: selectedPeer === node.id, interactive: mode === "map", onSelect: onSelectPeer },
         draggable: false,
         selectable: true,
+        // React Flow's default node wrapper is white; the themed card inside
+        // must be the only surface.
+        style: { background: "transparent", border: "none", padding: 0, boxShadow: "none" },
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
       })),
@@ -238,7 +254,10 @@ export function MeshCanvas({
 
       <div className="relative h-[clamp(360px,55vh,560px)] w-full overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
         <div
-          className={cn("h-full w-full", mode === "table" && "invisible")}
+          // display:none, not visibility:hidden: React Flow sets an inline
+          // visibility on in-viewport nodes, which would override an
+          // inherited hidden state and leave the map visible under the table.
+          className={cn("h-full w-full", mode === "table" && "hidden")}
           aria-hidden={mode === "table"}
           inert={mode === "table" ? true : undefined}
         >

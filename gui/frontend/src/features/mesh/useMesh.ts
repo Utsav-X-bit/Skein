@@ -213,10 +213,22 @@ export function useMesh(): MeshData {
     [activitiesQ.data, liveActivities],
   );
   const self = statusQ.data?.id ?? "";
-  const model = useMemo(
-    () => buildMesh(self, peers, routes, activities, Date.now()),
-    [self, peers, routes, activities, rates.sampledAt],
-  );
+  const model = useMemo(() => {
+    const base = buildMesh(self, peers, routes, activities, Date.now());
+    const status = statusQ.data;
+    if (!status) return base;
+    const overlay = status.overlay_ipv4 || status.overlay_ipv6 || undefined;
+    // The self node carries no peer row, so fill its real overlay/name from
+    // the status snapshot instead of leaving a short ID on the map.
+    return {
+      ...base,
+      nodes: base.nodes.map((node) =>
+        node.id === self
+          ? { ...node, overlay: overlay ?? node.overlay, label: status.name || node.label }
+          : node,
+      ),
+    };
+  }, [self, peers, routes, activities, rates.sampledAt, statusQ.data]);
 
   // Event-driven cache writes count as successful snapshots, so this is the
   // freshest moment the UI knows the mesh, not a fetch time.
