@@ -1,8 +1,8 @@
-# Desktop redesign — Phase 0 checkpoint
+# Desktop redesign — Phase 0/1/2 checkpoint
 
 Date: 2026-11-07. Branch: `GUI-redesign`, based on `GUI` at `20a388d`.
 
-**Verdict: PHASE 0 ACCEPTANCE VERIFIED; PHASE 1 DESIGN IN REVIEW; THE REDESIGN IS NOT COMPLETE.** The revised [Phase 1 design](../superpowers/specs/2026-11-07-mesh-first-redesign-design.md) preserves full operator parity and records the owner's explicit deferral of invitation expiry, active-invite inventory and invite-use attribution. The previous implementation plan is marked non-executable pending design review. No Phase 2 application changes have started. The owner authorized Skein-only lifecycle testing and complete application removal on the supplied Windows test PC, and isolated acceptance on a disposable Linux VM; both are recorded below. The Linux daily-use node was not reset or reinstalled. Nothing was pushed.
+**Verdict: PHASE 0 VERIFIED; PHASE 1 DESIGN APPROVED; PHASE 2 IMPLEMENTED AND VERIFIED AS SCOPED.** The [design](../superpowers/specs/2026-11-07-mesh-first-redesign-design.md) and its ordered [plan](../superpowers/plans/2026-11-07-mesh-first-redesign.md) are implemented: mesh-first surfaces, event-first data, bounded history, full operator parity and recovery. The owner explicitly deferred only invitation expiry, active-invite inventory and invite-use attribution. The owner authorized Skein-only lifecycle testing and complete application removal on the supplied Windows test PC, and isolated acceptance on a disposable Linux VM; both are recorded below. The Linux daily-use node was not reset or reinstalled. Nothing was pushed. Residuals and unverified surfaces are listed explicitly; this is not a claim that every platform/runtime path was exercised.
 
 Working bug ledger, parity map, plan and raw evidence: `~/workspace/skein-work/` (`BUGS.md`, `PARITY.md`, `PHASE-0-PLAN.md`). The linked worktree is `~/workspace/skein-work/desktop/`; the original checkout and its pre-existing edits remain intact.
 
@@ -46,6 +46,34 @@ Working bug ledger, parity map, plan and raw evidence: `~/workspace/skein-work/`
 | Architecture and packaging gates | VERIFIED | `scripts/collapse-gates.sh`, `scripts/packaging-assert.sh`; shell syntax checks. |
 | Knowledge graph | VERIFIED | `graphify update .` rebuilt the worktree code graph, AST-only, no LLM calls. |
 
+## Phase 2 implementation checkpoint
+
+Date: 2026-11-07. Branch `GUI-redesign`. The approved [design](../superpowers/specs/2026-11-07-mesh-first-redesign-design.md) was implemented in the ordered slices of the [plan](../superpowers/plans/2026-11-07-mesh-first-redesign.md): pure model, event-first data layer, Go contracts, mesh/peers/routes, activity/history, security/invitations, settings/recovery, diagnostics/updates/palette/shell.
+
+**Implemented:** one derived mesh model with evidence-ranked edges (direct/observed/route), stable map positions, accessible table equivalent, peer/link inspectors with Ping and Probe, session timestamps; single SSE consumer forwarding typed snapshots plus lifecycle events; bounded session ring and opt-in app-wide history (24 h/50 MB, JSON/CSV export, one writer); secret-gated grants read endpoint with caller role/transport; grant/revoke/set-owner via fixed helper verbs; public identity plus offline key generation (no overwrite, system-path refusal); bounded overlay ping; native diagnostic file export; signed release notes with legacy-compatible verification; settings/recovery/onboarding with tombstone-aware rejoin copy and Retry-stop-only partial completion; diagnostics, About/updates, command palette and session notifications.
+
+**Verified in this session**
+
+| Check | Verdict | Scope |
+|---|---|---|
+| Frontend contract | VERIFIED | `npx tsc --noEmit` exit 0; `npm test` 9 files / 82 tests; production `npm run build` exit 0 (pre-existing >500 kB advisory). |
+| Go build/vet | VERIFIED | `go build ./...`, `go vet ./...`, `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...` all exit 0. |
+| Go suite | VERIFIED with a harness caveat | User/mount/PID namespace with subordinate UID/GID maps and private `/etc/skein`+`/run`: serial `-p 1 ./...` green except `TestVerifyUnixServerAcceptsOwnProcess`, which passes outside the PID namespace (`/proc/<pid>/exe` disappears in-namespace). A parallel run also flakes `TestBootstrapCallPostsTokenInBody` across packages; it passes in isolation and serially. |
+| Architecture/packaging gates | VERIFIED | `scripts/collapse-gates.sh` and `scripts/packaging-assert.sh` pass. |
+| Bindings | VERIFIED | 14 services / 55 methods / 38 models / 23 events. History 6 (five original + `Record`), Security 4, Identity 2, Network 4, Diagnostics 4, Setup 5. |
+| Native Linux build | VERIFIED | `wails3 build` (production tags) exit 0 from the committed tree. |
+| Native GUI smoke (Xvfb) | VERIFIED for the shell | Real daemon (`skeind` 7 h uptime): Overview rendered live status/overlay/uptime; Map/Table switch; command palette navigation; Activity (recording off, privacy copy, empty history); Settings (real node/config/service); Security identity panel with real public key. Server-identity verification succeeded (data only appears after the verified IPC check). |
+| New endpoint against the installed daemon | PARTIALLY VERIFIED | The installed daily-use daemon predates `GET /api/v1/security/grants`, so the GUI correctly shows a 404 "update the daemon" state. The endpoint itself is covered by Go tests (`TestAccessGrantsView`, authz matrix); no live daemon with the new binary was available in this session. |
+| Windows runtime | NOT VERIFIED | Windows-specific code cross-builds and unit tests pass; the Phase 0 Windows PC was removed, so no native Windows run was possible. |
+
+**Residuals recorded, not hidden**
+
+- Diagnostics paging uses the support bundle's complete 1024-entry ring plus the live SSE tail rather than the daemon's `next` cursor; `DiagnosticsService.Logs` still drops `next`. A cursor-returning signature needs a Go change + bindings.
+- A partial-reset outcome (reset done, Stop unconfirmed) is component-scoped: navigating away from Settings loses the inline Retry-stop panel. The backup path still exists on disk.
+- Windows per-SID grants are not exposed by the helper (only `set-owner`); the UI states that instead of faking per-SID rows.
+- Palette destructive actions navigate to the owning page's confirm; the palette itself never holds a secret.
+- Invitation expiry, active-inventory and use attribution remain explicitly deferred by the owner; the UI states the limitation and points to rotation.
+
 ## Authorized Windows acceptance
 
 The owner explicitly authorized changing/removing Skein on the supplied Windows test PC, not unrelated services, firewall policy or developer tooling. Native environment: Windows 10 22H2 build 19045, amd64, Go 1.27.3, Wails v3.1.0, npm 11.20.0, WebView2 157.0.4341.42.
@@ -72,10 +100,13 @@ The owner explicitly authorized changing/removing Skein on the supplied Windows 
 Windows source acceptance used a committed-source archive instead of cloning the public, unpushed branch, and private GOBIN instead of replacing the user's Wails installation. It does not prove every README prerequisite-install/clone/package command literally as written. Targeted ACL tests used an isolated scratch directory; the protected-backup fixture's privilege requirement is recorded separately in `windows-acl-scoped-privileges.json`.
 
 
-## Remaining items after Phase 0
+## Remaining items
 
-1. Owner-approved deferral during Phase 1: invitation expiry, active-invite inventory and invite-use attribution. Current network invites contain a reusable network secret; UI-only expiry/tracking cannot enforce admission or establish use attribution. Generation, QR/copy, snapshot warnings and network-wide secret rotation remain in scope. F-01 per-peer revocation remains deferred.
-2. Documentation acceptance is bounded honestly: the literal public clone, prerequisite installation, Wails/Node toolchain, documented Linux install/uninstall and Windows source build/install were executed. The unpushed candidate was supplied to those clones through a local bundle, so the commands are verified but not against the public branch. The Linux distribution packages (`deb`/`rpm`/`aur`) were not built or installed, and native Windows packaging was compiled and executed in the earlier session, not re-run here.
-3. Observations for Phase 1, not Phase 0 blockers: a remote tombstone keeps a rejoining peer unlinked for up to 180 s while the GUI reports the mesh resumed; and the Windows node did not list the Linux peer even while the Linux node held an `up` link to it.
+1. Owner-approved deferral: invitation expiry, active-invite inventory and invite-use attribution. Network invites contain a reusable secret; UI-only expiry/tracking cannot enforce admission or establish attribution. Generation, QR/copy, snapshot warnings and rotation remain in scope. F-01 per-peer revocation remains deferred.
+2. Runtime coverage: no native Windows run this session (the Phase 0 PC was removed). Windows code is covered by cross-build and unit tests only. The daily-use daemon predates the new grants endpoint, so that screen's live 404 path was exercised, not a successful live grants read.
+3. Diagnostics paging uses the support-bundle ring rather than the daemon's `next` cursor; the service still drops `next`.
+4. A partial-reset Retry-stop panel is component-scoped; navigating away loses the inline panel (the backup file remains).
+5. Carried protocol observations: a departure tombstone delays reconnection up to 180 s (the UI now says “waiting for peers” instead of claiming the mesh resumed), and the Windows peer-list asymmetry remains undiagnosed.
+6. Documentation acceptance remains bounded: the public clone/prerequisites/installs were executed in Phase 0, but Linux distribution packages were not built and native Windows packaging was not re-run.
 
-The complete mesh-first redesign, event-driven history, full feature parity, health/troubleshooter, accessible topology and finished visual audit are still required. This checkpoint must not be presented as that deliverable.
+The redesign's visual/UX audit was code- and screenshot-level on Linux; a full multi-platform visual audit and the deferred invitation protocol work remain future work.
