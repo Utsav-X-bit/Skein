@@ -137,6 +137,52 @@ func TestGenerateOfflineRefusesSystemPaths(t *testing.T) {
 	}
 }
 
+// setSystemConfigDirs swaps the protected roots for one test.
+func setSystemConfigDirs(t *testing.T, roots ...string) {
+	t.Helper()
+	old := systemConfigDirs
+	systemConfigDirs = roots
+	t.Cleanup(func() { systemConfigDirs = old })
+}
+
+// The refusal must not depend on the protected root existing: a host without
+// /etc/skein still gets the refusal, not a stat error.
+func TestGenerateOfflineRefusesProtectedRootWithoutStat(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent-root")
+	setSystemConfigDirs(t, root)
+	for _, target := range []string{root, filepath.Join(root, "nested")} {
+		_, err := (&IdentityService{}).GenerateOffline(context.Background(), target)
+		if err == nil || !strings.Contains(err.Error(), "system config directory") {
+			t.Fatalf("%s err = %v, want a system-path refusal", target, err)
+		}
+	}
+}
+
+// A root reached through a symlink (darwin /etc -> /private/etc) must refuse
+// the symlink-resolved target, not just the spelling of the root.
+func TestGenerateOfflineRefusesResolvedSystemRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix symlinks")
+	}
+	real := t.TempDir()
+	root := filepath.Join(t.TempDir(), "etc")
+	if err := os.Symlink(real, root); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(real, "skein")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	setSystemConfigDirs(t, root)
+	_, err := (&IdentityService{}).GenerateOffline(context.Background(), target)
+	if err == nil || !strings.Contains(err.Error(), "system config directory") {
+		t.Fatalf("err = %v, want a system-path refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, "identity.key")); !os.IsNotExist(statErr) {
+		t.Fatalf("refused generation wrote a key: %v", statErr)
+	}
+}
+
 // A symlink in a user directory must not become a write into a system path.
 func TestGenerateOfflineResolvesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {

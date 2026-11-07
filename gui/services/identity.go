@@ -10,19 +10,21 @@ import (
 	"strings"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
+	"github.com/Utsav-X-bit/skein/internal/app"
 	"github.com/Utsav-X-bit/skein/internal/configstore"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 // systemConfigDirs are the privileged config locations the GUI must never
 // write, even when the user asks for a path inside one. The daemon (or the
-// elevated helper) owns them; the GUI is unprivileged.
+// elevated helper) owns them; the GUI is unprivileged. app.SystemDir is the
+// install root on every platform (it follows a redirected ProgramData on
+// Windows); the rest are the other Unix roots.
 var systemConfigDirs = []string{
-	"/etc/skein",
+	app.SystemDir(),
+	`C:\Program Files\Skein`,
 	"/usr",
 	"/var",
-	`C:\Program Files\Skein`,
-	`C:\ProgramData\Skein`,
 }
 
 // IdentityService exposes the daemon's public identity and creates an
@@ -100,15 +102,20 @@ func publicIdentity(id identity.Identity, path string) OfflineIdentity {
 	}
 }
 
-// offlineTargetDir validates the destination: absolute, existing, a
-// directory, resolved through symlinks, outside the system config dirs, and
-// not world-writable. The actual write still needs the OS to permit it, so
-// ownership is enforced by the kernel, not guessed from mode bits.
+// offlineTargetDir validates the destination: absolute, outside the system
+// config dirs, existing, a directory, resolved through symlinks, and not
+// world-writable. The denylist runs first so the refusal never depends on the
+// protected directory existing on this host. The actual write still needs the
+// OS to permit it, so ownership is enforced by the kernel, not guessed from
+// mode bits.
 func offlineTargetDir(targetDir string) (string, error) {
 	if !filepath.IsAbs(targetDir) {
 		return "", fmt.Errorf("identity: target %q must be an absolute path", targetDir)
 	}
 	dir := filepath.Clean(targetDir)
+	if isSystemConfigDir(dir) {
+		return "", fmt.Errorf("identity: refusing to write the system config directory %s; choose a directory you own", dir)
+	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		return "", fmt.Errorf("identity: target %s: %w", dir, err)
@@ -130,20 +137,31 @@ func offlineTargetDir(targetDir string) (string, error) {
 }
 
 // isSystemConfigDir reports whether dir is one of the privileged config
-// directories or below it. Windows paths compare case-insensitively.
+// directories or below it. Each root is compared both as written and
+// symlink-resolved, so a platform that redirects a root (darwin's /etc ->
+// /private/etc) cannot be used to slip past the refusal. Windows paths
+// compare case-insensitively.
 func isSystemConfigDir(dir string) bool {
 	for _, sys := range systemConfigDirs {
-		root, path := filepath.Clean(sys), dir
-		if runtime.GOOS == "windows" {
-			root, path = strings.ToLower(root), strings.ToLower(path)
+		if isUnder(sys, dir) {
+			return true
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			continue
-		}
-		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		if resolved, err := filepath.EvalSymlinks(sys); err == nil && isUnder(resolved, dir) {
 			return true
 		}
 	}
 	return false
+}
+
+// isUnder reports whether path is root itself or a descendant of it.
+func isUnder(root, path string) bool {
+	root, path = filepath.Clean(root), filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		root, path = strings.ToLower(root), strings.ToLower(path)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
