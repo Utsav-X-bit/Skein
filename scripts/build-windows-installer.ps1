@@ -157,6 +157,26 @@ Write-Host "NSIS:    $makensis"
 
 # --- build -----------------------------------------------------------------
 $gui = Join-Path $root "gui"
+$bin = Join-Path $gui "bin"
+
+# An interrupted build can leave a stale executable that `go build -o` refuses
+# to replace. Clear only this checkout's outputs, and refuse while one of them
+# is running (a locked exe cannot be replaced).
+$running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -in @("skeind.exe", "skein.exe", "skein-helper.exe", "skein-desktop.exe") -and
+        $_.ExecutablePath -and
+        $_.ExecutablePath.StartsWith($bin, [StringComparison]::OrdinalIgnoreCase)
+    })
+if ($running.Count -gt 0) {
+    Fail "A Skein process is running from $bin. Quit the desktop and stop the service, then rerun."
+}
+foreach ($name in @("skeind.exe", "skein.exe", "skein-helper.exe", "skein-desktop.exe")) {
+    $path = Join-Path $bin $name
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "$path~" -Force -ErrorAction SilentlyContinue
+}
+
 Push-Location $gui
 try {
     & $wails doctor
