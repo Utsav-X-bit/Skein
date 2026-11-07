@@ -153,31 +153,26 @@ service is running, close it and reopen normally.
 
 1. Launch `skein-desktop` (Linux) or
    `C:\Program Files\Skein\skein-desktop.exe` (Windows).
-2. First node: **Create a network**. On Linux approve the `pkexec` prompt.
-   On Windows the desktop must run **as Administrator for this first
-   setup**: the helper mints the single-use bootstrap token on stdout and
-   refuses an unelevated caller. The daemon writes config and identity,
-   then runs normally. Copy the join string.
-3. Other nodes: **Join a network**, paste the join string. On Windows run
-   the desktop as Administrator for this first join too; afterwards close
-   it and reopen normally.
+2. First node: **Create a network**. Approve the `pkexec` prompt on Linux
+   or the UAC prompt on Windows. The desktop stays unprivileged: it creates
+   a private named pipe, launches the helper elevated, and the helper
+   returns the single-use bootstrap token over that pipe. The daemon writes
+   config and identity, then runs normally. Copy the join string.
+3. Other nodes: **Join a network**, paste the join string, approve elevation.
 
 ### Windows first-setup troubleshooting
 
-`helper bootstrap: run elevated (UAC)` means the desktop is running with a
-normal token and the helper refused to mint the bootstrap token. Either:
+If the desktop reports `helper bootstrap: run elevated (UAC)` and no UAC
+prompt appeared, the installed build predates the bootstrap-pipe flow.
+Upgrade to the current setup, then retry and approve the prompt. As a
+fallback, from an elevated PowerShell:
 
-- right-click **Skein Desktop** → **Run as administrator**, then create or
-  join; or
-- from an elevated PowerShell:
+```powershell
+& "C:\Program Files\Skein\skein.exe" system join "skein:2:…"
+```
 
-  ```powershell
-  & "C:\Program Files\Skein\skein.exe" system join "skein:2:…"
-  ```
-
-After the service reports running, close the elevated window and launch
-Skein Desktop normally. A purge/reset leaves `identity.key` and the access
-file in place; the next join reuses the preserved identity.
+A purge/reset leaves `identity.key` and the access file in place; the next
+join reuses the preserved identity.
 
 If a config already exists but the service is stopped, choose **Use an
 existing installation**. Overview shows peers and routes; Security shows the

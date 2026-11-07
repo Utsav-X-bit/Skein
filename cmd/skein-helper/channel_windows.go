@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/pipeconn"
 )
 
@@ -25,7 +28,7 @@ func openPipeSession(name string) (*pipeSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(180 * time.Second))
 	return &pipeSession{conn: conn}, nil
 }
 
@@ -39,6 +42,26 @@ func (s *pipeSession) readRequest() ([]byte, error) {
 		return nil, errors.New("empty request on the helper pipe")
 	}
 	return data, nil
+}
+
+// verifyDesktop refuses to send a bootstrap token to a pipe server that is
+// not the Skein desktop beside this helper. A squatter cannot create the
+// first instance (the GUI uses FILE_FLAG_FIRST_PIPE_INSTANCE), and this check
+// closes the remaining same-user impersonation case.
+func (s *pipeSession) verifyDesktop() error {
+	h, ok := pipeconn.ServerHandle(s.conn)
+	if !ok {
+		return errors.New("bootstrap pipe: no server handle")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("bootstrap pipe: helper path: %w", err)
+	}
+	expected := filepath.Join(filepath.Dir(exe), "skein-desktop.exe")
+	if _, err := api.VerifyPipeServer(h, expected); err != nil {
+		return fmt.Errorf("bootstrap pipe server is not the desktop: %w", err)
+	}
+	return nil
 }
 
 // writeResult sends the result JSON and closes the connection.

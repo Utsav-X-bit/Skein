@@ -12,4 +12,5 @@ func openPipeSession(string) (*pipeSession, error) {
 
 type pipeSession struct{}
 
+func (s *pipeSession) verifyDesktop() error     { return nil }
 func (s *pipeSession) writeResult([]byte) error { return nil }

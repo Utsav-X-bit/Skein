@@ -198,6 +198,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if opts.pipe != "" {
+		if verb == "bootstrap" {
+			return runBootstrapPiped(opts, stdout, stderr)
+		}
 		return runPiped(verb, rest, opts, stdout, stderr)
 	}
 	if _, removed := removedVerbs[verb]; removed {
@@ -221,20 +224,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch verb {
 	case "bootstrap":
-		// Step 4: the only secret-producing helper action left after
-		// the collapse. The verb binds the token: a join token
-		// cannot init, and vice versa. The token travels in the
-		// stdout JSON envelope only — result() marshals it there
-		// and nowhere else (no log line, no argv, no result file:
-		// main() refuses --result for this verb).
-		if opts.verb == "" {
-			return fail(stdout, errors.New("bootstrap needs --verb init|join|import"))
-		}
-		token, err := app.MintBootstrap(opts.verb)
-		if err != nil {
-			return fail(stdout, err)
-		}
-		return result(stdout, nil, map[string]any{"token": token, "verb": opts.verb, "expires_in_seconds": 600})
+		return bootstrapVerb(opts, stdout)
 	case "install":
 		var st service.State
 		var err error
@@ -320,6 +310,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "skein-helper: unknown verb %q\n\n%s", verb, usage)
 		return 2
 	}
+}
+
+// bootstrapVerb mints a single-use token and returns the JSON envelope.
+// The token travels only in the caller's writer: stdout for an already
+// elevated GUI/CLI, or the verified desktop pipe for a UAC launch.
+func bootstrapVerb(opts options, stdout io.Writer) int {
+	if opts.verb == "" {
+		return fail(stdout, errors.New("bootstrap needs --verb init|join|import"))
+	}
+	token, err := app.MintBootstrap(opts.verb)
+	if err != nil {
+		return fail(stdout, err)
+	}
+	return result(stdout, nil, map[string]any{"token": token, "verb": opts.verb, "expires_in_seconds": 600})
+}
+
+// runBootstrapPiped is the UAC path: the unelevated desktop created a
+// random, user-only named pipe; this elevated helper verifies that the
+// pipe server really is the desktop, runs bootstrap, and writes the
+// token envelope to that pipe. No token touches disk or argv.
+func runBootstrapPiped(opts options, stdout, stderr io.Writer) int {
+	session, err := openPipeSession(opts.pipe)
+	if err != nil {
+		return fail(stdout, err)
+	}
+	if err := session.verifyDesktop(); err != nil {
+		fmt.Fprintf(stderr, "skein-helper: bootstrap pipe: %v\n", err)
+		return 1
+	}
+	var out bytes.Buffer
+	code := bootstrapVerb(opts, &out)
+	if err := session.writeResult(out.Bytes()); err != nil {
+		fmt.Fprintf(stderr, "skein-helper: pipe result: %v\n", err)
+		return 1
+	}
+	return code
 }
 
 // runPiped serves one request over the GUI-created pipe. Step 10: the
