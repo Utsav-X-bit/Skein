@@ -33,7 +33,7 @@
 | Shell | `components/layout/AppShell.tsx`, `CommandPalette.tsx`, `CommandBar.tsx`, `Sidebar.tsx` |
 | Deleted | `features/topology/Topology.tsx` |
 | Go services | `gui/services/events.go`, `history.go`, `identity.go` (new), `security.go` (new), `network.go`, `diagnostics.go`, `services.go` |
-| Go API | `internal/api/types_gui.go`, `types.go`, `types_system.go`, `routes.go`, `handlers_security.go` (new), `internal/daemon/security.go`, `update.go`, `daemon.go`, `internal/peer/table.go`, `internal/dataplane/engine.go` |
+| Go API | `internal/api/types_gui.go`, `types.go`, `types_system.go`, `routes.go`, `handlers_security.go` (existing), `internal/daemon/security.go`, `update.go`, `daemon.go`, `internal/peer/table.go`, `internal/dataplane/engine.go` |
 
 ## Shared interfaces (Task 1 produces; every later task consumes)
 
@@ -166,7 +166,7 @@ ReleaseNotes string `json:"release_notes,omitempty"`
 
 ### Task 4: Go contracts — security grants, helper wrappers, offline identity
 
-**Files:** create `internal/api/handlers_security.go`, `gui/services/security.go`, `gui/services/identity.go`; modify `internal/api/types_gui.go`, `routes.go`, `internal/daemon/security.go`, `gui/services/services.go`; tests.
+**Files:** modify `internal/api/handlers_security.go`; create `gui/services/security.go`, `gui/services/identity.go`; modify `internal/api/types_gui.go`, `routes.go`, `internal/daemon/security.go`, `gui/services/services.go`; tests.
 
 **Interfaces:** `AccessGrantsView`, `CallerSecurity`, `GrantRecord`, `SecurityService`, `IdentityService`.
 
