@@ -126,6 +126,8 @@ func (s *HistoryService) Record(ctx context.Context, sample HistorySample) error
 }
 
 // Samples returns recorded samples, optionally limited to the last N minutes.
+// Rows past the retention window are dropped even when no append has trimmed
+// the file yet, so a long-idle app never reports samples it would discard.
 func (s *HistoryService) Samples(ctx context.Context, r HistoryRange) ([]HistorySample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -141,10 +143,13 @@ func (s *HistoryService) Samples(ctx context.Context, r HistoryRange) ([]History
 	if err != nil {
 		return nil, err
 	}
-	if r.Minutes <= 0 {
-		return samples, nil
+	now := time.Now()
+	cutoff := now.Add(-historyMaxAge).UnixMilli()
+	if r.Minutes > 0 {
+		if window := now.Add(-time.Duration(r.Minutes) * time.Minute).UnixMilli(); window > cutoff {
+			cutoff = window
+		}
 	}
-	cutoff := time.Now().Add(-time.Duration(r.Minutes) * time.Minute).UnixMilli()
 	out := samples[:0]
 	for _, sample := range samples {
 		if sample.T >= cutoff {
@@ -260,7 +265,7 @@ func (s *HistoryService) Export(ctx context.Context, format string) (string, err
 	if path == "" {
 		return "", errors.New("history export cancelled")
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeFileAtomic(path, raw, 0o600); err != nil {
 		return "", fmt.Errorf("history export: %w", err)
 	}
 	return path, nil

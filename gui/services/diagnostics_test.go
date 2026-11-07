@@ -112,3 +112,26 @@ func TestExportBundleIncludesRedactions(t *testing.T) {
 		t.Fatal("export is not indented JSON")
 	}
 }
+
+func TestExportBundleTightensExistingFileMode(t *testing.T) {
+	stubDiagnosticsBundle(t, api.DiagnosticBundle{Version: "test"})
+	out := filepath.Join(t.TempDir(), "bundle.json")
+	if err := os.WriteFile(out, []byte("stale bundle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubSaveDialog(t, func(string, string, string) (string, error) { return out, nil })
+
+	if _, err := (&DiagnosticsService{}).ExportBundle(context.Background()); err != nil {
+		t.Fatalf("ExportBundle: %v", err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("overwritten export mode = %#o, want 0600", perm)
+	}
+}

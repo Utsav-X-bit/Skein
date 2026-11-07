@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -67,7 +66,7 @@ func (s *DiagnosticsService) ExportBundle(ctx context.Context) (string, error) {
 	if path == "" {
 		return "", errors.New("diagnostics export cancelled")
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := writeFileAtomic(path, raw, 0o600); err != nil {
 		return "", fmt.Errorf("diagnostics export: %w", err)
 	}
 	return path, nil

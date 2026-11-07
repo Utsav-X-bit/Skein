@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -299,5 +300,76 @@ func TestHistoryExportCancelledAndInvalidFormat(t *testing.T) {
 	}
 	if called {
 		t.Fatal("invalid format opened the dialog")
+	}
+}
+
+func TestHistorySamplesHideRowsPastRetention(t *testing.T) {
+	dir := stubHistoryStore(t)
+	historyMaxAge = time.Hour
+	ctx := context.Background()
+	now := time.Now()
+	stale := sampleAt(now.Add(-2*time.Hour), 1)
+	fresh := sampleAt(now.Add(-time.Minute), 2)
+
+	// Write directly: Record would trim the stale row as part of its append,
+	// and the point of the test is that Samples hides it without one.
+	var buf bytes.Buffer
+	for _, sample := range []HistorySample{stale, fresh} {
+		raw, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(append(raw, '\n'))
+	}
+	if err := os.WriteFile(filepath.Join(dir, historyFileName), buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	samples, err := (&HistoryService{}).Samples(ctx, HistoryRange{})
+	if err != nil {
+		t.Fatalf("Samples: %v", err)
+	}
+	if len(samples) != 1 || samples[0] != fresh {
+		t.Fatalf("samples = %+v, want only the fresh row", samples)
+	}
+
+	// A window wider than retention must not resurrect the stale row.
+	samples, err = (&HistoryService{}).Samples(ctx, HistoryRange{Minutes: 300})
+	if err != nil {
+		t.Fatalf("Samples wide window: %v", err)
+	}
+	if len(samples) != 1 || samples[0] != fresh {
+		t.Fatalf("wide-window samples = %+v, want only the fresh row", samples)
+	}
+}
+
+func TestHistoryExportTightensExistingFileMode(t *testing.T) {
+	dir := stubHistoryStore(t)
+	ctx := context.Background()
+	svc := &HistoryService{}
+	if err := svc.SetEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Record(ctx, sampleAt(time.Now(), 3)); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out.json")
+	if err := os.WriteFile(out, []byte("stale history"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saveFileDialog = func(string, string, string) (string, error) { return out, nil }
+
+	if _, err := svc.Export(ctx, "json"); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("overwritten export mode = %#o, want 0600", perm)
 	}
 }

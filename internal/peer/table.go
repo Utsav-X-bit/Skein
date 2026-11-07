@@ -387,7 +387,9 @@ func (t *Table) UpdateOverlay(id uint64, v4, v6 netip.Addr) {
 	}
 }
 
-// SetActive records a validated direct path.
+// SetActive records a validated direct path. A probe reply can be the up
+// transition, so it starts the session the same way a handshake would; a
+// later MarkSession then only refreshes LastHandshake.
 func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration, transport string, seen time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -401,6 +403,9 @@ func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration,
 		p.Path = "v6"
 	}
 	p.RTT = rtt
+	if p.State != StateUp {
+		p.SessionStart = seen
+	}
 	p.State = StateUp
 	p.Direct = true
 	p.Transport = transport
