@@ -75,6 +75,13 @@ export function activityWindow(
   };
 }
 
+// shouldFlow gates the link flow marker: route segments never animate, and
+// motion needs both permission and a proven positive rate in either direction.
+export function shouldFlow(evidence: Evidence, rate: Rate | null | undefined, motionAllowed: boolean): boolean {
+  if (!motionAllowed || evidence === "route") return false;
+  return rate != null && rate.rxPerSec + rate.txPerSec > 0;
+}
+
 const evidenceRank: Record<Evidence, number> = { route: 0, observed: 1, direct: 2 };
 
 export function buildMesh(

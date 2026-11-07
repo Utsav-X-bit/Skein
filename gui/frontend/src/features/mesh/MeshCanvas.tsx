@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Background, Controls, MarkerType, ReactFlow, type Edge, type Node, type NodeProps, Position } from "@xyflow/react";
+import { Background, Controls, MarkerType, ReactFlow, type Node, type NodeProps, Position } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Activity, Peer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn, shortID } from "@/lib/utils";
+import { MeshEdge, type MeshFlowEdge } from "./MeshEdge";
 import { MeshTable } from "./MeshTable";
 import { useMotionAllowed } from "./hooks";
 import {
   activityWindow,
+  shouldFlow,
   type MeshModel,
   type MeshNode,
   type Rate,
@@ -120,6 +122,7 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
 }
 
 const nodeTypes = { mesh: MeshNodeView };
+const edgeTypes = { mesh: MeshEdge };
 
 /** MeshCanvas renders the shared model as a map, with the table equivalent. */
 export function MeshCanvas({
@@ -180,15 +183,16 @@ export function MeshCanvas({
       model.edges.map((edge) => {
         const owner = edge.from === self ? edge.to : edge.from;
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
-        const flowing = motion && edge.evidence !== "route" && rate !== undefined && rate.rxPerSec + rate.txPerSec > 0;
+        const flowing = shouldFlow(edge.evidence, rate, motion);
         const selected = selectedLink?.from === edge.from && selectedLink?.to === edge.to;
         const color = edge.evidence === "direct" ? "var(--accent)" : edge.evidence === "observed" ? "var(--info)" : "var(--text-faint)";
         return {
           id: edge.id,
           source: edge.from,
           target: edge.to,
-          animated: flowing,
+          type: "mesh",
           selected,
+          data: { flowing, color },
           style: {
             stroke: color,
             strokeWidth: selected ? 2.6 : 1.5,
@@ -196,7 +200,7 @@ export function MeshCanvas({
             opacity: edge.evidence === "route" ? 0.55 : 1,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
-        } satisfies Edge;
+        } satisfies MeshFlowEdge;
       }),
     [model.edges, self, peerRates, rates, motion, selectedLink],
   );
@@ -242,6 +246,7 @@ export function MeshCanvas({
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             nodesDraggable={false}
             nodesConnectable={false}
             nodesFocusable={mode === "map"}

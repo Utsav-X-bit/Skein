@@ -11,6 +11,7 @@ import {
   formatRate,
   peerHealth,
   presenceOf,
+  shouldFlow,
 } from "./model";
 
 const peer = (id: string, over: Partial<Peer> = {}): Peer => ({
@@ -75,6 +76,31 @@ describe("computeRate", () => {
   it("returns null when a counter rolls back", () => {
     expect(computeRate({ t: 1_000, rx: 1_000, tx: 1_000, uptime: 10 }, { t: 2_000, rx: 500, tx: 1_500, uptime: 11 })).toBeNull();
     expect(computeRate({ t: 1_000, rx: 1_000, tx: 1_000, uptime: 10 }, { t: 2_000, rx: 1_500, tx: 500, uptime: 11 })).toBeNull();
+  });
+});
+
+describe("shouldFlow", () => {
+  const rate = { rxPerSec: 0, txPerSec: 1 };
+
+  it("flows for direct or observed evidence with a positive proven rate", () => {
+    expect(shouldFlow("direct", rate, true)).toBe(true);
+    expect(shouldFlow("observed", rate, true)).toBe(true);
+    expect(shouldFlow("observed", { rxPerSec: 2, txPerSec: 0 }, true)).toBe(true);
+  });
+
+  it("never flows route evidence", () => {
+    expect(shouldFlow("route", rate, true)).toBe(false);
+  });
+
+  it("never flows with an absent or zero rate", () => {
+    expect(shouldFlow("direct", null, true)).toBe(false);
+    expect(shouldFlow("direct", undefined, true)).toBe(false);
+    expect(shouldFlow("observed", { rxPerSec: 0, txPerSec: 0 }, true)).toBe(false);
+  });
+
+  it("never flows when motion is reduced", () => {
+    expect(shouldFlow("direct", rate, false)).toBe(false);
+    expect(shouldFlow("observed", rate, false)).toBe(false);
   });
 });
 
