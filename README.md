@@ -143,8 +143,9 @@ Start-Process .\gui\bin\skein-desktop-amd64-installer.exe
 ```
 
 Approve the UAC prompt (silent: add `/S`). It installs into
-`C:\Program Files\Skein`. Then launch the desktop as your normal user and
-create or join a network as described below.
+`C:\Program Files\Skein`. For the **first** create/join on Windows, run the
+desktop as Administrator once (or use the elevated CLI below); after the
+service is running, close it and reopen normally.
 
 ## Use
 
@@ -152,10 +153,31 @@ create or join a network as described below.
 
 1. Launch `skein-desktop` (Linux) or
    `C:\Program Files\Skein\skein-desktop.exe` (Windows).
-2. First node: **Create a network**. Approve the UAC/pkexec prompt. The
-   helper mints a single-use bootstrap token, the daemon writes config and
-   identity, then runs normally. Copy the join string.
-3. Other nodes: **Join a network**, paste the join string, approve elevation.
+2. First node: **Create a network**. On Linux approve the `pkexec` prompt.
+   On Windows the desktop must run **as Administrator for this first
+   setup**: the helper mints the single-use bootstrap token on stdout and
+   refuses an unelevated caller. The daemon writes config and identity,
+   then runs normally. Copy the join string.
+3. Other nodes: **Join a network**, paste the join string. On Windows run
+   the desktop as Administrator for this first join too; afterwards close
+   it and reopen normally.
+
+### Windows first-setup troubleshooting
+
+`helper bootstrap: run elevated (UAC)` means the desktop is running with a
+normal token and the helper refused to mint the bootstrap token. Either:
+
+- right-click **Skein Desktop** → **Run as administrator**, then create or
+  join; or
+- from an elevated PowerShell:
+
+  ```powershell
+  & "C:\Program Files\Skein\skein.exe" system join "skein:2:…"
+  ```
+
+After the service reports running, close the elevated window and launch
+Skein Desktop normally. A purge/reset leaves `identity.key` and the access
+file in place; the next join reuses the preserved identity.
 
 If a config already exists but the service is stopped, choose **Use an
 existing installation**. Overview shows peers and routes; Security shows the
