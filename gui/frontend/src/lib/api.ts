@@ -9,8 +9,10 @@ import * as FirewallService from "../../bindings/github.com/Utsav-X-bit/skein/gu
 import * as ServiceService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/serviceservice";
 import * as HistoryService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/historyservice";
 import * as UpdateService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/updateservice";
+import * as SecurityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/securityservice";
+import * as IdentityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/identityservice";
 
-export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService };
+export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService };
 
 export type { Connection, Status, Peer, Route, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
 
