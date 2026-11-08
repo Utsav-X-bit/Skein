@@ -8,22 +8,19 @@ import (
 	"fmt"
 )
 
-// mintBootstrapViaHelper mints a bootstrap token through the helper's
-// stdout channel only — the channel that exists today (Step 4 open
-// item). The Windows GUI's usual elevated path (UAC runas + temp
-// result file) cannot carry a bootstrap token: the helper refuses
-// --result for this verb outright, so that path would fail, not leak.
-// This implementation runs the helper with captured stdout, which
-// works when the GUI process is already elevated (first-setup run
-// elevated, or the installer launches it so). When it is not
-// elevated, the helper's privilege check fails and the error says
-// so plainly, with the elevated-CLI alternative — it never falls
-// back to a result file or an unverified channel. The pipe variant
-// (GUI-created named pipe, Step 4's other recommended option) is
-// the follow-up that would give unelevated Windows GUI first-setup
-// a UAC flow; it is recorded in the Step 8 report, not invented
-// here untested.
+// mintBootstrapViaHelper mints a bootstrap token through the helper.
+//
+// An already-elevated desktop captures the helper's stdout directly. A
+// normal-token desktop cannot: UAC does not carry inherited stdio across
+// the elevation boundary, and the helper refuses --result for bootstrap so
+// the token never lands in a temp file. It uses the GUI-created named pipe
+// instead: the desktop creates a random, user-only pipe, launches the
+// helper through UAC, the helper verifies the pipe server is the desktop,
+// mints the token and writes the JSON envelope back over that pipe.
 func mintBootstrapViaHelper(ctx context.Context, verb string) (string, error) {
+	if !currentProcessElevated() {
+		return mintBootstrapViaPipe(ctx, verb)
+	}
 	// M6 (F-04): helperPath() ignores SKEIN_HELPER in release builds.
 	path := helperPath()
 	cmd := helperCommand(ctx, path, "bootstrap", "--verb", verb)
@@ -31,9 +28,13 @@ func mintBootstrapViaHelper(ctx context.Context, verb string) (string, error) {
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
 		// The helper writes its JSON envelope to stdout even on
-		// failure (e.g. the privilege check); surface that first.
-		if _, perr := parseBootstrapToken(out.Bytes(), verb); perr != nil {
-			return "", fmt.Errorf("%w (first setup on Windows needs an elevated desktop app, or run `skein system init` from an elevated prompt)", perr)
+		// failure (e.g. no system config); surface that first. An
+		// empty stdout means the process itself failed, so report
+		// the exit error and stderr instead of a JSON parse error.
+		if out.Len() > 0 {
+			if _, perr := parseBootstrapToken(out.Bytes(), verb); perr != nil {
+				return "", perr
+			}
 		}
 		if errb.Len() > 0 {
 			return "", fmt.Errorf("helper bootstrap: %w: %s", err, errb.String())

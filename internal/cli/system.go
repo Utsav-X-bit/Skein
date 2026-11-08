@@ -1,13 +1,12 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -41,20 +40,11 @@ var newSystemClient = func() *client {
 }
 
 // runSystemHelper runs one minimal-helper verb and returns its stdout.
-// It is a variable so tests can substitute a fake helper.
-var runSystemHelper = func(verb string, args ...string) ([]byte, error) {
-	path := systemHelperPath()
-	cmd := exec.Command(path, append([]string{verb}, args...)...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		if errb.Len() > 0 {
-			return out.Bytes(), fmt.Errorf("helper %s: %w: %s", verb, err, strings.TrimSpace(errb.String()))
-		}
-		return out.Bytes(), fmt.Errorf("helper %s: %w", verb, err)
-	}
-	return out.Bytes(), nil
-}
+// The platform implementation elevates through the approved mechanism
+// (pkexec with the shipped polkit action on Linux, UAC on Windows for
+// non-secret verbs) instead of assuming the CLI is already root. It is
+// a variable so tests can substitute a fake helper.
+var runSystemHelper = execSystemHelper
 
 // mintSystemToken mints a bootstrap token for verb via the helper. It is
 // a variable so tests can substitute a token without a helper binary.
@@ -109,9 +99,32 @@ func bootstrapResult(ctx context.Context, c *client, verb, token string, fields 
 		return out, err
 	}
 	if err := c.doBodyWithResult(ctx, http.MethodPost, "/api/v1/bootstrap/"+verb, raw, &out); err != nil {
-		return out, err
+		return out, bootstrapDenied(err)
 	}
 	return out, nil
+}
+
+// bootstrapDenied explains a 403 on a bootstrap endpoint. Bootstrap is
+// not role-gated: the daemon refuses when the kernel caller does not
+// match the single-use token's bound uid/SID, or when the caller used
+// the dev TCP bearer transport. The generic "ask for the secret role"
+// text sends the user to the wrong fix, so replace it when the daemon
+// supplied no remediation of its own. This rewrites guidance only; the
+// status, message, token binding, and every fail-closed check are
+// untouched.
+func bootstrapDenied(err error) error {
+	var ce *ctlerr.Error
+	if !errors.As(err, &ce) || ce.Kind != ctlerr.Denied || ce.Remediation != "" {
+		return err
+	}
+	return &ctlerr.Error{
+		Kind:    ce.Kind,
+		Code:    ce.Code,
+		Message: ce.Message,
+		Remediation: "the bootstrap token is bound to the user who approved the elevation prompt; " +
+			"run this command as that same user (pkexec keeps the CLI unprivileged; on Windows use an elevated prompt). " +
+			"Bootstrap is refused over the dev TCP bearer transport by design, and no role grant can fix a caller/token mismatch.",
+	}
 }
 
 func printBootstrapResult(res app.BootstrapResult, stdout io.Writer) {

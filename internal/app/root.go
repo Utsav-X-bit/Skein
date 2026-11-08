@@ -97,6 +97,11 @@ func ensureServiceWithDaemon(cfg conf.Config, daemonPath string) (service.State,
 			return service.StateError, fmt.Errorf("service stop: %w", err)
 		}
 	}
+	// Repair inherited permissions before opening a lock left by older installs.
+	// On Unix this leaves directory ownership, modes and ACLs untouched.
+	if err := fileperm.RestrictDACL(SystemDir()); err != nil {
+		return service.StateError, fmt.Errorf("service config directory: %w", err)
+	}
 	// Migrate older configs to the socket/pipe transport before the service
 	// starts; otherwise the desktop has no control endpoint to connect to.
 	setControlTransport(&cfg)

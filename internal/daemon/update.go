@@ -272,7 +272,7 @@ func writeUpdateState(path string, st api.UpdateState) error {
 	if err != nil {
 		return err
 	}
-	return writeBytesAtomic(path, raw, 0o600)
+	return writeBytesAtomic(path, raw)
 }
 
 func readUpdateState(path string) (*api.UpdateState, error) {

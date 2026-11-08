@@ -155,6 +155,7 @@ func TestPeerUIDAuthentication(t *testing.T) {
 	defer ln.Close()
 
 	srv, _, _, _ := newTestServer(t)
+	srv.SetGrant("uid:"+strconv.Itoa(os.Getuid()), RoleMutate)
 	events := make(chan AuditEvent, 4)
 	srv.Audit(func(e AuditEvent) { events <- e })
 	go func() {

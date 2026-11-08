@@ -3,10 +3,12 @@ package bootstrap
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 // GrantSecret writes callerID into the access file with the secret
@@ -54,20 +56,16 @@ func GrantSecret(accessPath, callerID string) error {
 }
 
 func writeGrantFile(path string, data []byte) error {
-	dir := ""
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		dir = path[:i]
-	}
-	if dir == "" {
-		dir = "."
-	}
-	tmp, err := os.CreateTemp(dir, ".access-*.tmp")
+	// Keep the temporary file beside its destination: a rename cannot
+	// cross volumes, including when Windows uses a different temp drive.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".access-*.tmp")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
+	// Keep the grants private independently of inherited permissions.
+	if err := fileperm.Restrict(name); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -81,6 +79,11 @@ func writeGrantFile(path string, data []byte) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	// Normalize an existing grants DACL before replacement.
+	// Report real failures; absence is normal on the first write.
+	if err := fileperm.Restrict(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("bootstrap: repair %s: %w", path, err)
 	}
 	return os.Rename(name, path)
 }

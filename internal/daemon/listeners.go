@@ -30,6 +30,21 @@ const controlSocketGroup = "skein"
 // (see devTCPEnabled): a config with a kernel transport never also
 // serves TCP.
 func (d *Daemon) StartControlListeners(ctx context.Context) (func(), error) {
+	// Bootstrap mode already bound the control transport. Adopt it
+	// rather than closing and rebinding: the listener never goes away,
+	// so clients that connected right after bootstrap success are
+	// served here instead of seeing a dead socket/pipe (B16).
+	if d.handoff != nil {
+		h := d.handoff
+		d.handoff = nil
+		stop := h.Adopt(d.api.Handler())
+		log.Printf("skein: control listening on %s (adopted from bootstrap mode)", h.ln.Addr())
+		go func() {
+			<-ctx.Done()
+			stop()
+		}()
+		return stop, nil
+	}
 	ln, label, remove, err := d.controlListener(ctx)
 	if err != nil {
 		return nil, err

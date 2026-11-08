@@ -352,3 +352,52 @@ func TestRegisterDaemonHelperDirPlantNeverRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestCopyHelpersKeepUnixMode covers the two byte-copy helpers the
+// upgrade/rollback path uses. On Unix a copy must keep the source's mode
+// bits: a restored skeind has to stay executable and a config has to stay
+// 0600. The Windows DACL half is in register_dacl_windows_test.go, where
+// the fixture can name the current user's SID.
+func TestCopyHelpersKeepUnixMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits are Unix; the DACL half is register_dacl_windows_test.go")
+	}
+	src := filepath.Join(t.TempDir(), daemonBaseName())
+	if err := os.WriteFile(src, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		copy func(src, dst string) error
+	}{
+		{"copyFile", copyFile},
+		{"copyFileAtomic", copyFileAtomic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := filepath.Join(dstDir, tc.name)
+			if err := tc.copy(src, dst); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			raw, err := os.ReadFile(dst)
+			if err != nil {
+				t.Fatalf("%s destination unreadable: %v", tc.name, err)
+			}
+			if string(raw) != "binary" {
+				t.Fatalf("%s destination = %q", tc.name, raw)
+			}
+			info, err := os.Stat(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The exec bit is the load-bearing part of "same mode
+			// bits as src": a chmod-to-0600 copy is not runnable.
+			if info.Mode().Perm()&0o111 == 0 {
+				t.Fatalf("%s mode = %o, want the source's exec bits kept", tc.name, info.Mode().Perm())
+			}
+		})
+	}
+}

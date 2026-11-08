@@ -33,6 +33,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 // RevokeOutcome describes what a revoke did. Warning is non-empty when
@@ -149,6 +151,9 @@ func revokeGrantFromFile(path, identity string, force bool) (RevokeOutcome, erro
 // writeAtomicBytes: that helper chowns to root, which an unprivileged
 // test cannot do, and the helper runs elevated in production, so the
 // temp file already has the right owner.
+//
+// An explicit DACL keeps replacement grants scoped to their creator,
+// SYSTEM, and Administrators. set-owner then adds the interactive user.
 func writeAccessFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -156,7 +161,7 @@ func writeAccessFileAtomic(path string, data []byte) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := fileperm.Restrict(name); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -170,6 +175,11 @@ func writeAccessFileAtomic(path string, data []byte) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	// Normalize any pre-existing grants DACL before replacement.
+	// Report real failures; absence is normal on the first write.
+	if err := fileperm.Restrict(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("repair %s: %w", path, err)
 	}
 	return os.Rename(name, path)
 }

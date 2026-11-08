@@ -31,10 +31,11 @@ to the daemon control API):
   bootstrap --verb init|join|import
                         (Step 4) mint a single-use bootstrap token and
                         start the service in bootstrap mode; the token
-                        is returned ONLY in stdout JSON, never logged,
-                        never written to disk in plaintext. Fails if a
-                        system config already exists or a bootstrap is
-                        already in progress.
+                        is returned ONLY in the JSON envelope (stdout,
+                        or the GUI's verified pipe under --pipe), never
+                        logged, never written to disk in plaintext.
+                        Fails if a system config already exists or a
+                        bootstrap is already in progress.
   install               register the system service and start it (with --daemon <path>: register that validated skeind instead of the package one)
   uninstall [--purge]   stop and remove the system service
   start | stop | restart
@@ -72,9 +73,9 @@ Removed verbs (Step 10: each returns exit 1 with this replacement):
 
 Options:
   --daemon <path>       install: register this validated skeind instead of the package one
-  --pipe <name>         (Windows) the GUI-created named pipe channel; only
-                        removed-verb pointers are served over it now,
-                        since no retained verb takes a pipe request.
+  --pipe <name>         (Windows) the GUI-created named pipe channel:
+                        bootstrap returns its token envelope there, and
+                        the removed-verb pointers are served there too.
   --purge               uninstall: accepted for the GUI/CLI uninstall
                         dialog; config purge itself is the daemon reset
                         endpoint above, not the helper.
@@ -198,6 +199,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if opts.pipe != "" {
+		if verb == "bootstrap" {
+			return runBootstrapPiped(opts, stdout, stderr)
+		}
 		return runPiped(verb, rest, opts, stdout, stderr)
 	}
 	if _, removed := removedVerbs[verb]; removed {
@@ -207,26 +211,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return removedVerb(stdout, verb)
 	}
 
-	privilegedVerb := verb != "status" && verb != "help" && verb != "-h" && verb != "--help"
+	var privilegedVerb bool
+	switch verb {
+	case "bootstrap", "install", "uninstall", "start", "stop", "restart", "grant-user", "set-owner", "revoke-user":
+		privilegedVerb = true
+	case "status", "help", "-h", "--help":
+	default:
+		fmt.Fprintf(stderr, "skein-helper: unknown verb %q\n\n%s", verb, usage)
+		return 2
+	}
 	if err := requirePrivilege(privilegedVerb); err != nil {
 		return fail(stdout, err)
 	}
 	switch verb {
 	case "bootstrap":
-		// Step 4: the only secret-producing helper action left after
-		// the collapse. The verb binds the token: a join token
-		// cannot init, and vice versa. The token travels in the
-		// stdout JSON envelope only — result() marshals it there
-		// and nowhere else (no log line, no argv, no result file:
-		// main() refuses --result for this verb).
-		if opts.verb == "" {
-			return fail(stdout, errors.New("bootstrap needs --verb init|join|import"))
-		}
-		token, err := app.MintBootstrap(opts.verb)
-		if err != nil {
-			return fail(stdout, err)
-		}
-		return result(stdout, nil, map[string]any{"token": token, "verb": opts.verb, "expires_in_seconds": 600})
+		return bootstrapVerb(opts, stdout)
 	case "install":
 		var st service.State
 		var err error
@@ -314,14 +313,55 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runPiped serves one request over the GUI-created pipe. Step 10: the
-// only verbs that ever used the pipe channel (init, join,
-// rotate-secret) are removed, so the pipe now serves only their
-// endpoint pointers — no request body is read for a removed verb, and
-// no privilege check gates learning the replacement. No retained verb
-// takes a pipe request (the Windows GUI uses --request/--result files),
-// so anything else keeps the old "does not use the pipe channel"
-// exit 2. No in-tree caller passes --pipe at all.
+// bootstrapVerb mints a single-use token and returns the JSON envelope.
+// The token travels only in the caller's writer: stdout for an already
+// elevated GUI/CLI, or the verified desktop pipe for a UAC launch.
+func bootstrapVerb(opts options, stdout io.Writer) int {
+	if opts.verb == "" {
+		return fail(stdout, errors.New("bootstrap needs --verb init|join|import"))
+	}
+	token, err := app.MintBootstrap(opts.verb)
+	if err != nil {
+		return fail(stdout, err)
+	}
+	return result(stdout, nil, map[string]any{"token": token, "verb": opts.verb, "expires_in_seconds": 600})
+}
+
+// runBootstrapPiped is the UAC path: the unelevated desktop created a
+// random, user-only named pipe; this elevated helper verifies that the
+// pipe server really is the desktop, runs bootstrap, and writes the
+// token envelope to that pipe. No token touches disk or argv.
+func runBootstrapPiped(opts options, stdout, stderr io.Writer) int {
+	// The pipe branch is dispatched before the verb table, so enforce
+	// the same elevation the non-pipe bootstrap verb gets. A normal
+	// user running this by hand must not reach MintBootstrap.
+	if err := requirePrivilege(true); err != nil {
+		return fail(stdout, err)
+	}
+	session, err := openPipeSession(opts.pipe)
+	if err != nil {
+		return fail(stdout, err)
+	}
+	if err := session.verifyDesktop(); err != nil {
+		fmt.Fprintf(stderr, "skein-helper: bootstrap pipe: %v\n", err)
+		return 1
+	}
+	var out bytes.Buffer
+	code := bootstrapVerb(opts, &out)
+	if err := session.writeResult(out.Bytes()); err != nil {
+		fmt.Fprintf(stderr, "skein-helper: pipe result: %v\n", err)
+		return 1
+	}
+	return code
+}
+
+// runPiped serves one request over the GUI-created pipe. bootstrap never
+// reaches here (runBootstrapPiped handles it and verifies the desktop
+// server first). Step 10: the only other verbs that ever used the pipe
+// channel (init, join, rotate-secret) are removed, so the pipe serves
+// only their endpoint pointers — no request body is read for a removed
+// verb, and no privilege check gates learning the replacement. Anything
+// else keeps the old "does not use the pipe channel" exit 2.
 func runPiped(verb string, rest []string, opts options, stdout, stderr io.Writer) int {
 	_ = rest
 	session, err := openPipeSession(opts.pipe)

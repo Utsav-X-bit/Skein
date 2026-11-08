@@ -38,6 +38,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/configstore"
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/peer"
@@ -102,12 +103,17 @@ func (d *Daemon) backupSystem(kind string) (string, error) {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return "", fmt.Errorf("daemon: backup dir: %w", err)
 	}
+	// Backups stay private even when set-owner grants an interactive
+	// user access to the parent. The Unix mode remains 0700.
+	if err := fileperm.RestrictDACL(dst); err != nil {
+		return "", fmt.Errorf("daemon: backup dir: %w", err)
+	}
 	for _, src := range files {
 		raw, err := os.ReadFile(src)
 		if err != nil {
 			return "", fmt.Errorf("daemon: backup %s: %w", src, err)
 		}
-		if err := writeBytesAtomic(filepath.Join(dst, filepath.Base(src)), raw, 0o600); err != nil {
+		if err := writeBytesAtomic(filepath.Join(dst, filepath.Base(src)), raw); err != nil {
 			return "", fmt.Errorf("daemon: backup %s: %w", src, err)
 		}
 	}
@@ -115,10 +121,14 @@ func (d *Daemon) backupSystem(kind string) (string, error) {
 }
 
 // writeBytesAtomic writes raw bytes via temp+rename in the target
-// directory (O_EXCL temp, 0600, fsync semantics via configstore's
+// directory (O_EXCL temp, fsync semantics via configstore's
 // atomicWrite pattern, reimplemented here because configstore
-// refuses to write non-config paths). Used for backups only.
-func writeBytesAtomic(path string, data []byte, mode os.FileMode) error {
+// refuses to write non-config paths). Used for backups and the
+// update-state file, both of which live in the system directory.
+//
+// Explicit DACLs keep replacement backup/update files scoped to their creator,
+// SYSTEM, and Administrators. Unix CreateTemp already supplies mode 0600.
+func writeBytesAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -126,7 +136,7 @@ func writeBytesAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(mode); err != nil {
+	if err := fileperm.Restrict(name); err != nil {
 		tmp.Close()
 		return err
 	}

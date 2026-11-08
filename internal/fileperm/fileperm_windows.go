@@ -49,6 +49,10 @@ func restrict(path string) error {
 	)
 }
 
+// restrictDACL is restrict without a mode half; Windows has no mode bits, so
+// the DACL is the whole restriction.
+func restrictDACL(path string) error { return restrict(path) }
+
 func chownToSudoUser(string) error { return nil }
 
 func preserveOwner(string, string) error { return nil }
@@ -112,11 +116,14 @@ func grantUser(path, user string) error {
 	)
 }
 
+// Directory ACL updates must preserve inherited access on existing children.
+// Non-inheritable ACEs strip inherited permissions from config/lock files.
+// These flags do not change access on objects without children.
 func allow(sid *windows.SID) windows.EXPLICIT_ACCESS {
 	return windows.EXPLICIT_ACCESS{
 		AccessPermissions: windows.GENERIC_ALL,
 		AccessMode:        windows.GRANT_ACCESS,
-		Inheritance:       windows.NO_INHERITANCE,
+		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{
 			TrusteeForm:  windows.TRUSTEE_IS_SID,
 			TrusteeType:  windows.TRUSTEE_IS_USER,

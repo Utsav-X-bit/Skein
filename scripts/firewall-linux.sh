@@ -84,13 +84,15 @@ echo "Firewall manager: $MANAGER (port $PORT, interface $IFACE)"
 
 case "$MANAGER" in
     ufw)
-        # `ufw allow` is idempotent; `ufw --force delete` never prompts.
+        # `ufw allow` is idempotent; `ufw --force` never prompts.
+        # `route` is a subcommand: `ufw --force route delete allow ...`,
+        # not `ufw --force delete route allow ...` (ufw rejects that).
         if [ "$REMOVE" -eq 1 ]; then
             ufw --force delete allow "$PORT/udp" || true
             ufw --force delete allow in on "$IFACE" || true
             ufw --force delete allow out on "$IFACE" || true
-            ufw --force delete route allow in on "$IFACE" || true
-            ufw --force delete route allow out on "$IFACE" || true
+            ufw --force route delete allow in on "$IFACE" || true
+            ufw --force route delete allow out on "$IFACE" || true
         else
             ufw allow "$PORT/udp"
             ufw allow in on "$IFACE"

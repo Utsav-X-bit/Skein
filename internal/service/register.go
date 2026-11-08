@@ -75,6 +75,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/fileperm"
 )
 
 // RegisterOptions selects the daemon binary for one registration.
@@ -329,6 +331,9 @@ func RollbackDaemon(reg Registration, configPath string) error {
 // copyFile copies src to dst (same mode bits as src, best effort).
 // It is a byte copy used for binary/config backups, not a config
 // write: it never parses or modifies content.
+//
+// The explicit DACL keeps Windows copies private without overriding the
+// source's Unix mode, including executable bits.
 func copyFile(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -343,6 +348,10 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	if err := fileperm.RestrictDACL(dst); err != nil {
+		out.Close()
+		return err
+	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		return err
@@ -353,6 +362,9 @@ func copyFile(src, dst string) error {
 // copyFileAtomic copies src to dst via temp+rename in dst's
 // directory, so a rollback config restore never leaves a half-written
 // config behind.
+//
+// Restrict the temporary DACL before path-based operations, then preserve
+// the source mode on Unix.
 func copyFileAtomic(src, dst string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
 	if err != nil {
@@ -371,6 +383,10 @@ func copyFileAtomic(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+	if err := fileperm.Restrict(name); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		tmp.Close()
 		return err
