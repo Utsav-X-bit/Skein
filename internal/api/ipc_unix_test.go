@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,7 +70,7 @@ func TestReadGrantedUIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	uids, err := readGrantedUIDs(p)
-	if err != nil || len(uids) != 2 || uids[0] != 1000 || uids[1] != 1001 {
+	if err != nil || len(uids) != 2 || !slices.Contains(uids, 1000) || !slices.Contains(uids, 1001) {
 		t.Fatalf("uids = %v, %v", uids, err)
 	}
 	if err := os.WriteFile(p, []byte("nope\n"), 0o600); err != nil {
@@ -155,7 +156,7 @@ func TestPeerUIDAuthentication(t *testing.T) {
 	defer ln.Close()
 
 	srv, _, _, _ := newTestServer(t)
-	srv.SetGrant("uid:"+strconv.Itoa(os.Getuid()), RoleMutate)
+	grantTestUser(srv, os.Getuid(), RoleMutate)
 	events := make(chan AuditEvent, 4)
 	srv.Audit(func(e AuditEvent) { events <- e })
 	go func() {

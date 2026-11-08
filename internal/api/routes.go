@@ -28,6 +28,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/events", s.wrapRole(RoleRead, s.streamEvents))
 	mux.HandleFunc("GET /api/v1/diagnostics", s.wrapRole(RoleRead, s.getDiagnostics))
 	mux.HandleFunc("GET /api/v1/security", s.wrapRole(RoleRead, s.getSecurity))
+	mux.HandleFunc("GET /api/v1/security/grants", s.wrapRole(RoleSecret, s.getAccessGrants))
 	mux.HandleFunc("GET /api/v1/firewall", s.wrapRole(RoleRead, s.getFirewall))
 	mux.HandleFunc("POST /api/v1/firewall/repair", s.wrapRole(RoleMutate, s.repairFirewall))
 }

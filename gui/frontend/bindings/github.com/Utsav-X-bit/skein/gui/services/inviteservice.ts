@@ -23,7 +23,18 @@ export function PeerInvite(): $CancellablePromise<api$0.Invite> {
 }
 
 /**
- * RotateSecret is helper-only; it requires elevation and stops the service.
+ * RotateSecret rotates the network secret through the daemon (Step 7
+ * endpoint, secret role, confirm), then restarts the service via the
+ * minimal helper so the new secret takes effect (Step 7 sequence).
+ * Step 8: the helper `rotate-secret` verb is no longer called.
+ * 
+ * The caller must show the "every peer must rejoin" warning BEFORE
+ * calling — the frontend confirm dialog does that today, and the
+ * warning is repeated in the returned Invite. The new join string is
+ * returned once, in Invite.Value, and must be shown transiently and
+ * never logged; the old helper path returned an empty Invite, so the
+ * frontend never displayed the new join at all (M7 renders it).
+ * The binding signature is unchanged.
  */
 export function RotateSecret(): $CancellablePromise<api$0.Invite> {
     return $Call.ByID(2250374429);

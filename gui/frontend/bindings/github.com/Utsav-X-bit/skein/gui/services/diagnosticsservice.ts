@@ -18,6 +18,15 @@ export function Bundle(): $CancellablePromise<api$0.DiagnosticBundle> {
     return $Call.ByID(3200499779);
 }
 
+/**
+ * ExportBundle writes the redacted support bundle to a native save dialog
+ * path. The bundle is the same JSON the daemon serves; the file is 0600 so a
+ * shared machine does not leak peer names or paths to other users.
+ */
+export function ExportBundle(): $CancellablePromise<string> {
+    return $Call.ByID(2962177457);
+}
+
 export function Logs(sinceMS: number, limit: number): $CancellablePromise<api$0.LogEntry[] | null> {
     return $Call.ByID(945544560, sinceMS, limit);
 }

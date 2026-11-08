@@ -130,12 +130,15 @@ type UpdateState struct {
 // UpdateCheckResult is GET /system/update/check. Downgrades are
 // not returned as update_available=false: they are rejected with
 // 409 by the daemon (plan §6.4), so a 200 here always means a
-// newer, verified manifest.
+// newer, verified manifest. ReleaseNotes carries the manifest's
+// notes only after the daemon verified notes_signature; it is
+// empty for legacy manifests without notes.
 type UpdateCheckResult struct {
 	Version         string       `json:"version"`
 	CurrentVersion  string       `json:"current_version"`
 	Checked         bool         `json:"checked"`
 	UpdateAvailable bool         `json:"update_available"`
+	ReleaseNotes    string       `json:"release_notes,omitempty"`
 	LastUpdate      *UpdateState `json:"last_update,omitempty"`
 }
 

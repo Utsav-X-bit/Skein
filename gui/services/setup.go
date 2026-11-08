@@ -74,44 +74,43 @@ func (s *SetupService) Join(ctx context.Context, invite string) (app.BootstrapRe
 	return bootstrapCall(ctx, "join", token, map[string]any{"invite": invite})
 }
 
-// Reset backs up the existing config/identity (or keeps identity) so
-// a new network can be created. It is destructive: the caller (the
-// frontend confirm dialog) must have confirmed before calling. The
-// daemon performs the reset; this method then stops the service via
-// the minimal helper and reports the backup path. If stopping fails,
-// the backup path is still returned in the error so it cannot be
-// silently lost.
-func (s *SetupService) Reset(ctx context.Context, keepIdentity bool) (app.BackupResult, error) {
-	return s.resetWithPurge(ctx, false, keepIdentity)
-}
-
-// ResetWithPurge is Reset with the purge option the uninstall/reset
-// dialog needs (M7 frontend wires it when bindings regenerate; Reset
-// keeps the existing binding signature). With purge, config/identity
-// are removed instead of backed up.
-func (s *SetupService) ResetWithPurge(ctx context.Context, purge, keepIdentity bool) (app.BackupResult, error) {
-	return s.resetWithPurge(ctx, purge, keepIdentity)
-}
-
-func (s *SetupService) resetWithPurge(ctx context.Context, purge, keepIdentity bool) (app.BackupResult, error) {
+// Rejoin restores membership in the current network. It never bootstraps or
+// switches credentials; a different-network invite is refused by the daemon.
+func (s *SetupService) Rejoin(ctx context.Context, invite string) (api.JoinResult, error) {
 	c, err := ControlClient()
 	if err != nil {
-		return app.BackupResult{}, err
+		return api.JoinResult{}, err
+	}
+	var res api.JoinResult
+	err = c.do(ctx, "POST", "/api/v1/system/join", map[string]any{"invite": invite, "confirm": true}, &res)
+	return res, err
+}
+
+// NetworkResetResult preserves completed destructive work across a later
+// helper failure. Wails discards a return value when an error is also returned,
+// so a failed stop must be data: retrying reset would lose the original backup.
+type NetworkResetResult struct {
+	Backup        string `json:"backup"`
+	FirewallError string `json:"firewall_error,omitempty"`
+	StopError     string `json:"stop_error,omitempty"`
+}
+
+// ResetWithPurge resets through the daemon, then verifies the service stopped.
+// Purge is irreversible; otherwise Backup names the daemon-created backup.
+func (s *SetupService) ResetWithPurge(ctx context.Context, purge, keepIdentity bool) (NetworkResetResult, error) {
+	c, err := ControlClient()
+	if err != nil {
+		return NetworkResetResult{}, err
 	}
 	var res api.ResetResult
-	err = c.do(ctx, "POST", "/api/v1/system/reset", api.ResetOptions{Purge: purge, KeepIdentity: keepIdentity, Confirm: true}, &res)
-	if err != nil {
-		return app.BackupResult{}, err
+	if err := c.do(ctx, "POST", "/api/v1/system/reset", api.ResetOptions{Purge: purge, KeepIdentity: keepIdentity, Confirm: true}, &res); err != nil {
+		return NetworkResetResult{}, err
 	}
-	msg := res.Message
-	if res.FirewallError != "" {
-		msg += " (firewall cleanup failed: " + res.FirewallError + "; rules may remain)"
+	out := NetworkResetResult{Backup: res.Backup, FirewallError: res.FirewallError}
+	if err := (&ServiceService{}).Stop(ctx); err != nil {
+		out.StopError = fmt.Sprintf("The network was reset, but the service did not stop: %v", err)
 	}
-	if err := runHelper(ctx, "stop"); err != nil {
-		return app.BackupResult{Backup: res.Backup, Message: msg},
-			fmt.Errorf("reset complete, backup at %s, but stopping the service failed: %w; stop it manually", res.Backup, err)
-	}
-	return app.BackupResult{Backup: res.Backup, Message: msg}, nil
+	return out, nil
 }
 
 // Import migrates a user-mode config into the system path, via

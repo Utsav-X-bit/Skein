@@ -8,22 +8,23 @@ updates go through the fixed-verb `skein-helper`.
 
 ## Build
 
+Prerequisites: Go 1.26.10+, Node.js 22 LTS with npm, the Wails 3 CLI
+v3.1.0 (`go install github.com/wailsapp/wails/v3/cmd/wails3@v3.1.0`),
+and GTK4 + WebKitGTK 6.0 development packages on Linux; WebView2 on
+Windows. `wails3 doctor` reports missing dependencies.
+
 ```bash
 cd gui
 wails3 build        # -> bin/skein-desktop
 ```
 
-Prerequisites: Go, the Wails 3 CLI, and GTK4 + WebKitGTK 6.0 development
-packages on Linux; WebView2 on Windows. `wails3 doctor` reports missing
-dependencies.
-
-Install the helper root-owned before using onboarding:
-
-```bash
-sudo install -m 0755 ../skein-helper /usr/libexec/skein-helper   # Linux
-```
-
-Windows expects `C:\Program Files\Skein\skein-helper.exe`.
+`wails3 build` builds only the desktop. The daemon, helper, and CLI are
+built from the repository root; build and install all four as described
+in the root README, Installation Method 2. The helper must end up at
+`/usr/libexec/skein-helper` (Linux) or
+`C:\Program Files\Skein\skein-helper.exe` (Windows). Its `install` verb
+needs an existing system config; on a first install the `init`/`join`
+bootstrap registers the service.
 
 ## Development
 

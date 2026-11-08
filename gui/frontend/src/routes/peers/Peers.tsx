@@ -1,109 +1,160 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Wifi } from "lucide-react";
-import { PeerService, errText, errKind } from "@/lib/api";
-import { hasLeaveBinding, callLeaveNetwork } from "@/lib/bindings";
+import { Link } from "react-router-dom";
+import { Plus, Search } from "lucide-react";
+import type { Peer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { StatusDot } from "@/components/ui/status-dot";
-import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { formatBytes, shortID, timeAgo } from "@/lib/utils";
-import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { shortID } from "@/lib/utils";
+import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
+import { rowKeyNav, usePeerParam } from "@/features/mesh/hooks";
+import { PeerHealth } from "@/features/mesh/PeerHealth";
+import { PeerInspector } from "@/features/mesh/PeerInspector";
+import { formatAge, formatBytesPerSec, presenceOf, type Presence, type Rate } from "@/features/mesh/model";
+
+type SortKey = "name" | "presence" | "path" | "transport" | "rtt" | "rate" | "lastSeen";
+
+const presenceRank: Record<Presence, number> = { active: 0, idle: 1, offline: 2, unknown: 3 };
 
 export function Peers() {
-  const qc = useQueryClient();
+  useLiveSampler(true);
+  const mesh = useMesh();
+  const [peerId, setPeerId] = usePeerParam();
   const [q, setQ] = useState("");
-  const [invite, setInvite] = useState("");
-  const peers = useQuery({ queryKey: ["peers"], queryFn: () => PeerService.List(), refetchInterval: 2_000 });
-  const filtered = useMemo(() => (peers.data ?? []).filter((p) => `${p.name ?? ""} ${p.id} ${p.overlay_ipv4 ?? ""}`.toLowerCase().includes(q.toLowerCase())), [peers.data, q]);
-  const add = useMutation({
-    mutationFn: () => PeerService.Add({ invite } as never),
-    onSuccess: () => { setInvite(""); toast.success("Device added"); qc.invalidateQueries({ queryKey: ["peers"] }); },
-    onError: (e) => toast.error(errText(e)),
-  });
-  // Step 12 (ADR-002): no peer removal — no peer removes another peer.
-  // The only departure action is this node leaving itself. M7: the Go
-  // method exists (gui/services/peer.go LeaveNetwork) but the
-  // checked-in binding does not export it yet, so the button is
-  // disabled with the reason until a Wails build regenerates
-  // bindings (see lib/bindings.ts); after regeneration this exact
-  // mutation runs. M4 leave gossip already landed: propagated is
-  // true only when the departure announcement reached at least one
-  // peer; false means no peer was reached, and offline peers learn
-  // it from the retained tombstone on reconnect — it is not a ban,
-  // and the leaver keeps its credential until a network-wide secret
-  // rotation, so rejoin needs a fresh invite.
-  const leaveAvailable = hasLeaveBinding();
-  const leave = useMutation({
-    mutationFn: () => callLeaveNetwork(),
-    onSuccess: (r) => { toast.success(r.propagated ? `Left the network (${r.peers_left} peers left, ${r.routes_withdrawn} routes withdrawn)` : `Left locally — no peer was reached to announce it to; offline peers learn it from the retained tombstone on reconnect. Rejoin needs a fresh invite.`); qc.invalidateQueries({ queryKey: ["peers"] }); },
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
-  });
-  const probe = useMutation({
-    mutationFn: (id: string) => PeerService.Probe(id),
-    onSuccess: (r) => toast.info(`Probe ${r.state}${r.rtt_ms ? ` · ${r.rtt_ms.toFixed(1)} ms` : ""}`),
-    onError: (e) => toast.error(errText(e)),
-  });
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "name", dir: 1 });
 
-  if (peers.isError) return <ErrorState title="Cannot load peers" message={errText(peers.error)} onRetry={() => peers.refetch()} />;
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const now = Date.now();
+    return mesh.peers
+      .filter((p) => !needle || `${p.name ?? ""} ${p.id} ${p.overlay_ipv4 ?? ""} ${p.path ?? ""}`.toLowerCase().includes(needle))
+      .map((peer) => ({
+        peer,
+        presence: presenceOf(peer, mesh.lastTrafficAt[peer.id], now),
+        rate: mesh.peerRates[peer.id] as Rate | undefined,
+      }))
+      .sort((a, b) => {
+        const order =
+          sort.key === "name"
+            ? (a.peer.name || a.peer.id).localeCompare(b.peer.name || b.peer.id)
+            : sort.key === "presence"
+              ? presenceRank[a.presence] - presenceRank[b.presence]
+              : sort.key === "path"
+                ? (a.peer.path ?? "").localeCompare(b.peer.path ?? "")
+                : sort.key === "transport"
+                  ? (a.peer.transport ?? "").localeCompare(b.peer.transport ?? "")
+                  : sort.key === "rtt"
+                    ? a.peer.rtt_ms - b.peer.rtt_ms
+                    : sort.key === "rate"
+                      ? (a.rate ? a.rate.rxPerSec + a.rate.txPerSec : -1) - (b.rate ? b.rate.rxPerSec + b.rate.txPerSec : -1)
+                      : a.peer.last_seen_ms - b.peer.last_seen_ms;
+        return order * sort.dir;
+      });
+  }, [mesh.peers, mesh.lastTrafficAt, mesh.peerRates, q, sort]);
+
+  const toggle = (key: SortKey) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
+  const arrow = (key: SortKey) => (sort.key === key ? (sort.dir === 1 ? "↑" : "↓") : "");
+
+  if (mesh.loading && !mesh.status) return <Skeleton className="h-64" />;
+  if (!mesh.status) {
+    return <ErrorState title="Cannot load peers" message={mesh.error ?? "No status snapshot has arrived."} onRetry={mesh.refetch} />;
+  }
+  const status = mesh.status;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-medium tracking-tight">Peers</h1><p className="text-sm text-[var(--text-muted)]">Devices in this mesh and their live paths.</p></div>
-        <Dialog>
-          <DialogTrigger asChild><Button><Plus size={16} /> Add device</Button></DialogTrigger>
-          <DialogContent>
-            <DialogTitle>Add a device</DialogTitle>
-            <DialogDescription>Paste a <code>skein:1:</code> peer invite. This introduces the device; it does not change network membership.</DialogDescription>
-            <Input className="mt-4" placeholder="skein:1:…" value={invite} onChange={(e) => setInvite(e.target.value)} />
-            <div className="mt-4 flex justify-end gap-2"><Button variant="secondary" onClick={() => setInvite("")}>Clear</Button><Button disabled={!invite || add.isPending} onClick={() => add.mutate()}>Add</Button></div>
-          </DialogContent>
-        </Dialog>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-medium tracking-tight">Peers</h1>
+          <p className="text-sm text-[var(--text-muted)]">Devices in this mesh and their live paths. This device is listed separately.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => setPeerId(status.id)}>This device</Button>
+          <Button asChild>
+            <Link to="/invites"><Plus size={16} /> Invite device</Link>
+          </Button>
+        </div>
       </div>
+
       <div className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3">
         <Search size={15} className="text-[var(--text-faint)]" />
-        <Input className="border-0 bg-transparent focus-visible:ring-0" placeholder="Search peers…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input className="border-0 bg-transparent focus-visible:ring-0" placeholder="Search peers…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search peers" />
       </div>
-      {filtered.length === 0 ? <EmptyState title="No peers" description="Invite a device from Invitations, or add a peer invite here." /> : (
-        <Card>
-          <CardHeader><CardTitle>{filtered.length} peers</CardTitle>
-            <Dialog>
-              <DialogTrigger asChild><Button size="sm" variant="secondary" disabled={!leaveAvailable || leave.isPending} title={leaveAvailable ? "Leave this network yourself" : "Leave needs regenerated Wails bindings (see notice below)"}>Leave network</Button></DialogTrigger>
-              <DialogContent>
-                <DialogTitle>Leave this network?</DialogTitle>
-                <DialogDescription>
-                  This device leaves the mesh itself. No other peer is removed by you, and leaving is not a ban: this device keeps its network credential until the whole network rotates its secret, so rejoining needs a fresh invite from a member.
-                  Leaving first announces the departure to reachable peers (their tables and routes update); peers that are offline learn it from the retained tombstone when they reconnect. The dataplane stops and sessions close.
-                </DialogDescription>
-                <div className="mt-4 flex justify-end gap-2"><Button variant="secondary" onClick={() => leave.mutate()} disabled={leave.isPending}>Leave network</Button></div>
-              </DialogContent>
-            </Dialog>
-          </CardHeader>
-          {!leaveAvailable && <div className="px-4 pb-3 text-xs text-[var(--text-muted)]">Leave network is not callable in this build: the LeaveNetwork Wails binding has not been regenerated since Step 8. Run a Wails build on a GUI machine to regenerate bindings; the button then activates with no further code change.</div>}
-          <CardContent className="divide-y divide-[var(--border)] p-0">
-            {filtered.map((p) => (
-              <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <StatusDot tone={p.state === "up" ? "up" : p.state === "degraded" ? "degraded" : "down"} pulse={p.state === "up"} />
-                  <div className="min-w-0"><div className="truncate text-sm font-medium">{p.name || shortID(p.id)}</div><div className="mono-label truncate">{p.overlay_ipv4 || p.overlay_ipv6 || p.id}</div></div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
-                  <Badge tone={p.direct ? "accent" : "relay"}>{p.direct ? "direct" : "relay"}</Badge>
-                  <span>{p.rtt_ms ? `${p.rtt_ms.toFixed(1)} ms` : "—"}</span>
-                  <span>↓ {formatBytes(p.rx_bytes)} ↑ {formatBytes(p.tx_bytes)}</span>
-                  <span>{timeAgo(p.last_seen_ms ? Date.now() - p.last_seen_ms : undefined)}</span>
-                  <Button size="sm" variant="ghost" onClick={() => probe.mutate(p.id)} aria-label={`Probe ${p.name || p.id}`}><Wifi size={15} /></Button>
-                </div>
+
+      <div className="flex flex-col gap-4 min-[1100px]:flex-row">
+        <Card className="min-w-0 flex-1">
+          <CardHeader><CardTitle>{rows.length} peers</CardTitle><span className="mono-label">capacity {1 + mesh.peers.length} of 5</span></CardHeader>
+          <CardContent className="p-0">
+            {mesh.peers.length === 0 ? (
+              <EmptyState
+                title="No peers yet"
+                description="Invite a device to join this mesh. Membership and connectivity are separate: this daemon can be healthy with no peers."
+                action={<Button asChild><Link to="/invites"><Plus size={16} /> Invite a device</Link></Button>}
+                className="m-4"
+              />
+            ) : rows.length === 0 ? (
+              <EmptyState title="No matching peers" description="Clear the search to see every peer." className="m-4" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm" aria-label="Peers">
+                  <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
+                    <tr>
+                      {([["name", "Name"], ["presence", "Presence"], ["path", "Path"], ["transport", "Transport"], ["rtt", "RTT"], ["rate", "Rate"], ["lastSeen", "Last seen"]] as const).map(([key, label]) => (
+                        <th key={key} className="mono-label px-3 py-2 font-normal" aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"}>
+                          <Button variant="ghost" size="sm" className="-ml-2 h-6 px-2 text-[10px]" onClick={() => toggle(key)}>
+                            {label} {arrow(key)}
+                          </Button>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {rows.map(({ peer, presence, rate }) => (
+                      <tr
+                        key={peer.id}
+                        data-row
+                        tabIndex={0}
+                        aria-selected={peerId === peer.id}
+                        onClick={() => setPeerId(peer.id)}
+                        onKeyDown={(e) => rowKeyNav(e, () => setPeerId(peer.id), () => setPeerId(null))}
+                        className={`cursor-pointer hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${peerId === peer.id ? "bg-[var(--accent-soft)]" : ""}`}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="max-w-[180px] truncate">{peer.name || shortID(peer.id)}</div>
+                          <div className="font-mono text-[10px] text-[var(--text-faint)]">{peer.overlay_ipv4 || peer.id}</div>
+                        </td>
+                        <td className="px-3 py-2"><PeerHealth peer={peer} presence={presence} compact /></td>
+                        <td className="px-3 py-2 text-xs">{peer.path || (peer.direct ? "direct" : "—")}</td>
+                        <td className="px-3 py-2 text-xs">{peer.transport || "unknown"}</td>
+                        <td className="tabular px-3 py-2">{peer.rtt_ms > 0 ? `${peer.rtt_ms.toFixed(1)} ms` : "—"}</td>
+                        <td className="tabular px-3 py-2 text-xs">
+                          {rate ? `↓ ${formatBytesPerSec(rate.rxPerSec)} ↑ ${formatBytesPerSec(rate.txPerSec)}` : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-xs">{peer.last_seen_ms > 0 ? `${formatAge(peer.last_seen_ms)} ago` : "unknown"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
+            )}
           </CardContent>
         </Card>
-      )}
+
+        <PeerInspector
+          peerId={peerId}
+          status={status}
+          peers={mesh.peers}
+          model={mesh.model}
+          peerRates={mesh.peerRates}
+          lastTrafficAt={mesh.lastTrafficAt}
+          onClose={() => setPeerId(null)}
+          onViewRoutes={(destination) => setPeerId(destination)}
+        />
+      </div>
     </div>
   );
 }

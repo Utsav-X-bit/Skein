@@ -8,14 +8,46 @@ import * as DiagnosticsService from "../../bindings/github.com/Utsav-X-bit/skein
 import * as FirewallService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/firewallservice";
 import * as ServiceService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/serviceservice";
 import * as HistoryService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/historyservice";
-// M7: UpdateService is exported so About can use its bound method
-// (Check). CheckManifest/Apply/ReloadGrants are NOT in the checked-in
-// binding yet; see lib/bindings.ts guards — do not call them directly.
 import * as UpdateService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/updateservice";
+import * as SecurityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/securityservice";
+import * as IdentityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/identityservice";
 
-export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService };
+export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService };
 
 export type { Connection, Status, Peer, Route, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
+
+// DaemonEvent is the lifecycle envelope from internal/api.Event. The Go
+// bridge (gui/services/events.go) forwards each one as a Wails event named
+// after its type, so the payload arrives as this object. Lifecycle events
+// describe what happened; they are not telemetry.
+export type DaemonEvent = {
+  id?: number;
+  type: string;
+  peer_id?: string;
+  detail?: string;
+  time_ms: number;
+};
+
+// lifecycleEvents mirrors the forwarding allowlist in gui/services/events.go.
+export const lifecycleEvents = [
+  "peer_up",
+  "peer_joined",
+  "peer_discovered",
+  "peer_added",
+  "peer_removed",
+  "peer_down",
+  "peer_departed",
+  "dialer_fallback",
+  "peer:leave",
+  "peer:rejoined",
+  "name_changed",
+  "secret_rotated",
+  "system_reset",
+  "system_imported",
+  "leave_dataplane_stop_failed",
+] as const;
+
+export type LifecycleEvent = (typeof lifecycleEvents)[number];
 
 export function errText(e: unknown): string {
   if (!e) return "Unknown error";
@@ -27,6 +59,23 @@ export function errText(e: unknown): string {
 export function isOffline(e: unknown): boolean {
   const s = errText(e).toLowerCase();
   return s.includes("daemon not connected") || s.includes("no such file") || s.includes("connection refused") || s.includes("connect:");
+}
+
+// elevationCancelled recognises a dismissed or failed privilege prompt.
+// pkexec exits 126 when the user dismisses it, 127 when authentication
+// fails, and 125 on a polkit error; the Windows helper reports that UAC
+// "may have been cancelled". A raw exit code is not user guidance.
+export function elevationCancelled(e: unknown): boolean {
+  const s = errText(e).toLowerCase();
+  return /exit status 12[567]/.test(s) || s.includes("may have been cancelled");
+}
+
+// errDisplay is what the user should read: the same text as errText,
+// except a dismissed privilege prompt becomes actionable guidance
+// instead of a raw helper exit code.
+export function errDisplay(e: unknown): string {
+  if (elevationCancelled(e)) return "Administrator approval was not completed. Retry and approve only the Skein helper action.";
+  return errText(e);
 }
 
 // errKind is the frontend's best-effort mapping of the Step 8

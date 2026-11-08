@@ -207,6 +207,39 @@ func TestDirectHandshakeAndData(t *testing.T) {
 	}
 }
 
+func TestFreshIdentityCanReuseADownPeersEndpoint(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	old := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	n.know(t, a, old, false)
+	joiner := n.addNode(t, "10.144.144.3", old.addr.String())
+	if err := joiner.eng.peers.Upsert(peer.Peer{
+		ID: a.id, PublicKey: a.ident.PublicKey, OverlayV4: a.overlay, Dialer: true,
+		Candidates: []peer.Candidate{{Addr: a.addr, Source: peer.SourceConfig}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := joiner.eng.sessions.SetPeer(a.id, a.ident.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+	a.eng.sessions.SetAcceptUnknown(true)
+	a.eng.sessions.SetPeerLearnedHandler(func(id uint64, key []byte) {
+		if err := a.eng.peers.Upsert(peer.Peer{ID: id, PublicKey: key, OverlayV4: joiner.overlay}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err := joiner.eng.EnsureSession(a.id); err != nil {
+		t.Fatalf("fresh identity at reused endpoint: %v", err)
+	}
+	pkt := ipv4Packet(joiner.overlay, a.overlay, []byte("new identity"))
+	if err := joiner.eng.SendOverlayPacket(pkt); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.tun.last(); !bytes.Equal(got, pkt) {
+		t.Fatalf("fresh member packet = %x, want %x", got, pkt)
+	}
+}
+
 // TestStaleEpochRecoversWithFreshHandshake is the bug #14 (restart
 // recovery) regression test: when a peer restarts and the other side
 // keeps sending on the old epoch, the restarted side must start a
@@ -309,6 +342,10 @@ func TestHandshakeRacesRouteAndDirect(t *testing.T) {
 	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
 	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
 	c := n.addNode(t, "10.144.144.3", "192.0.2.3:11010")
+	// Keep the direct cost below the advertised relay cost even under -race.
+	// This tests candidate racing, not wall-clock handshake performance.
+	now := time.Now()
+	a.eng.SetClock(func() time.Time { return now })
 	n.know(t, a, b, true)
 	// A-B direct session, so B is a usable next hop for A's route table.
 	if err := a.eng.SendOverlayPacket(ipv4Packet(a.overlay, b.overlay, []byte("ab"))); !errors.Is(err, ErrNoSession) {
@@ -580,8 +617,10 @@ func TestRelayedSessionStillNotifiesAndKeepsRoute(t *testing.T) {
 	if err := a.eng.peers.Upsert(peer.Peer{ID: b.id, PublicKey: b.ident.PublicKey, OverlayV4: b.overlay}); err != nil {
 		t.Fatal(err)
 	}
+	// A relay that forwards frames is reachable; a down entry is stale state.
 	if err := a.eng.peers.Upsert(peer.Peer{
 		ID: relay.id, PublicKey: relay.ident.PublicKey, OverlayV4: relay.overlay,
+		State: peer.StateUp, LastSeen: time.Now(),
 		Candidates: []peer.Candidate{{Addr: relay.addr, Source: peer.SourceConfig}},
 	}); err != nil {
 		t.Fatal(err)
@@ -623,6 +662,7 @@ func TestDirectSourceRejectsRelayAddress(t *testing.T) {
 	for _, p := range []*node{b, relay} {
 		if err := a.eng.peers.Upsert(peer.Peer{
 			ID: p.id, PublicKey: p.ident.PublicKey, OverlayV4: p.overlay,
+			State: peer.StateUp, LastSeen: time.Now(),
 			Candidates: []peer.Candidate{{Addr: p.addr, Source: peer.SourceConfig}},
 		}); err != nil {
 			t.Fatal(err)
@@ -763,5 +803,37 @@ func TestNewRejectsMTUAboveFrameLimit(t *testing.T) {
 	}, Deps{})
 	if err == nil {
 		t.Fatal("MTU above the frame limit was accepted")
+	}
+}
+
+func TestEstablishedRecordsSessionTimestamps(t *testing.T) {
+	n := newTestNet(t)
+	a := n.addNode(t, "10.144.144.1", "192.0.2.1:11010")
+	b := n.addNode(t, "10.144.144.2", "192.0.2.2:11010")
+	if err := a.eng.peers.Upsert(peer.Peer{
+		ID: b.id, PublicKey: b.ident.PublicKey, OverlayV4: b.overlay,
+		Candidates: []peer.Candidate{{Addr: b.addr, Source: peer.SourceConfig}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a.eng.established(b.id, b.addr)
+	p, ok := a.eng.peers.Get(b.id)
+	if !ok || p.SessionStart.IsZero() || p.LastHandshake.IsZero() {
+		t.Fatalf("established timestamps = %+v, want a session start and handshake", p)
+	}
+	if p.State != peer.StateUp {
+		t.Fatalf("state = %v, want up", p.State)
+	}
+	start := p.SessionStart
+
+	// A second handshake is a rekey: only the handshake time moves.
+	a.eng.established(b.id, b.addr)
+	p, _ = a.eng.peers.Get(b.id)
+	if !p.SessionStart.Equal(start) {
+		t.Fatalf("rekey restarted the session: %v -> %v", start, p.SessionStart)
+	}
+	if p.LastHandshake.Before(start) {
+		t.Fatalf("rekey handshake %v is before the session start %v", p.LastHandshake, start)
 	}
 }

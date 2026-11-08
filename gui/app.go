@@ -28,6 +28,21 @@ func New() *App {
 	application.RegisterEvent[api.ServiceStatus](services.EventServiceChanged)
 	application.RegisterEvent[services.UpdateInfo](services.EventUpdateAvailable)
 	application.RegisterEvent[api.ProbeResult](services.EventPeerProbe)
+	application.RegisterEvent[api.Event](services.EventPeerUp)
+	application.RegisterEvent[api.Event](services.EventPeerJoined)
+	application.RegisterEvent[api.Event](services.EventPeerDiscovered)
+	application.RegisterEvent[api.Event](services.EventPeerAdded)
+	application.RegisterEvent[api.Event](services.EventPeerRemoved)
+	application.RegisterEvent[api.Event](services.EventPeerDown)
+	application.RegisterEvent[api.Event](services.EventPeerDeparted)
+	application.RegisterEvent[api.Event](services.EventDialerFallback)
+	application.RegisterEvent[api.Event](services.EventPeerLeave)
+	application.RegisterEvent[api.Event](services.EventPeerRejoined)
+	application.RegisterEvent[api.Event](services.EventNameChanged)
+	application.RegisterEvent[api.Event](services.EventSecretRotated)
+	application.RegisterEvent[api.Event](services.EventSystemReset)
+	application.RegisterEvent[api.Event](services.EventSystemImported)
+	application.RegisterEvent[api.Event](services.EventLeaveDataplaneStopFailed)
 
 	var a *App
 	a = &App{

@@ -20,10 +20,11 @@ func main() {
 	// expected behavior on Windows 10.
 	frameless := false
 
+	// Start maximised on every platform: a fixed 1280x800 window is taller
+	// than the work area on common 1366x768 laptops, which clipped the
+	// bottom of the app. Maximising fits whatever screen is present while
+	// the 900x600 minimum still governs small layouts.
 	startState := application.WindowStateMaximised
-	if runtime.GOOS == "windows" {
-		startState = application.WindowStateNormal
-	}
 
 	a.window = a.App.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "main",

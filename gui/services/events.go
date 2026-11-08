@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -20,7 +21,55 @@ const (
 	EventServiceChanged    = "service:changed"
 	EventUpdateAvailable   = "update:available"
 	EventPeerProbe         = "peer:probe"
+
+	EventPeerUp                   = "peer_up"
+	EventPeerJoined               = "peer_joined"
+	EventPeerDiscovered           = "peer_discovered"
+	EventPeerAdded                = "peer_added"
+	EventPeerRemoved              = "peer_removed"
+	EventPeerDown                 = "peer_down"
+	EventPeerDeparted             = "peer_departed"
+	EventDialerFallback           = "dialer_fallback"
+	EventPeerLeave                = "peer:leave"
+	EventPeerRejoined             = "peer:rejoined"
+	EventNameChanged              = "name_changed"
+	EventSecretRotated            = "secret_rotated"
+	EventSystemReset              = "system_reset"
+	EventSystemImported           = "system_imported"
+	EventLeaveDataplaneStopFailed = "leave_dataplane_stop_failed"
 )
+
+// lifecycleEvent is the allowlist of daemon events that carry an api.Event
+// envelope. They are forwarded verbatim so the frontend's session feed can
+// show what happened; an unknown type is dropped rather than guessed at.
+var lifecycleEvent = map[string]bool{
+	EventPeerUp:                   true,
+	EventPeerJoined:               true,
+	EventPeerDiscovered:           true,
+	EventPeerAdded:                true,
+	EventPeerRemoved:              true,
+	EventPeerDown:                 true,
+	EventPeerDeparted:             true,
+	EventDialerFallback:           true,
+	EventPeerLeave:                true,
+	EventPeerRejoined:             true,
+	EventNameChanged:              true,
+	EventSecretRotated:            true,
+	EventSystemReset:              true,
+	EventSystemImported:           true,
+	EventLeaveDataplaneStopFailed: true,
+}
+
+// LifecycleEventNames returns the allowlisted api.Event names in a stable
+// order so the application can register one typed Wails event per name.
+func LifecycleEventNames() []string {
+	names := make([]string, 0, len(lifecycleEvent))
+	for name := range lifecycleEvent {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 var EventPayloads = map[string]any{
 	EventConnectionChanged: api.Connection{},
@@ -107,6 +156,14 @@ func (s *AppService) emitEvent(name, data string) {
 		}
 	case EventServiceChanged:
 		var v api.ServiceStatus
+		if json.Unmarshal([]byte(data), &v) == nil {
+			app.Event.Emit(name, v)
+		}
+	default:
+		if !lifecycleEvent[name] {
+			return
+		}
+		var v api.Event
 		if json.Unmarshal([]byte(data), &v) == nil {
 			app.Event.Emit(name, v)
 		}

@@ -18,14 +18,23 @@ export function Add(req: api$0.AddPeerRequest): $CancellablePromise<void> {
     return $Call.ByID(1266799078, req);
 }
 
+/**
+ * LeaveNetwork leaves this node's own network (ADR-002, Step 7
+ * endpoint). It is the only peer-departure action: Step 12 deleted
+ * the GUI peer-removal method with the DELETE endpoint — no peer
+ * removes another peer. Propagated is the source of truth — until M4 lands
+ * leave-announcement gossip it is false, and the caller must say
+ * so rather than claim a mesh-wide leave.
+ * (The frontend wires it when bindings regenerate.)
+ */
+export function LeaveNetwork(): $CancellablePromise<api$0.LeaveResult> {
+    return $Call.ByID(1937656772);
+}
+
 export function List(): $CancellablePromise<api$0.Peer[] | null> {
     return $Call.ByID(168973483);
 }
 
 export function Probe(peerID: string): $CancellablePromise<api$0.ProbeResult> {
     return $Call.ByID(2496545607, peerID);
-}
-
-export function Remove(peerID: string): $CancellablePromise<void> {
-    return $Call.ByID(3615304335, peerID);
 }

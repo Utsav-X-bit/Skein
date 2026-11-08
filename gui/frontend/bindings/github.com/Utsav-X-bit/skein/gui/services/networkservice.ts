@@ -14,8 +14,22 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 // @ts-ignore: Unused imports
 import * as api$0 from "../../internal/api/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
 export function Activities(): $CancellablePromise<api$0.Activity[] | null> {
     return $Call.ByID(2640732868);
+}
+
+/**
+ * Ping probes one overlay IP with the system ping binary. The address is
+ * parsed and re-rendered, so a hostname, flag, or shell fragment can never
+ * reach argv. A non-zero ping exit is a result (unreachable), not an error;
+ * only validation and spawn failures are errors.
+ */
+export function Ping(ip: string): $CancellablePromise<$models.PingResult> {
+    return $Call.ByID(1916021925, ip);
 }
 
 export function Routes(): $CancellablePromise<api$0.Route[] | null> {

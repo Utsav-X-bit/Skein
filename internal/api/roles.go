@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -150,6 +151,20 @@ func (s *Server) SetGrants(grants map[string]Role) {
 	s.grants = cp
 }
 
+// snapshotGrants copies the authorisation table as sorted records. It takes
+// the read lock itself, so callers must not already hold s.mu (roleFor takes
+// it too, and the grants view resolves the caller's role first).
+func (s *Server) snapshotGrants() []GrantRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]GrantRecord, 0, len(s.grants))
+	for id, role := range s.grants {
+		out = append(out, GrantRecord{Identity: id, Role: role.String()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity < out[j].Identity })
+	return out
+}
+
 // SetGrant merges one caller/role pair into the authorisation table
 // (Step 4: the post-transition daemon applies the bootstrap grant to
 // its live server directly, in addition to the persisted access file
@@ -214,7 +229,7 @@ func (s *Server) roleFor(c Caller) Role {
 	if id == "unknown" {
 		return RoleNone
 	}
-	if c.Transport == TransportKernel && ((c.UID == 0 && c.SID == "") || id == "S-1-5-18" || id == "S-1-5-32-544") {
+	if isRootCaller(c) {
 		return RoleSecret
 	}
 	s.mu.RLock()
@@ -227,4 +242,19 @@ func (s *Server) roleFor(c Caller) Role {
 		return RoleNone
 	}
 	return role
+}
+
+// isRootCaller reports the callers roleFor treats as already owning the
+// system: Unix root over the kernel transport, and the Windows SYSTEM /
+// Administrators SIDs. They are implicitly Secret; the access table does
+// not apply to them, so a grant line can never demote or promote them.
+func isRootCaller(c Caller) bool {
+	if c.Transport != TransportKernel {
+		return false
+	}
+	if c.UID == 0 && c.SID == "" {
+		return true
+	}
+	id := c.ID()
+	return id == "S-1-5-18" || id == "S-1-5-32-544"
 }

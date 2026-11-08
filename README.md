@@ -59,8 +59,8 @@ bash ./scripts/install-linux.sh
 
 Enter your `sudo` password when prompted. The installer:
 
-1. Detects your distribution and installs the build and runtime packages through its package manager.
-2. Builds the daemon, CLI, helper, and desktop **without running the build as root**. It installs the pinned Wails CLI in temporary build tooling and uses a temporary Node.js download if the system version is too old.
+1. Detects your distribution and installs **Go**, Node.js/npm, the C toolchain, GTK/WebKit development headers, and runtime packages through its package manager. Go downloads the toolchain required by `go.mod` when needed.
+2. Installs **Wails CLI v3.1.0 automatically** in temporary build tooling, then builds the daemon, CLI, helper, and desktop **without running the build as root**. It uses a temporary Node.js download if the system version is too old. You do not need to install Go or Wails yourself first.
 3. Installs the binaries, desktop menu entry, icon, and administrator-approval policy.
 4. Keeps an existing network configuration when upgrading.
 
@@ -110,7 +110,7 @@ You do **not** need to download Wintun separately. The Setup executable bundles 
    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1 -InstallPrerequisites -RunInstaller
    ```
 
-3. Approve any build-tool installation prompts. The script installs missing prerequisites, builds the application, then opens the **Skein Setup** wizard. Approve its UAC prompt and complete installation.
+3. With **`-InstallPrerequisites`**, the script automatically installs missing **Go, Node.js, Wails CLI v3.1.0, and NSIS 3.x**. Approve the build-tool prompts. It then builds the application and opens the **Skein Setup** wizard; approve its UAC prompt and complete installation.
 4. Launch **Skein** from the Start menu and continue with [Connect your devices](#connect-your-devices).
 
 `-ExecutionPolicy Bypass` applies only to that PowerShell process; it does not permanently change your execution policy. Review scripts before running them, and do not disable SmartScreen or antivirus protection to force an installation.

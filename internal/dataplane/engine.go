@@ -902,7 +902,7 @@ func (e *Engine) sendToPeer(finalID uint64, typ wire.MessageType, payload []byte
 // the route table is only a fallback.
 func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]byte, payload []byte, src netip.AddrPort) error {
 	toNext := peerID
-	if id, ok := e.peerForAddr(src); ok {
+	if id, ok := e.relayForAddr(src, peerID); ok {
 		toNext = id
 	} else if r, ok := e.routes.Lookup(peerID); ok {
 		if ep, ok := e.endpointFor(r.NextHop); ok && ep == src {
@@ -923,11 +923,27 @@ func (e *Engine) sendHandshakeReply(peerID uint64, attempt [session.AttemptSize]
 	return e.link.Send(src, frame)
 }
 
-// directSource reports whether src can be a direct endpoint for peerID: it
-// either belongs to that peer or to no known peer (first contact).
-func (e *Engine) directSource(peerID uint64, src netip.AddrPort) bool {
+// relayForAddr reports the live relay a frame arrived through. An address
+// attributed to a down peer is not proof of a relay: a fresh identity on the
+// same host can reuse it, and the reply must then be addressed to the sender
+// rather than the stale peer ID.
+func (e *Engine) relayForAddr(src netip.AddrPort, from uint64) (uint64, bool) {
 	id, ok := e.peerForAddr(src)
-	return !ok || id == peerID
+	if !ok || id == from {
+		return 0, false
+	}
+	p, ok := e.peers.Get(id)
+	if !ok || (p.State != peer.StateUp && p.State != peer.StateDegraded) {
+		return 0, false
+	}
+	return id, true
+}
+
+// directSource reports whether src can be a direct endpoint for peerID: it
+// either belongs to that peer, to no live relay, or to a stale down peer.
+func (e *Engine) directSource(peerID uint64, src netip.AddrPort) bool {
+	_, relayed := e.relayForAddr(src, peerID)
+	return !relayed
 }
 
 // peerForAddr maps a datagram source address to a known peer, matching active
@@ -961,7 +977,7 @@ func (e *Engine) confirmPayload(peerID uint64, attempt [session.AttemptSize]byte
 // address its handshake came from.
 func (e *Engine) sendConfirmBody(peerID uint64, body []byte, src netip.AddrPort) error {
 	toNext := peerID
-	if id, ok := e.peerForAddr(src); ok {
+	if id, ok := e.relayForAddr(src, peerID); ok {
 		toNext = id
 	}
 	h := wire.Header{
@@ -1168,6 +1184,9 @@ func (e *Engine) established(peerID uint64, src netip.AddrPort) {
 		}
 		if _, ok := e.peers.Get(peerID); ok {
 			// The confirmation proved the PSK, so the source is authentic.
+			// MarkSession runs before SetActive so a fresh connection records
+			// its session start while the peer is still down.
+			e.peers.MarkSession(peerID, now)
 			e.peers.SetActive(peerID, src, rtt, transport, now)
 			e.peers.AddCandidate(peerID, src, peer.SourceProbe)
 			_ = e.routes.UpdateDirect(route.DirectLink{PeerID: peerID, RTT: rtt})

@@ -136,6 +136,7 @@ ShowInstDetails show # This will always show the installation details.
 # uninstaller) on distinct labels.
 Var SkeinDesktopState
 
+
 !macro SkeinDesktopProbe UNIQ
     StrCpy $SkeinDesktopState "unknown"
     nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${PRODUCT_EXECUTABLE}" /NH /FO CSV'
@@ -176,7 +177,6 @@ Function SkeinValidateTrustedDir
     StrCpy $R9 "ok"
     skeinDirDone:
 FunctionEnd
-
 
 # Verify WebView2 from the registry AFTER the bootstrapper ran. The
 # wails macro ignores the bootstrapper's exit code and its "ok" label
@@ -228,6 +228,7 @@ Function .onInit
    SetErrorLevel 1
    Abort
    skeinDesktopInstallOk:
+
 
 FunctionEnd
 

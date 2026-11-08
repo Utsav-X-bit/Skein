@@ -20,11 +20,11 @@ const items = [
 ];
 
 export function Sidebar() {
-  // M7: footer version is live (AppService.Version binding), not the
-  // old hardcoded "v0.1". While it loads or errors, "dev" is shown
-  // rather than a version that was never queried.
+  // The footer version is live (AppService.Version binding), not a hardcoded
+  // string; an unread version is "—" so a failed query never looks like an
+  // unstamped build.
   const version = useQuery({ queryKey: ["app-version"], queryFn: () => AppService.Version() });
-  const versionLabel = version.data ? version.data : "dev";
+  const versionLabel = version.data ?? (version.isError ? "—" : "…");
   const collapsed = useUI((s) => s.sidebarCollapsed);
   const toggle = useUI((s) => s.toggleSidebar);
   return (
@@ -42,13 +42,14 @@ export function Sidebar() {
             to={to}
             end={end}
             title={collapsed ? label : undefined}
+            aria-label={collapsed ? label : undefined}
             className={({ isActive }) => cn(
               "flex h-10 items-center gap-3 rounded-md px-3 text-sm transition-colors",
               collapsed && "justify-center px-0",
               isActive ? "bg-[var(--accent-soft)] text-[var(--text)]" : "text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]",
             )}
           >
-            <Icon size={17} />
+            <Icon size={17} aria-hidden />
             {!collapsed && <span>{label}</span>}
           </NavLink>
         ))}

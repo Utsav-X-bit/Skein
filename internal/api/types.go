@@ -35,6 +35,11 @@ type Peer struct {
 	RxBytes     uint64   `json:"rx_bytes"`
 	TxBytes     uint64   `json:"tx_bytes"`
 	LastSeenMS  int64    `json:"last_seen_ms"`
+	// SessionStartMS and LastHandshakeMS are epoch milliseconds, not ages.
+	// They are omitted when no session has been observed, so the UI shows
+	// "not observed" instead of 1970.
+	SessionStartMS  *int64 `json:"session_start_ms,omitempty"`
+	LastHandshakeMS *int64 `json:"last_handshake_ms,omitempty"`
 }
 
 // Route is one resolved route.
