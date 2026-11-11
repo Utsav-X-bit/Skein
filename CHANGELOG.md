@@ -8,6 +8,8 @@ required them.
 
 ### Added
 
+- `skein uninstall` removes the local installation and its data after
+  confirmation; `--yes` confirms noninteractively.
 - Live mesh map: stable node layout, evidence-ranked links (direct, observed,
   routed), route drawer, peer and link inspectors, keyboard/table equivalent,
   and motion-path flow animation gated by real rates and reduced motion.

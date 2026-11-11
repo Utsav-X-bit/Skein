@@ -71,6 +71,7 @@ Usage:
   skein [-c <config>] install-service       register the system service (via the minimal helper)
   skein [-c <config>] uninstall-service [--purge]
                                             remove the system service (via the minimal helper)
+  skein uninstall [--yes]                  completely remove this installation and its local data
   skein [-c <config>] dashboard             live mesh status; the daemon must already be running
   skein system init [--name N] [--port P] [--mtu M]
                                             bootstrap a system install (helper token + daemon API)
@@ -166,6 +167,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Printf("skein service installed\n  start: systemctl start %s (Linux) or sc start %s (Windows)\n", service.Name, service.Name)
 		return 0
+	case "uninstall":
+		if opts.explicit {
+			fmt.Fprintln(stderr, "skein: uninstall removes the system installation and does not accept --config")
+			return 2
+		}
+		return cmdUninstall(ctx, rest[1:], os.Stdin, stdout, stderr)
 	case "uninstall-service":
 		purge := false
 		for _, arg := range rest[1:] {

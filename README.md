@@ -218,6 +218,29 @@ Windows installations do not require adding Skein to `PATH`; the commands above 
 
 The installers stop an existing service before replacing its binaries, preserve the current configuration and identity, and restart a configured service. An update does not require creating or joining the network again. Keep a backup before changing an important installation.
 
+## Uninstall
+
+Quit Skein Desktop from its tray menu, then run:
+
+```bash
+skein uninstall
+```
+
+On Windows, use PowerShell:
+
+```powershell
+& "$env:ProgramFiles\Skein\skein.exe" uninstall
+```
+
+Confirm by typing `yes`. This removes the local installation, configuration,
+identity, and Skein-managed backups; you will need a new join string to reconnect.
+Use `--yes` to confirm noninteractively. Source checkouts and shared dependencies
+are not removed. Uninstalling this device does not uninstall its peers.
+On Windows, the running CLI may need final cleanup after it exits. The command
+reports any pending files and the cleanup log; files still locked are also
+scheduled for deletion on restart. A failed cleanup leaves its log in the path
+shown. A new installation is not targeted by the pending cleanup.
+
 ## Troubleshooting
 
 | Problem | What to check |
