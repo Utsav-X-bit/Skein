@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { Onboarding } from "@/routes/onboarding/Onboarding";
 import { useHistoryRecorder } from "@/features/activity/useHistoryRecorder";
 import { useDaemonEvents } from "@/features/mesh/useDaemonEvents";
+import { nextSetupGate, setupOwnsWindow, type SetupGate } from "./onboardingGate";
 
 /** One shell banner: a single fact and the single action that owns it. */
 function ShellBanner({ tone, children, action }: { tone: "warning" | "danger"; children: ReactNode; action: ReactNode }) {
@@ -34,7 +35,14 @@ export function AppShell() {
   const location = useLocation();
   const qc = useQueryClient();
   const [palette, setPalette] = useState(false);
+  // Setup owns the window from the moment the user starts it until the flow
+  // closes itself (onboardingGate.ts). It must not follow the live service
+  // state: the bootstrap helper registers and starts the service before the
+  // GUI posts its token, so "missing" turns false mid-setup and the old gate
+  // unmounted this screen — taking the once-only join string with it.
+  const [setupGate, setSetupGate] = useState<SetupGate>("auto");
   const svc = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status(), refetchInterval: 5_000 });
+  const serviceMissing = svc.data?.state === "missing";
   // Observers only: the command bar owns the interval for these keys, and the
   // daemon pushes `connection:changed` / `peers:changed` on top of it.
   const config = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), retry: 0 });
@@ -53,21 +61,30 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // A finished flow re-arms once the service is installed again, so a later
+  // uninstall shows setup instead of a shell whose daemon is not there.
+  useEffect(() => {
+    if (!svc.isSuccess) return;
+    const next = nextSetupGate(setupGate, serviceMissing);
+    if (next !== setupGate) setSetupGate(next);
+  }, [setupGate, serviceMissing, svc.isSuccess]);
+
   // Step 8: do not lock stopped-service users out of the shell. The
   // old gate showed Onboarding whenever the service was not running
   // — including while the status query was still loading, and for an
   // installed-but-stopped service whose Settings/Security/Diagnostics
-  // the user needs precisely then. Onboarding shows only when the
-  // service is known to be uninstalled; while loading, show a
-  // skeleton; when installed but stopped, show the shell with a
-  // banner (the pages themselves handle the offline daemon).
+  // the user needs precisely then. Onboarding shows when the service is
+  // known to be uninstalled, and stays while the user's own setup flow
+  // runs or holds a result; while loading, show a skeleton; when
+  // installed but stopped, show the shell with a banner (the pages
+  // themselves handle the offline daemon).
   if (svc.isLoading) {
     return <div className="h-full bg-[var(--bg)] p-6"><div className="h-64 animate-pulse rounded-lg bg-[var(--surface-raised)]" /></div>;
   }
-  if (svc.data?.state === "missing" && location.pathname !== "/settings") {
+  if (setupOwnsWindow(setupGate, serviceMissing, location.pathname)) {
     return (
       <div className="h-full overflow-auto bg-[var(--bg)] p-6 text-[var(--text)]">
-        <Onboarding />
+        <Onboarding onBegin={() => setSetupGate("open")} onExit={() => setSetupGate("closed")} />
       </div>
     );
   }

@@ -33,6 +33,8 @@ required them.
 
 ### Fixed
 
+- First-time setup stays open while the service starts and until the user has
+  seen the result, preserving the one-time network join string.
 - Duplicate multi-address handshakes no longer delete a completed responder
   handshake, which previously left a joining peer permanently unadmitted.
 - Handshake replies to an address owned by a stale down peer are addressed to

@@ -31,7 +31,7 @@ function PrivilegeNote() {
   );
 }
 
-export function Onboarding({ compact = false }: { compact?: boolean }) {
+export function Onboarding({ compact = false, onBegin, onExit }: { compact?: boolean; onBegin?: () => void; onExit?: () => void }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [mode, setMode] = useState<Mode>("welcome");
@@ -55,22 +55,31 @@ export function Onboarding({ compact = false }: { compact?: boolean }) {
     refresh();
   };
 
+  // The shell latches setup while the user's own flow runs (onboardingGate.ts)
+  // and releases it only on an explicit exit: the result screen holds the
+  // once-only join string in component state, so nothing else may unmount it.
+
   const create = useMutation({
     mutationFn: () => SetupService.Init({ name: name.trim(), port: Number(port), mtu: Number(mtu), mdns }),
+    onMutate: onBegin,
     onSuccess: finish,
   });
   const join = useMutation({
     mutationFn: () => SetupService.Join(invite.trim()),
+    onMutate: onBegin,
     onSuccess: finish,
   });
   const importCfg = useMutation({
     mutationFn: () => SetupService.Import(importPath.trim()),
+    onMutate: onBegin,
     onSuccess: finish,
   });
   const start = useMutation({
     mutationFn: () => ServiceService.Start(),
+    onMutate: onBegin,
     onSuccess: () => {
       refresh();
+      onExit?.();
       navigate("/");
     },
   });
@@ -369,7 +378,7 @@ export function Onboarding({ compact = false }: { compact?: boolean }) {
             )}
             {result.invite && <CopyField value={result.invite} label="peer invite" />}
 
-            <Button onClick={() => { refresh(); navigate("/"); }}>Open dashboard</Button>
+            <Button onClick={() => { refresh(); onExit?.(); navigate("/"); }}>Open dashboard</Button>
           </CardContent>
         </Card>
       )}
