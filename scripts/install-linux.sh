@@ -182,7 +182,9 @@ case "$FAM" in
     arch)
         PM=pacman
         RT=(gtk4 webkitgtk-6.0 acl polkit iproute2)
-        BT=(git go nodejs npm gcc pkgconf curl ca-certificates xz)
+        # ensure_node uses a compatible existing Node/npm or a private
+        # download; requesting nodejs here conflicts with Arch LTS packages.
+        BT=(git go gcc pkgconf curl ca-certificates xz)
         GTK=gtk4 WEB=webkitgtk-6.0
         ;;
     apt)
@@ -320,7 +322,7 @@ install_deps() {
     done
     log "Installing packages: ${PKGS[*]}"
     case "$FAM" in
-        arch) run_root pacman -S --needed --noconfirm "${PKGS[@]}" || die "pacman failed" ;;
+        arch) run_root pacman -S --needed --noconfirm "${PKGS[@]}" || die "pacman failed; review the errors above. If installed libraries are out of sync with the repositories, run a full system upgrade (sudo pacman -Syu), resolve any reported conflicts, then retry. The installer does not upgrade your system." ;;
         apt) run_root env DEBIAN_FRONTEND=noninteractive \
                 apt-get install -y --no-install-recommends "${PKGS[@]}" || die "apt-get install failed" ;;
         dnf) run_root dnf install -y "${DNF_EXTRA[@]}" "${PKGS[@]}" || die "dnf install failed" ;;

@@ -59,8 +59,8 @@ bash ./scripts/install-linux.sh
 
 Enter your `sudo` password when prompted. The installer:
 
-1. Detects your distribution and installs **Go**, Node.js/npm, the C toolchain, GTK/WebKit development headers, and runtime packages through its package manager. Go downloads the toolchain required by `go.mod` when needed.
-2. Installs **Wails CLI v3.1.0 automatically** in temporary build tooling, then builds the daemon, CLI, helper, and desktop **without running the build as root**. It uses a temporary Node.js download if the system version is too old. You do not need to install Go or Wails yourself first.
+1. Detects your distribution and installs **Go**, the C toolchain, GTK/WebKit development headers, and runtime packages through its package manager. Go downloads the toolchain required by `go.mod` when needed.
+2. Installs **Wails CLI v3.1.0 automatically** in temporary build tooling, then builds the daemon, CLI, helper, and desktop **without running the build as root**. On Arch, it uses a compatible Node.js/npm already on the build path or downloads Node.js temporarily, without replacing an installed LTS package. Other distributions install Node.js/npm through their package manager and use the temporary download if needed. You do not need to install Go or Wails yourself first.
 3. Installs the binaries, desktop menu entry, icon, and administrator-approval policy.
 4. Keeps an existing network configuration when upgrading.
 
@@ -223,6 +223,7 @@ The installers stop an existing service before replacing its binaries, preserve 
 | Problem | What to check |
 | --- | --- |
 | Linux reports unsupported distribution or missing WebKitGTK | Check the supported baselines above and your enabled repositories. A `.deb` or `.rpm` cannot make missing GTK/WebKit libraries compatible. |
+| Arch reports dependency conflicts involving installed system libraries | Review pacman's errors and bring the whole system up to date with `sudo pacman -Syu`, then retry. If the full upgrade still fails, resolve repository or package conflicts first; do not force or remove core packages. |
 | No Linux authentication dialog appears | Run from a local graphical session with a polkit authentication agent. Do not launch the desktop with `sudo`. |
 | Windows cannot find `winget` | Install/update Microsoft App Installer, reopen PowerShell, then retry. Alternatively, use the manual prerequisites above. |
 | Windows reports an old Node.js version | Install Node.js 22.12+ or a newer LTS release, then rerun the builder. |

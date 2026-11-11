@@ -33,6 +33,10 @@ required them.
 
 ### Fixed
 
+- The Arch installer no longer asks pacman to replace an installed Node.js
+  LTS package; it uses its existing private Node.js fallback when needed.
+- The Arch installer explains how to recover from out-of-sync system-library
+  dependencies without performing a system upgrade automatically.
 - First-time setup stays open while the service starts and until the user has
   seen the result, preserving the one-time network join string.
 - Duplicate multi-address handshakes no longer delete a completed responder

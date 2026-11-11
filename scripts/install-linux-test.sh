@@ -98,6 +98,18 @@ printf 'ID=ubuntu\nID_LIKE=debian\nVERSION_ID="22.04"\nPRETTY_NAME="Ubuntu 22.04
 expect_fail "old Ubuntu rejected" \
     env SKEIN_OS_RELEASE="$TMP/os-old" "$SCRIPT" --dry-run --binary-dir "$BIN"
 
+# Arch's nodejs package conflicts with its nodejs-lts-* packages. The build
+# uses an existing suitable Node/npm or the private fallback instead.
+printf 'ID=arch\nID_LIKE=arch\nPRETTY_NAME="Arch Linux"\n' > "$TMP/os-arch"
+mkdir -p "$TMP/shims"
+cp -- "$TRUE_BIN" "$TMP/shims/pacman"
+if plan=$(env PATH="$TMP/shims:$PATH" SKEIN_OS_RELEASE="$TMP/os-arch" "$SCRIPT" --dry-run 2>&1) &&
+   [[ ! "$plan" =~ (^|[[:space:]])(nodejs|npm)([[:space:]]|$) ]]; then
+    ok "Arch build does not replace an installed Node.js LTS package"
+else
+    fail "Arch build requests a conflicting Node.js package"
+fi
+
 # --- privileged phase ------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
     printf 'skip: privileged install phase requires root\n'
