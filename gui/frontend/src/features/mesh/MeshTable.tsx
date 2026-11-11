@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { Peer } from "@/lib/api";
 import { shortID } from "@/lib/utils";
 import { rowKeyNav } from "./hooks";
-import { formatBytesPerSec, type MeshModel, type Rate } from "./model";
+import { formatBytesPerSec, routeSummary, type MeshModel, type Rate } from "./model";
 
 type Link = { from: string; to: string };
 
@@ -43,7 +43,7 @@ export function MeshTable({
         <table className="w-full text-left text-sm" aria-label="Mesh nodes">
           <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
             <tr>
-              {["Node", "Overlay", "State", "Evidence", "RTT", "Transport", "Rate"].map((h) => (
+              {["Node", "Overlay", "State", "Evidence", "Selected route", "RTT", "Transport", "Rate"].map((h) => (
                 <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>
               ))}
             </tr>
@@ -60,6 +60,8 @@ export function MeshTable({
                       ? "route"
                       : "unknown";
               const rate = peerRates[node.id];
+              const route = model.paths.find((p) => p.destination === node.id);
+              const routeText = node.kind === "self" ? "—" : route ? routeSummary(route, nameOf) : node.kind === "peer" ? "no route" : "—";
               return (
                 <tr
                   key={node.id}
@@ -74,6 +76,7 @@ export function MeshTable({
                   <td className="px-3 py-2 font-mono text-xs">{node.overlay ?? "—"}</td>
                   <td className="px-3 py-2">{node.kind === "self" ? "up" : node.state}</td>
                   <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{evidence}</td>
+                  <td className="px-3 py-2 text-xs">{routeText}</td>
                   <td className="tabular px-3 py-2">{node.rttMs !== undefined ? `${Math.round(node.rttMs)} ms` : "—"}</td>
                   <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{node.transport ?? "unknown"}</td>
                   <td className="tabular px-3 py-2 text-xs">

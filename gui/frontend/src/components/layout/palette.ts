@@ -142,7 +142,7 @@ export function buildCommands(ctx: PaletteContext, query: string): PaletteComman
       id: `peer-${peer.id}`,
       group: "peer",
       label: `Open ${name}`,
-      hint: [peer.overlay_ipv4, peer.state, peer.direct ? "direct" : "relay"].filter(Boolean).join(" · "),
+      hint: [peer.overlay_ipv4, peer.state, peer.direct ? "direct" : "no direct link"].filter(Boolean).join(" · "),
       run: () => navigate(`/peers?peer=${encodeURIComponent(peer.id)}`),
     });
     commands.push({

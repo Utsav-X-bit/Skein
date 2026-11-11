@@ -7,6 +7,7 @@ import {
   activityWindow,
   formatAge,
   formatBytesPerSec,
+  routeSummary,
   type MeshModel,
 } from "./model";
 
@@ -112,7 +113,7 @@ export function LinkInspector({
         <div>
           <div className="mono-label">owning route</div>
           <div className="font-mono text-xs">
-            {owning ? `${shortID(owning.destination)} · ${owning.hops} hops · ${owning.costMs.toFixed(1)} ms` : evidence === "direct" ? "direct link" : "—"}
+            {owning ? `${shortID(owning.destination)} · ${routeSummary(owning, nameOf)} · ${owning.hops} hops · ${owning.costMs.toFixed(1)} ms` : evidence === "direct" ? "direct link" : "—"}
           </div>
         </div>
       </div>

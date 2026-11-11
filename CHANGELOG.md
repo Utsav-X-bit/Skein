@@ -35,6 +35,13 @@ required them.
 
 ### Fixed
 
+- Joining an already configured network now initiates contact with the
+  inviter even when discovery previously registered it as a non-dialer.
+- Network invites reserve the inviter's overlay address as well as known
+  peers' addresses, preventing a new joiner from selecting the same address.
+- Failed bootstrap setup cancels its own unused token when safe; pending
+  bootstrap errors include recovery guidance.
+
 - The Arch installer no longer asks pacman to replace an installed Node.js
   LTS package; it uses its existing private Node.js fallback when needed.
 - The Arch installer explains how to recover from out-of-sync system-library

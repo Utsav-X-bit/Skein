@@ -520,13 +520,17 @@ func (d *Daemon) SystemJoin(ctx context.Context, invite string, confirm bool) (a
 			Remediation: "provide an invite from another peer",
 		}
 	}
-	// AddPeer decodes a peer (skein:1:) invite, not a network
-	// invite, so register the inviter directly, using the same
-	// dialer rule (lower ID dials).
-	dialer := d.id.ID < inv.ID
-	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, dialer, ""); err != nil {
+	// AddPeer decodes a peer (skein:1:) invite, not a network invite, so
+	// register the inviter directly. The joiner always dials: it is the only
+	// side holding the inviter's endpoints, and the inviter has no candidate
+	// for us. This matches bootstrap join (bootstrap.buildJoin) and
+	// `skein join` (cli), which both set dialer = true for the same reason.
+	if err := d.registerPeer(inv.ID, inv.PublicKey, inv.Addrs, true, ""); err != nil {
 		return api.JoinResult{}, err
 	}
+	// registerPeer keeps an existing entry's role so discovery cannot flip a
+	// configured one; the invite is configured input, so it is applied again.
+	d.peers.SetDialer(inv.ID, true)
 	for _, addr := range inv.Addrs {
 		d.peers.AddCandidate(inv.ID, addr, peer.SourceConfig)
 	}

@@ -49,9 +49,9 @@ func BootstrapStatePath() string {
 // The plaintext token is returned as a base64url string for the
 // helper's stdout JSON only; the byte slice is zeroed here after
 // encoding, and the token is never logged and never written to disk.
-// A service-start failure does NOT delete the state: the token stays
-// valid for its 10 minutes, so the GUI can retry the start without a
-// fresh elevation.
+// A failure before the token is returned cancels that token when no
+// daemon holds the config lock; when one does, the cancel fails closed
+// and the state is left to expire (see cancelBootstrapToken).
 // mintBootstrapToken is the testable core of MintBootstrap: lock,
 // already-configured refusal, caller binding, and minting — without
 // the root-ownership step or the service install/start, which need a
@@ -117,73 +117,128 @@ func mintBootstrapToken(verb, cfgPath, keyPath, statePath string) (string, error
 func MintBootstrap(verb string) (string, error) {
 	cfgPath := SystemConfigPath()
 	statePath := BootstrapStatePath()
-	token, err := mintBootstrapToken(verb, cfgPath, SystemIdentityPath(), statePath)
+	return mintBootstrap(verb, cfgPath, SystemIdentityPath(), statePath, func(string) error {
+		if err := fileperm.Root(statePath); err != nil {
+			return fmt.Errorf("bootstrap: own state file: %w", err)
+		}
+		// The daemon derives the control socket/pipe admission list from the
+		// access file when it binds. A fresh Linux install has no skein group
+		// and no grant for the invoking user, so without this the token's
+		// holder cannot connect to post it. This writes the least role
+		// (read), never secret or mutate; the token remains the bootstrap
+		// authorisation and commit upgrades the bound caller on success.
+		if err := grantBootstrapTransportAccess(); err != nil {
+			return fmt.Errorf("bootstrap: grant transport access: %w", err)
+		}
+		// Install the service pointing at the daemon binary with the
+		// system config path, then start it. This deliberately does NOT
+		// use EnsureService: there is no config to load yet, no firewall
+		// port to open (bootstrap mode binds no UDP port), and the only
+		// access-file write here is the read transport admission above —
+		// the daemon grants the bootstrap caller secret on success.
+		// Step 6: the install goes through RegisterDaemon — package
+		// skeind only, validated (skeind basename, regular non-symlink,
+		// non-world-writable parent). The Step 4 deployment blocker
+		// (MintBootstrap via the daemonExecutable() helper-dir/PATH
+		// search, Agent E F-06) is closed here: that search is deleted
+		// and no bootstrap install path can reach it.
+		if _, err := service.RegisterDaemon(service.RegisterOptions{ConfigPath: cfgPath}); err != nil {
+			return fmt.Errorf("bootstrap: service register: %w", err)
+		}
+		if err := service.Start(); err != nil {
+			return fmt.Errorf("bootstrap: service start: %w", err)
+		}
+		deadline := time.Now().Add(15 * time.Second)
+	waitRunning:
+		for {
+			st, err := service.ReadStatus()
+			if err == nil {
+				switch st.State {
+				case service.StateRunning:
+					break waitRunning
+				case service.StateStopped, service.StateError:
+					return fmt.Errorf("bootstrap: service did not stay running (state: %s)", st.State)
+				}
+			}
+			if time.Now().After(deadline) {
+				if err != nil {
+					return fmt.Errorf("bootstrap: service state: %w", err)
+				}
+				return fmt.Errorf("bootstrap: service did not reach running (state: %s)", st.State)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		// The service reports Running as soon as systemd execs the daemon,
+		// but the bootstrap endpoint only exists once the daemon binds the
+		// control socket/pipe — and the CLI posts immediately after this
+		// returns. A token returned before the plane exists is unusable
+		// (M9 §2b failure: dial unix /run/skein/control.sock: no such
+		// file). Wait for the plane itself, on a second bounded deadline,
+		// so every client (CLI, GUI) gets a token it can actually post.
+		if err := waitBootstrapPlane(time.Now().Add(15 * time.Second)); err != nil {
+			return fmt.Errorf("bootstrap: control plane did not appear: %w", err)
+		}
+		return nil
+	})
+}
+
+// mintBootstrap is the testable core of MintBootstrap's delivery phase:
+// it mints, runs deliver (root ownership, transport admission, service
+// register/start, control-plane wait), and returns the token only when
+// every step succeeded.
+//
+// A failed delivery cancels the token it minted. Until the return below
+// the token has never left this process, so nothing can present it;
+// keeping the state would refuse every retry with "a bootstrap is already
+// in progress" for the token's whole 10-minute TTL, and there is no
+// unprivileged way out — the state file is root/admin-owned and a daemon
+// in bootstrap mode answers reset with 410. That wedge was the M9 §2c
+// "reset then init says already in progress" report. Cancelling an unused
+// token can only fail closed: it kills a token nobody holds.
+func mintBootstrap(verb, cfgPath, keyPath, statePath string, deliver func(token string) error) (string, error) {
+	token, err := mintBootstrapToken(verb, cfgPath, keyPath, statePath)
 	if err != nil {
 		return "", err
 	}
-	if err := fileperm.Root(statePath); err != nil {
-		_ = os.Remove(statePath)
-		return "", fmt.Errorf("bootstrap: own state file: %w", err)
-	}
-	// The daemon derives the control socket/pipe admission list from the
-	// access file when it binds. A fresh Linux install has no skein group
-	// and no grant for the invoking user, so without this the token's
-	// holder cannot connect to post it. This writes the least role
-	// (read), never secret or mutate; the token remains the bootstrap
-	// authorisation and commit upgrades the bound caller on success.
-	if err := grantBootstrapTransportAccess(); err != nil {
-		_ = os.Remove(statePath)
-		return "", fmt.Errorf("bootstrap: grant transport access: %w", err)
-	}
-	// Install the service pointing at the daemon binary with the
-	// system config path, then start it. This deliberately does NOT
-	// use EnsureService: there is no config to load yet, no firewall
-	// port to open (bootstrap mode binds no UDP port), and the only
-	// access-file write here is the read transport admission above —
-	// the daemon grants the bootstrap caller secret on success.
-	// Step 6: the install goes through RegisterDaemon — package
-	// skeind only, validated (skeind basename, regular non-symlink,
-	// non-world-writable parent). The Step 4 deployment blocker
-	// (MintBootstrap via the daemonExecutable() helper-dir/PATH
-	// search, Agent E F-06) is closed here: that search is deleted
-	// and no bootstrap install path can reach it.
-	if _, err := service.RegisterDaemon(service.RegisterOptions{ConfigPath: cfgPath}); err != nil {
-		return "", fmt.Errorf("bootstrap: service register: %w", err)
-	}
-	if err := service.Start(); err != nil {
-		return "", fmt.Errorf("bootstrap: service start: %w", err)
-	}
-	deadline := time.Now().Add(15 * time.Second)
-waitRunning:
-	for {
-		st, err := service.ReadStatus()
-		if err == nil {
-			switch st.State {
-			case service.StateRunning:
-				break waitRunning
-			case service.StateStopped, service.StateError:
-				return "", fmt.Errorf("bootstrap: service did not stay running (state: %s)", st.State)
-			}
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return "", fmt.Errorf("bootstrap: service state: %w", err)
-			}
-			return "", fmt.Errorf("bootstrap: service did not reach running (state: %s)", st.State)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	// The service reports Running as soon as systemd execs the daemon,
-	// but the bootstrap endpoint only exists once the daemon binds the
-	// control socket/pipe — and the CLI posts immediately after this
-	// returns. A token returned before the plane exists is unusable
-	// (M9 §2b failure: dial unix /run/skein/control.sock: no such
-	// file). Wait for the plane itself, on a second bounded deadline,
-	// so every client (CLI, GUI) gets a token it can actually post.
-	if err := waitBootstrapPlane(time.Now().Add(15 * time.Second)); err != nil {
-		return "", fmt.Errorf("bootstrap: control plane did not appear: %w", err)
+	if err := deliver(token); err != nil {
+		cancelBootstrapToken(cfgPath, statePath, token)
+		return "", err
 	}
 	return token, nil
+}
+
+// cancelBootstrapToken removes the state file of a token this mint
+// created but never handed to a caller.
+//
+// It takes the config lock first and does everything under it: a running
+// daemon holds that lock for its lifetime, so a failed acquisition means
+// a daemon owns the bootstrap state and the cancel fails closed, deleting
+// nothing — a live daemon's token is never cancelled out from under it.
+// With the lock held no mint can interleave and no bootstrap daemon can
+// start, so reading the state and removing it cannot race a replacement;
+// and the state is removed only if it still holds this token's hash. Every
+// failure path leaves the state alone: an unused token is a bounded,
+// self-expiring obstacle, while deleting the wrong one is not.
+func cancelBootstrapToken(cfgPath, statePath, encoded string) {
+	token, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(token) != bootstrap.TokenSize {
+		return
+	}
+	defer clear(token)
+	store, err := configstore.Open(cfgPath)
+	if err != nil {
+		return
+	}
+	defer store.Close()
+	if err := store.Lock(); err != nil {
+		return
+	}
+	defer store.Unlock()
+	st, err := bootstrap.Load(statePath)
+	if err != nil || !st.Matches(token) {
+		return
+	}
+	_ = bootstrap.DeleteState(statePath)
 }
 
 // RunBootstrap runs an unconfigured daemon in bootstrap mode and

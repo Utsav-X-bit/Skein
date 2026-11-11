@@ -13,11 +13,11 @@ import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
 import { rowKeyNav, usePeerParam } from "@/features/mesh/hooks";
 import { PeerHealth } from "@/features/mesh/PeerHealth";
 import { PeerInspector } from "@/features/mesh/PeerInspector";
-import { formatAge, formatBytesPerSec, presenceOf, type Presence, type Rate } from "@/features/mesh/model";
+import { formatAge, formatBytesPerSec, presenceOf, routeSummary, type Presence, type Rate } from "@/features/mesh/model";
 
 type SortKey = "name" | "presence" | "path" | "transport" | "rtt" | "rate" | "lastSeen";
 
-const presenceRank: Record<Presence, number> = { active: 0, idle: 1, offline: 2, unknown: 3 };
+const presenceRank: Record<Presence, number> = { active: 0, idle: 1, routed: 2, offline: 3, unknown: 4 };
 
 export function Peers() {
   useLiveSampler(true);
@@ -29,13 +29,18 @@ export function Peers() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const now = Date.now();
+    const nameOf = (id: string) => mesh.peers.find((p) => p.id === id)?.name || shortID(id);
     return mesh.peers
       .filter((p) => !needle || `${p.name ?? ""} ${p.id} ${p.overlay_ipv4 ?? ""} ${p.path ?? ""}`.toLowerCase().includes(needle))
-      .map((peer) => ({
-        peer,
-        presence: presenceOf(peer, mesh.lastTrafficAt[peer.id], now),
-        rate: mesh.peerRates[peer.id] as Rate | undefined,
-      }))
+      .map((peer) => {
+        const route = mesh.model.paths.find((p) => p.destination === peer.id);
+        return {
+          peer,
+          presence: presenceOf(peer, mesh.lastTrafficAt[peer.id], now, route !== undefined && !route.direct),
+          rate: mesh.peerRates[peer.id] as Rate | undefined,
+          routeLabel: routeSummary(route, nameOf),
+        };
+      })
       .sort((a, b) => {
         const order =
           sort.key === "name"
@@ -43,7 +48,7 @@ export function Peers() {
             : sort.key === "presence"
               ? presenceRank[a.presence] - presenceRank[b.presence]
               : sort.key === "path"
-                ? (a.peer.path ?? "").localeCompare(b.peer.path ?? "")
+                ? a.routeLabel.localeCompare(b.routeLabel)
                 : sort.key === "transport"
                   ? (a.peer.transport ?? "").localeCompare(b.peer.transport ?? "")
                   : sort.key === "rtt"
@@ -53,7 +58,7 @@ export function Peers() {
                       : a.peer.last_seen_ms - b.peer.last_seen_ms;
         return order * sort.dir;
       });
-  }, [mesh.peers, mesh.lastTrafficAt, mesh.peerRates, q, sort]);
+  }, [mesh.peers, mesh.lastTrafficAt, mesh.peerRates, mesh.model.paths, q, sort]);
 
   const toggle = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
@@ -103,7 +108,7 @@ export function Peers() {
                 <table className="w-full text-left text-sm" aria-label="Peers">
                   <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                     <tr>
-                      {([["name", "Name"], ["presence", "Presence"], ["path", "Path"], ["transport", "Transport"], ["rtt", "RTT"], ["rate", "Rate"], ["lastSeen", "Last seen"]] as const).map(([key, label]) => (
+                      {([["name", "Name"], ["presence", "Presence"], ["path", "Selected route"], ["transport", "Transport"], ["rtt", "RTT"], ["rate", "Rate"], ["lastSeen", "Last seen"]] as const).map(([key, label]) => (
                         <th key={key} className="mono-label px-3 py-2 font-normal" aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"}>
                           <Button variant="ghost" size="sm" className="-ml-2 h-6 px-2 text-[10px]" onClick={() => toggle(key)}>
                             {label} {arrow(key)}
@@ -113,7 +118,7 @@ export function Peers() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--border)]">
-                    {rows.map(({ peer, presence, rate }) => (
+                    {rows.map(({ peer, presence, rate, routeLabel }) => (
                       <tr
                         key={peer.id}
                         data-row
@@ -128,7 +133,7 @@ export function Peers() {
                           <div className="font-mono text-[10px] text-[var(--text-faint)]">{peer.overlay_ipv4 || peer.id}</div>
                         </td>
                         <td className="px-3 py-2"><PeerHealth peer={peer} presence={presence} compact /></td>
-                        <td className="px-3 py-2 text-xs">{peer.path || (peer.direct ? "direct" : "—")}</td>
+                        <td className="px-3 py-2 text-xs">{routeLabel}</td>
                         <td className="px-3 py-2 text-xs">{peer.transport || "unknown"}</td>
                         <td className="tabular px-3 py-2">{peer.rtt_ms > 0 ? `${peer.rtt_ms.toFixed(1)} ms` : "—"}</td>
                         <td className="tabular px-3 py-2 text-xs">

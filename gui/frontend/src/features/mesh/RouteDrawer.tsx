@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { shortID } from "@/lib/utils";
-import type { MeshPath } from "./model";
+import { routeSummary, type MeshPath } from "./model";
 
 /** RouteDrawer is the route list without leaving the map. */
 export function RouteDrawer({
@@ -71,7 +71,7 @@ export function RouteDrawer({
                         <span className="tabular text-xs text-[var(--text-muted)]">{p.costMs.toFixed(1)} ms</span>
                       </div>
                       <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-                        via {shortID(p.nextHop)} · {p.hops} {p.hops === 1 ? "hop" : "hops"}
+                        {routeSummary(p, shortID)} · {p.hops} {p.hops === 1 ? "hop" : "hops"}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-faint)]">{chain.join(" → ")}</div>
                     </button>

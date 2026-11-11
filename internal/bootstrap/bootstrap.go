@@ -249,6 +249,13 @@ func (m *Manager) Delete() error {
 	return nil
 }
 
+// Matches reports whether token is the token this state was minted for.
+// It is the identity check a caller needs before acting on a state file
+// it did not just read; it does not verify expiry, attempts, or use.
+func (st State) Matches(token []byte) bool {
+	return subtle.ConstantTimeCompare([]byte(st.TokenHash), []byte(hashToken(token))) == 1
+}
+
 // Verify checks a presented token against the state, in the approved
 // order: caller match, constant-time hash match, expiry, unused.
 // Failed caller/hash checks increment the persisted attempt counter;

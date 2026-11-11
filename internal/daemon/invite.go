@@ -36,10 +36,19 @@ func (d *Daemon) PeerInvite(ctx context.Context) (api.Invite, error) {
 func (d *Daemon) NetworkInvite(ctx context.Context) (api.Invite, error) {
 	cfg := d.config()
 	var used []netip.Addr
+	if cfg.Node.OverlayIPv4.Is4() {
+		used = append(used, cfg.Node.OverlayIPv4)
+	}
 	for _, p := range d.peers.List() {
 		if p.OverlayV4.IsValid() {
 			used = append(used, p.OverlayV4)
 		}
+	}
+	// The inviter's own address is in use too; without it a joiner can be
+	// handed the same overlay address. Same bound as the CLI invite path.
+	used = dedupeBootstrapOverlays(used, cfg.Node.OverlayIPv4Prefix)
+	if len(used) > 16 {
+		used = used[:16]
 	}
 	value, err := identity.EncodeNetworkInvite(identity.NetworkInvite{
 		Secret:    cfg.Node.NetworkSecret,

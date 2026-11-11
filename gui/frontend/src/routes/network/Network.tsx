@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { shortID } from "@/lib/utils";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
+import { routeSummary } from "@/features/mesh/model";
 import { rowKeyNav, usePeerParam } from "@/features/mesh/hooks";
 import { PeerInspector } from "@/features/mesh/PeerInspector";
 
@@ -87,6 +88,7 @@ export function Network() {
                           </Button>
                         </th>
                       ))}
+                      <th className="mono-label px-3 py-2 font-normal">Selected</th>
                       <th className="mono-label px-3 py-2 font-normal">Full path</th>
                     </tr>
                   </thead>
@@ -109,6 +111,7 @@ export function Network() {
                             <div className="font-mono text-[10px] text-[var(--text-faint)]">{shortID(p.destination)}</div>
                           </td>
                           <td className="px-3 py-2 text-xs">{nameOf(p.nextHop)}</td>
+                          <td className="px-3 py-2 text-xs">{routeSummary(p, nameOf)}</td>
                           <td className="tabular px-3 py-2">{p.costMs.toFixed(1)} ms</td>
                           <td className="px-3 py-2">{p.hops}</td>
                           <td className="px-3 py-2">

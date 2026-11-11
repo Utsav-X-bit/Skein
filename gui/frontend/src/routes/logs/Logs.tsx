@@ -360,7 +360,7 @@ export function Logs() {
                 <div className="mono-label">peer</div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={peer.state === "up" ? "success" : peer.state === "degraded" ? "warning" : "neutral"}>{peer.state}</Badge>
-                  <Badge tone={peer.direct ? "accent" : "relay"}>{peer.direct ? "direct" : "relay"}</Badge>
+                  <Badge tone={peer.direct ? "accent" : "neutral"}>{peer.direct ? "direct" : "no direct link"}</Badge>
                   <span className="font-mono text-[var(--text-faint)]">{shortID(peer.id)}</span>
                 </div>
                 <div>overlay: {peer.overlay_ipv4 || "not reported"}</div>

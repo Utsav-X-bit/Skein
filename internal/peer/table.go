@@ -457,6 +457,17 @@ func (t *Table) SetState(id uint64, state State) {
 	}
 }
 
+// SetDialer sets the dialer role. The invite path uses it because an invite is
+// authoritative: a peer already learned from gossip or mDNS may hold the other
+// role, and the joiner is the only side with the inviter's endpoints.
+func (t *Table) SetDialer(id uint64, dialer bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if p, ok := t.peers[id]; ok {
+		p.Dialer = dialer
+	}
+}
+
 // SetRTT records the latest round-trip time measured by control traffic.
 func (t *Table) SetRTT(id uint64, rtt time.Duration) {
 	t.mu.Lock()

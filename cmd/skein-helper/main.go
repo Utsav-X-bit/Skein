@@ -511,6 +511,13 @@ func remediation(err error) string {
 	switch {
 	case strings.Contains(msg, "already exists"):
 		return "already configured; use the daemon control API (see skein-helper --help)"
+	case strings.Contains(msg, "already in progress"):
+		// Only what the state file proves: a token is on disk and
+		// unexpired. It expires within the 10-minute TTL, and the file
+		// is admin-owned with no cancel command, so name the wait and
+		// the manual clear (stop the service first: a live bootstrap
+		// daemon owns the state).
+		return fmt.Sprintf("a bootstrap is already in progress; its token expires within 10 minutes, after which this succeeds. To clear it now: stop the service (Windows: Stop-Service skein, Linux: sudo systemctl stop skein), delete %s as administrator/root, then retry", app.BootstrapStatePath())
 	case strings.Contains(msg, "not running"), strings.Contains(msg, "service start"):
 		return "check the service state with skein-helper status and the daemon logs"
 	case strings.Contains(msg, "elevated"), strings.Contains(msg, "Administrator"), strings.Contains(msg, "root"):

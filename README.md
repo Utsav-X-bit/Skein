@@ -208,6 +208,7 @@ Windows installations do not require adding Skein to `PATH`; the commands above 
 - Skein uses **UDP port 11010 by default**. The daemon applies the relevant local firewall rules when the network connects.
 - mDNS helps discover devices on the same LAN. It does not cross routers by itself.
 - STUN and hole punching help discover reachable addresses; they cannot guarantee connectivity through every NAT or firewall. A mesh member must be reachable to relay traffic when a direct path is unavailable.
+- Skein tries advertised IPv4 and IPv6 endpoints for direct connections and can route through another connected peer. The selected route is based on measured cost; neither IPv6 nor a direct route is guaranteed to win.
 - Do not expose the local control socket or pipe to the internet. Service installations use a Unix socket on Linux and a named pipe on Windows.
 
 ## Updating
@@ -252,6 +253,7 @@ shown. A new installation is not targeted by the pending cleanup.
 | Windows reports an old Node.js version | Install Node.js 22.12+ or a newer LTS release, then rerun the builder. |
 | Installer says the desktop is running | Choose **Quit** from Skein's tray menu, then retry. The installer does not forcibly kill the app. |
 | Setup reports an existing configuration | Use the existing installation. Do not repeatedly create another network or delete the config files; use the app's explicit reset flow only if you intend to leave the current network. |
+| Setup says bootstrap is already in progress | Wait 10 minutes from the last create/join attempt, then retry once. Uninstalling is not necessary to expire a pending token. |
 | Service is installed but no peers connect | Check the join string, UDP reachability, firewall rules, and whether at least one peer is reachable. STUN alone does not bypass all NATs. |
 | The desktop cannot reach the daemon | Check the service status and logs below. Use binaries from the same build; older Windows builds may require an elevated first setup. |
 

@@ -10,9 +10,12 @@ import {
   formatAge,
   formatBytesPerSec,
   formatRate,
+  linkFamily,
   peerHealth,
   presenceOf,
+  routeSummary,
   shouldFlow,
+  type MeshPath,
 } from "./model";
 
 const peer = (id: string, over: Partial<Peer> = {}): Peer => ({
@@ -33,6 +36,16 @@ const route = (destination: string, path: string[], over: Partial<Route> = {}): 
   cost_ms: 10,
   hops: path.length,
   path,
+  ...over,
+});
+
+const meshPath = (over: Partial<MeshPath> = {}): MeshPath => ({
+  destination: "dest",
+  nextHop: "relay",
+  path: ["relay", "dest"],
+  hops: 2,
+  costMs: 10,
+  direct: false,
   ...over,
 });
 
@@ -219,7 +232,36 @@ describe("buildMesh", () => {
 
   it("maps routes to paths", () => {
     const model = buildMesh("self", [], [route("b", ["a", "b"])], [], now);
-    expect(model.paths).toEqual([{ destination: "b", nextHop: "a", path: ["a", "b"], hops: 2, costMs: 10 }]);
+    expect(model.paths).toEqual([{ destination: "b", nextHop: "a", path: ["a", "b"], hops: 2, costMs: 10, direct: false }]);
+  });
+
+  it("marks a direct route and the family its first-hop link observed", () => {
+    const model = buildMesh(
+      "self",
+      [peer("p1", { direct: true, path: "v6", endpoint: "[2001:db8::1]:51820" })],
+      [route("p1", ["p1"])],
+      [],
+      now,
+    );
+    expect(model.paths[0]).toMatchObject({ destination: "p1", nextHop: "p1", direct: true, family: "IPv6" });
+  });
+
+  it("keeps the relayed selected route when the destination also has a direct link", () => {
+    const model = buildMesh(
+      "self",
+      [peer("relay", { direct: true, path: "v4" }), peer("dest", { direct: true })],
+      [route("dest", ["relay", "dest"])],
+      [],
+      now,
+    );
+    expect(model.paths[0]).toMatchObject({ destination: "dest", nextHop: "relay", direct: false });
+    expect(model.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "self>dest", evidence: "direct" }),
+        expect.objectContaining({ id: "self>relay", evidence: "direct" }),
+        expect.objectContaining({ id: "relay>dest", evidence: "route" }),
+      ]),
+    );
   });
 
   it("flags stale when every peer row is older than 15 s", () => {
@@ -274,14 +316,48 @@ describe("presenceOf", () => {
     expect(presenceOf(peer("p1"), now - 60_000, now)).toBe("idle");
   });
 
-  it("is offline when the peer is not up", () => {
+  it("is offline only when the peer reports down", () => {
     expect(presenceOf(peer("p1", { state: "down" }), now - 1_000, now)).toBe("offline");
-    expect(presenceOf(peer("p1", { state: "connecting" }), now - 1_000, now)).toBe("offline");
+    expect(presenceOf(peer("p1", { state: "stale" }), now - 1_000, now)).toBe("unknown");
+    expect(presenceOf(peer("p1", { state: "degraded" }), now - 1_000, now)).toBe("unknown");
+  });
+
+  it("is routed, not offline, when a selected route exists without a direct link", () => {
+    expect(presenceOf(peer("p1", { state: "down" }), now - 1_000, now, true)).toBe("routed");
   });
 
   it("is unknown without peer details", () => {
     expect(presenceOf(undefined, undefined, now)).toBe("unknown");
     expect(presenceOf(null, undefined, now)).toBe("unknown");
+  });
+});
+
+describe("linkFamily", () => {
+  it("reads the family of an observed direct link", () => {
+    expect(linkFamily(peer("p1", { direct: true, path: "v4" }))).toBe("IPv4");
+    expect(linkFamily(peer("p1", { direct: true, path: "v6" }))).toBe("IPv6");
+    expect(linkFamily(peer("p1", { direct: true, path: "", endpoint: "198.51.100.7:51820" }))).toBe("IPv4");
+    expect(linkFamily(peer("p1", { direct: true, path: "", endpoint: "[2001:db8::1]:51820" }))).toBe("IPv6");
+  });
+
+  it("never guesses from an unobserved link or an overlay address", () => {
+    expect(linkFamily(peer("p1", { direct: false, path: "v6" }))).toBeUndefined();
+    expect(linkFamily(peer("p1", { direct: true, overlay_ipv6: "fd00::1" }))).toBeUndefined();
+    expect(linkFamily(undefined)).toBeUndefined();
+  });
+});
+
+describe("routeSummary", () => {
+  const nameOf = (id: string) => (id === "relay" ? "Relay" : id);
+
+  it("names the selected route kind", () => {
+    expect(routeSummary(meshPath({ direct: true, nextHop: "dest", family: "IPv6" }), nameOf)).toBe("direct · IPv6");
+    expect(routeSummary(meshPath({ direct: true, nextHop: "dest" }), nameOf)).toBe("direct");
+    expect(routeSummary(meshPath(), nameOf)).toBe("via Relay");
+  });
+
+  it("says no route when the daemon resolved none", () => {
+    expect(routeSummary(undefined, nameOf)).toBe("no route");
   });
 });
 
@@ -292,16 +368,29 @@ describe("peerHealth", () => {
     expect(health.detail).toContain("Direct");
   });
 
-  it("reports an up routed peer", () => {
+  it("reports an up peer without a direct link without claiming a relay", () => {
     const health = peerHealth(peer("p1", { direct: false }), "active");
     expect(health.tone).toBe("ok");
-    expect(health.detail).toContain("route");
+    expect(health.detail).toBe("No direct link");
   });
 
-  it("reports a down peer with last-seen age", () => {
+  it("reports a routed peer without claiming an active session", () => {
+    const health = peerHealth(peer("p1", { state: "down" }), "routed");
+    expect(health).toMatchObject({ tone: "warn", label: "Routed", detail: "No direct link · route selected" });
+  });
+
+  it("reports a down peer as no route, with last-seen age", () => {
     const health = peerHealth(peer("p1", { state: "down", last_seen_ms: 90_000 }), "offline");
-    expect(health).toMatchObject({ tone: "down", label: "Offline" });
+    expect(health).toMatchObject({ tone: "down", label: "No route" });
     expect(health.detail).toContain("Last seen 2 min");
+  });
+
+  it("reports an unknown non-up state without claiming offline", () => {
+    expect(peerHealth(peer("p1", { state: "stale" }), "unknown")).toMatchObject({
+      tone: "unknown",
+      label: "Unknown",
+      detail: "State stale",
+    });
   });
 
   it("reports unknown without details", () => {

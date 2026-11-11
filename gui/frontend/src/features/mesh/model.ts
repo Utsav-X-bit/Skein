@@ -15,9 +15,19 @@ export type MeshNode = {
   hops?: number;
 };
 export type MeshEdge = { id: string; from: string; to: string; evidence: Evidence; fresh: boolean; rttMs?: number };
-export type MeshPath = { destination: string; nextHop: string; path: string[]; hops: number; costMs: number };
+export type MeshPath = {
+  destination: string;
+  nextHop: string;
+  path: string[];
+  hops: number;
+  costMs: number;
+  /** The selected route is a one-hop direct link, not a relayed advertisement. */
+  direct: boolean;
+  /** Underlay family of the first hop, only when that direct link is observed. */
+  family?: "IPv4" | "IPv6";
+};
 export type MeshModel = { nodes: MeshNode[]; edges: MeshEdge[]; paths: MeshPath[]; stale: boolean };
-export type Presence = "active" | "idle" | "offline" | "unknown";
+export type Presence = "active" | "idle" | "routed" | "offline" | "unknown";
 export type PeerHealth = { tone: "ok" | "warn" | "down" | "unknown"; label: string; detail: string };
 
 export type ActivityBucket = {
@@ -90,6 +100,35 @@ export function shouldFlow(evidence: Evidence, rate: Rate | null | undefined, mo
 
 const evidenceRank: Record<Evidence, number> = { route: 0, observed: 1, direct: 2 };
 
+// linkFamily reports the underlay address family of a peer's observed direct
+// link. peer.path is the daemon's "v4"/"v6" link path; the endpoint carries
+// the same fact. Candidates and overlay addresses are not evidence of the
+// active link, so an unobserved link stays unknown.
+export function linkFamily(peer: Peer | null | undefined): "IPv4" | "IPv6" | undefined {
+  if (!peer || !peer.direct) return undefined;
+  if (peer.path === "v4") return "IPv4";
+  if (peer.path === "v6") return "IPv6";
+  const endpoint = peer.endpoint?.trim();
+  if (!endpoint) return undefined;
+  const close = endpoint.indexOf("]");
+  const host = endpoint.startsWith("[") && close >= 0 ? endpoint.slice(1, close) : endpoint.replace(/:\d+$/, "");
+  if (host.includes(":")) return "IPv6";
+  if (host.includes(".")) return "IPv4";
+  return undefined;
+}
+
+// routeSummary renders one selected route without inventing reachability:
+// a direct route names its family when the first-hop link observed it, a
+// relayed route names the relay, and an absent route says so.
+export function routeSummary(
+  route: MeshPath | undefined,
+  nameOf: (id: string) => string,
+): string {
+  if (!route) return "no route";
+  if (route.direct) return route.family ? `direct · ${route.family}` : "direct";
+  return `via ${nameOf(route.nextHop)}`;
+}
+
 export function buildMesh(
   self: string,
   peers: Peer[],
@@ -141,12 +180,17 @@ export function buildMesh(
   for (const r of routes) {
     const path = r.path ?? [];
     ensureNode(r.destination);
+    const family = linkFamily(peers.find((p) => p.id === r.next_hop));
     paths.push({
       destination: r.destination,
       nextHop: r.next_hop,
       path,
       hops: r.hops,
       costMs: r.cost_ms,
+      // A direct route's next hop is its destination; an advertised route's
+      // next hop is a relay even when a direct link to the destination exists.
+      direct: r.next_hop === r.destination,
+      ...(family ? { family } : {}),
     });
     // The destination is always reachable from self: an empty path means the
     // route's next hop is the destination itself.
@@ -227,23 +271,35 @@ export function presenceOf(
   peer: Peer | null | undefined,
   lastTrafficAt: number | undefined,
   now: number,
+  routed = false,
 ): Presence {
   if (!peer || !peer.id) return "unknown";
-  if (peer.state !== "up") return "offline";
+  if (peer.state !== "up") {
+    if (routed) return "routed";
+    // A down direct link is not evidence that the remote machine is offline.
+    return peer.state === "down" ? "offline" : "unknown";
+  }
   if (lastTrafficAt !== undefined && now - lastTrafficAt <= ActiveWindowMs) return "active";
   return "idle";
 }
 
 export function peerHealth(peer: Peer | null | undefined, presence: Presence): PeerHealth {
-  if (!peer || !peer.id || presence === "unknown") {
+  if (!peer || !peer.id) {
     return { tone: "unknown", label: "Unknown", detail: "No peer details" };
+  }
+  if (presence === "unknown") {
+    return { tone: "unknown", label: "Unknown", detail: peer.state ? `State ${peer.state}` : "No state reported" };
   }
   if (presence === "offline") {
     return {
       tone: "down",
-      label: "Offline",
+      label: "No route",
       detail: peer.last_seen_ms > 0 ? `Last seen ${formatAge(peer.last_seen_ms)} ago` : "Never observed",
     };
+  }
+  if (presence === "routed") {
+    // A selected route is resolved state, not proof of an active session.
+    return { tone: "warn", label: "Routed", detail: "No direct link · route selected" };
   }
   if (presence === "idle") return { tone: "ok", label: "Idle", detail: "Up, no recent traffic" };
   if (peer.direct) {
@@ -253,7 +309,9 @@ export function peerHealth(peer: Peer | null | undefined, presence: Presence): P
       detail: peer.rtt_ms > 0 ? `Direct · ${Math.round(peer.rtt_ms)} ms` : "Direct link",
     };
   }
-  return { tone: "ok", label: "Up", detail: peer.path ? `Via ${peer.path}` : "Via route" };
+  // A peer without a direct link may be relayed or simply offline; this
+  // function only sees link state, so it must not claim a relay.
+  return { tone: "ok", label: "Up", detail: "No direct link" };
 }
 
 // formatBytesPerSec renders one direction. Summing RX and TX is only right

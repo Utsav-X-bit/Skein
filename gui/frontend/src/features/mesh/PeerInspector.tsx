@@ -13,7 +13,9 @@ import { useWideLayout } from "./hooks";
 import {
   formatAge,
   formatBytesPerSec,
+  linkFamily,
   presenceOf,
+  routeSummary,
   type MeshModel,
   type Rate,
 } from "./model";
@@ -93,8 +95,10 @@ export function PeerInspector({
   const peer = peerId ? peers.find((p) => p.id === peerId) ?? null : null;
   const node = peerId ? model.nodes.find((n) => n.id === peerId) ?? null : null;
   const rate = peerId ? peerRates[peerId] : undefined;
-  const presence = presenceOf(peer, peerId ? lastTrafficAt[peerId] : undefined, Date.now());
   const routes = peerId ? model.paths.filter((p) => p.destination === peerId || p.path.includes(peerId)) : [];
+  const selected = peerId ? model.paths.find((p) => p.destination === peerId) : undefined;
+  const presence = presenceOf(peer, peerId ? lastTrafficAt[peerId] : undefined, Date.now(), selected !== undefined && !selected.direct);
+  const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || shortID(id);
   const liveProbe = useLive((s) => (peerId ? s.probes[peerId] : undefined));
 
   const ping = useMutation({
@@ -125,6 +129,31 @@ export function PeerInspector({
   const overlay = peer?.overlay_ipv4 || peer?.overlay_ipv6 || (isSelf ? status?.overlay_ipv4 : undefined);
   const probeResult = probe.data ?? liveProbe;
   const title = isSelf ? status?.name || "This device" : peer?.name || node?.label || shortID(peerId);
+  // The badge describes the selected route, not the remote machine's power.
+  const routeBadge = selected
+    ? selected.direct
+      ? peer?.direct && peer.state === "up"
+        ? { tone: "accent" as const, label: "direct" }
+        : { tone: "warning" as const, label: "no link" }
+      : { tone: "relay" as const, label: "relay" }
+    : peer
+      ? peer.state === "up"
+        ? { tone: "warning" as const, label: "no route" }
+        : { tone: "neutral" as const, label: "no route" }
+      : { tone: "neutral" as const, label: "unknown" };
+  const family = linkFamily(peer);
+  const directLink = peer?.direct
+    ? peer.state === "up"
+      ? `up${family ? ` · ${family}` : ""}${peer.rtt_ms > 0 ? ` · ${Math.round(peer.rtt_ms)} ms` : ""}`
+      : `${peer.state}${family ? ` · ${family}` : ""}`
+    : "not observed";
+  const selectedText = selected
+    ? selected.direct && !(peer?.direct && peer.state === "up")
+      ? peer?.direct
+        ? `direct · link ${peer.state}`
+        : "direct · link not observed"
+      : routeSummary(selected, nameOf)
+    : "no route";
 
   return (
     <>
@@ -161,7 +190,7 @@ export function PeerInspector({
           <>
             <div className="flex items-center justify-between gap-3">
               <PeerHealth peer={peer} presence={presence} />
-              <Badge tone={peer?.direct ? "accent" : "relay"}>{peer?.direct ? "direct" : peer ? "relay" : "unknown"}</Badge>
+              <Badge tone={routeBadge.tone}>{routeBadge.label}</Badge>
             </div>
 
             <div className="space-y-1">
@@ -170,6 +199,16 @@ export function PeerInspector({
               <div className="text-xs text-[var(--text-muted)]">
                 {peer?.overlay_ipv4 ?? "—"}{peer?.overlay_ipv6 ? ` · ${peer.overlay_ipv6}` : ""}
               </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><div className="mono-label">direct link</div><div className="text-xs">{directLink}</div></div>
+              <div><div className="mono-label">selected route</div><div className="text-xs">{selectedText}</div></div>
+              {selected && !selected.direct && peer?.direct && (
+                <div className="col-span-2 text-xs text-[var(--text-muted)]">
+                  The direct link is up but the selected route uses {nameOf(selected.nextHop)}.
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3 text-sm">
@@ -210,7 +249,7 @@ export function PeerInspector({
                 <ul className="space-y-1 text-xs">
                   {routes.map((p) => (
                     <li key={p.destination} className="flex items-center justify-between gap-2">
-                      <span className="font-mono">{shortID(p.destination)} · via {shortID(p.nextHop)}</span>
+                      <span className="font-mono">{shortID(p.destination)} · {routeSummary(p, shortID)}</span>
                       <span className="tabular text-[var(--text-muted)]">{p.hops} hops · {p.costMs.toFixed(1)} ms</span>
                     </li>
                   ))}

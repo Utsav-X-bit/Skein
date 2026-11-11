@@ -11,6 +11,7 @@ import { useMotionAllowed } from "./hooks";
 import {
   activityWindow,
   facingSides,
+  routeSummary,
   shouldFlow,
   type MeshModel,
   type MeshNode,
@@ -21,6 +22,7 @@ type Link = { from: string; to: string };
 
 type NodeData = {
   node: MeshNode;
+  routeText?: string;
   selected: boolean;
   interactive: boolean;
   onSelect: (id: string) => void;
@@ -83,7 +85,7 @@ function linkRates(activities: Activity[]): Map<string, Rate> {
 // palette in WebKit (the card rendered light on a dark shell). The node uses
 // explicit theme values from the store so its surface cannot drift.
 function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
-  const { node, selected, interactive, onSelect } = data;
+  const { node, routeText, selected, interactive, onSelect } = data;
   const light = useUI((s) => s.theme) === "light";
   const palette = light
     ? { card: "#fbfaf6", text: "#14171c", border: "#7c7466", muted: "#4b5563", faint: "#66707e", accent: "#0b6b5a", up: "#17663a", relay: "#8a4e0a" }
@@ -93,7 +95,7 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : -1}
       aria-pressed={interactive ? selected : undefined}
-      aria-label={`${node.label}${node.kind === "self" ? ", this device" : ""}, ${node.kind === "self" ? "up" : node.state}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
+      aria-label={`${node.label}${node.kind === "self" ? ", this device" : ""}, ${node.kind === "self" ? "up" : node.state}${routeText ? `, ${routeText}` : ""}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
@@ -138,6 +140,9 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
         <span className="truncate">{node.kind === "self" ? "up · this device" : `${node.state} · ${node.transport ?? "unknown"}`}</span>
         <span className="tabular shrink-0">{node.rttMs !== undefined ? `${Math.round(node.rttMs)} ms` : "—"}</span>
       </div>
+      {routeText && (
+        <div className="mt-0.5 truncate text-[10px]" style={{ color: palette.faint }}>{routeText}</div>
+      )}
     </div>
   );
 }
@@ -184,21 +189,31 @@ export function MeshCanvas({
   const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self), [layoutKey, self]);
   const rates = useMemo(() => linkRates(activities), [activities]);
 
-  const nodes = useMemo(
-    () =>
-      model.nodes.map((node) => ({
+  const nodes = useMemo(() => {
+    const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || shortID(id);
+    return model.nodes.map((node) => {
+      const route = model.paths.find((p) => p.destination === node.id);
+      const routeText =
+        node.kind === "self"
+          ? undefined
+          : route
+            ? routeSummary(route, nameOf)
+            : node.kind === "peer"
+              ? "no route"
+              : undefined;
+      return {
         id: node.id,
         type: "mesh",
         position: positions.get(node.id) ?? Center,
-        data: { node, selected: selectedPeer === node.id, interactive: mode === "map", onSelect: onSelectPeer },
+        data: { node, routeText, selected: selectedPeer === node.id, interactive: mode === "map", onSelect: onSelectPeer },
         draggable: false,
         selectable: true,
         // React Flow's default node wrapper is white; the themed card inside
         // must be the only surface.
         style: { background: "transparent", border: "none", padding: 0, boxShadow: "none" },
-      })),
-    [model.nodes, positions, selectedPeer, onSelectPeer, mode],
-  );
+      };
+    });
+  }, [model.nodes, model.paths, peers, positions, selectedPeer, onSelectPeer, mode]);
 
   const edges = useMemo(
     () =>

@@ -22,6 +22,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/fileperm"
 	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
 	"github.com/Utsav-X-bit/skein/internal/service"
 )
@@ -201,6 +202,11 @@ func TestSystemJoinSameNetworkAddsPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Seed the inviter the way discovery would: known, non-dialer, no
+	// candidate for it. Deterministic, unlike an ID-order-dependent seed.
+	if err := d.peers.Upsert(peer.Peer{ID: inviter.ID, PublicKey: inviter.PublicKey, State: peer.StateDown}); err != nil {
+		t.Fatal(err)
+	}
 	res, err := d.SystemJoin(context.Background(), join, false)
 	if err != nil {
 		t.Fatalf("SystemJoin: %v", err)
@@ -208,8 +214,43 @@ func TestSystemJoinSameNetworkAddsPeer(t *testing.T) {
 	if res.Rejoined || res.PeerID != fmt.Sprintf("%016x", inviter.ID) {
 		t.Fatalf("join = %+v, want peer %016x, not rejoined", res, inviter.ID)
 	}
-	if _, ok := d.peers.Get(inviter.ID); !ok {
+	p, ok := d.peers.Get(inviter.ID)
+	if !ok {
 		t.Fatal("inviter not in peer table after system join")
+	}
+	// The joiner holds the inviter's endpoints and the inviter holds none of
+	// ours, so the joined peer must always dial — including over a role it
+	// already had from discovery.
+	if !p.Dialer {
+		t.Fatal("inviter registered as a non-dialer after system join")
+	}
+	if len(p.Candidates) == 0 {
+		t.Fatal("inviter has no candidate endpoints after system join")
+	}
+}
+
+func TestNetworkInviteReservesExistingOverlayAddresses(t *testing.T) {
+	d, _ := newSystemDaemon(t)
+	peerID := addTestPeer(t, d)
+	peerAddress := netip.MustParseAddr("10.144.144.2")
+	d.peers.SetOverlay(peerID, peerAddress, netip.Addr{})
+
+	result, err := d.NetworkInvite(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := identity.DecodeNetworkInvite(result.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []netip.Addr{d.config().Node.OverlayIPv4, peerAddress} {
+		found := false
+		for _, addr := range invite.UsedV4 {
+			found = found || addr == want
+		}
+		if !found {
+			t.Errorf("invite does not reserve existing overlay address %s", want)
+		}
 	}
 }
 
