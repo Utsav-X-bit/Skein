@@ -24,6 +24,8 @@ type fakeTransport struct {
 	fallback  []uint64
 	dropped   []uint64
 	punched   []punchCall
+	probed    []uint64
+	probeErr  error
 	noSession bool
 }
 
@@ -96,6 +98,16 @@ func (f *fakeTransport) EnsureSession(peerID uint64) error {
 	defer f.mu.Unlock()
 	f.ensured = append(f.ensured, peerID)
 	return nil
+}
+
+func (f *fakeTransport) ProbeMTU(peerID uint64, ceiling int) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probed = append(f.probed, peerID)
+	if f.probeErr != nil {
+		return 0, f.probeErr
+	}
+	return ceiling, nil
 }
 
 func (f *fakeTransport) frames(typ wire.MessageType) []sentFrame {
@@ -527,5 +539,43 @@ func TestProbeWithoutASessionStartsAHandshake(t *testing.T) {
 	}
 	if !found(ensured) || !found(dropped) {
 		t.Fatalf("handshake was not started: ensured=%v dropped=%v", ensured, dropped)
+	}
+}
+
+// TestDirectPeerPathIsProbedOnce proves the path-MTU probe runs once per
+// direct connection, not on every control tick, and reports the result.
+func TestDirectPeerPathIsProbedOnce(t *testing.T) {
+	f := newFixture(t)
+	f.peers.SetActive(f.peerID, netip.MustParseAddrPort("192.0.2.2:11010"), 5*time.Millisecond, "udp", f.now)
+
+	type report struct {
+		peer  uint64
+		frame int
+	}
+	got := make(chan report, 2)
+	f.ctl.SetMTUHandler(func(peerID uint64, frame int) { got <- report{peerID, frame} })
+
+	f.ctl.Tick()
+	f.ctl.Tick()
+
+	select {
+	case r := <-got:
+		if r.peer != f.peerID || r.frame != wire.MaxFrameSize {
+			t.Fatalf("report = %+v, want peer %d frame %d", r, f.peerID, wire.MaxFrameSize)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no MTU report after two ticks")
+	}
+	select {
+	case r := <-got:
+		t.Fatalf("second probe report: %+v", r)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	f.eng.mu.Lock()
+	probes := len(f.eng.probed)
+	f.eng.mu.Unlock()
+	if probes != 1 {
+		t.Fatalf("probes = %d, want 1", probes)
 	}
 }

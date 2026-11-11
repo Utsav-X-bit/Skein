@@ -153,6 +153,15 @@ func redundantRoute(route netip.Prefix, addresses []netip.Prefix) bool {
 	return false
 }
 
+// SetMTU changes the interface MTU without touching addresses or routes. The
+// daemon uses it after path-MTU negotiation.
+func SetMTU(name string, mtu int) error {
+	if mtu <= 0 {
+		return fmt.Errorf("netcfg: mtu must be positive, got %d", mtu)
+	}
+	return setMTU(name, mtu)
+}
+
 type routeEntry struct {
 	prefix netip.Prefix
 	device string

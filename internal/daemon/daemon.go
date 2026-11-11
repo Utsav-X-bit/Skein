@@ -25,6 +25,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/discovery"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
+	"github.com/Utsav-X-bit/skein/internal/netcfg"
 	"github.com/Utsav-X-bit/skein/internal/path"
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
@@ -64,10 +65,17 @@ type Daemon struct {
 	redact      *redactor
 	conn        *conn
 	dataPlaneMu sync.Mutex
-	closeOnce   sync.Once
-	closeErr    error
-	persistMu   sync.Mutex
-	cfgMu       sync.RWMutex
+	// mtuMu guards the per-connection MTU negotiation: one report per
+	// directly connected peer, applied once when all have reported.
+	mtuMu     sync.Mutex
+	mtuReport map[uint64]int
+	mtuDone   bool
+	// setMTU applies the negotiated interface MTU; tests replace it.
+	setMTU    func(name string, mtu int) error
+	closeOnce sync.Once
+	closeErr  error
+	persistMu sync.Mutex
+	cfgMu     sync.RWMutex
 	// sysMu serialises Step 7 system operations (rotate/reset/leave/
 	// import/update) against each other. It does not replace
 	// persistMu (config writes) — a system op holds sysMu for its
@@ -127,6 +135,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		events:   make(chan api.Event, 64),
 		hub:      api.NewHub(),
 		logs:     &logRing{},
+		setMTU:   netcfg.SetMTU,
 	}
 	d.redact = newRedactor(cfg)
 	if st := loadPausedState(); st.Paused {
@@ -173,6 +182,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	ctl.SetEventHandler(func(typ string, peerID uint64) {
 		d.emit(api.Event{Type: typ, PeerID: fmt.Sprintf("%016x", peerID)})
 	})
+	ctl.SetMTUHandler(d.applyNegotiatedMTU)
 	d.ctl = ctl
 	d.api = api.NewServer(cfg.API.Token, d, d, d)
 	// Step 1: authorisation table from the access file, and the audit

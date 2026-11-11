@@ -59,6 +59,9 @@ type Transport interface {
 	// non-dialer peer (M4 F-11); without it ensureSession refuses
 	// non-dialers. It is a no-op for unknown peers.
 	AllowFallbackDial(peerID uint64)
+	// ProbeMTU measures the largest frame that can reach a directly
+	// connected peer without IP fragmentation.
+	ProbeMTU(peerID uint64, ceiling int) (int, error)
 }
 
 // Local describes this node's advertisement.
@@ -98,8 +101,12 @@ type Controller struct {
 	challenges   map[[16]byte][]chan challengeReply
 	trafficPrev  map[uint64]trafficSample
 	lastRTT      map[uint64]time.Duration
-	onEvent      func(typ string, peerID uint64)
-	paused       bool
+	// mtuProbed records peers whose path MTU has been measured for this
+	// connection, so a probe runs once per peer, not every tick.
+	mtuProbed map[uint64]bool
+	onEvent   func(typ string, peerID uint64)
+	onMTU     func(peerID uint64, frame int)
+	paused    bool
 }
 
 type trafficSample struct{ rx, tx uint64 }
@@ -148,6 +155,7 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 		challenges:   make(map[[16]byte][]chan challengeReply),
 		trafficPrev:  make(map[uint64]trafficSample),
 		lastRTT:      make(map[uint64]time.Duration),
+		mtuProbed:    make(map[uint64]bool),
 	}
 	merger.OnDeparted = ctl.handleDeparted
 	return ctl, nil
@@ -180,6 +188,44 @@ func (c *Controller) SetEventHandler(fn func(typ string, peerID uint64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onEvent = fn
+}
+
+// SetMTUHandler registers the callback that receives a peer's measured path
+// frame size (0 when probing failed).
+func (c *Controller) SetMTUHandler(fn func(peerID uint64, frame int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onMTU = fn
+}
+
+// ResetMTUProbes forgets measured paths, so a new dataplane connection
+// measures them again.
+func (c *Controller) ResetMTUProbes() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mtuProbed = make(map[uint64]bool)
+}
+
+// probeMTU measures one peer's path in the background and reports the result.
+func (c *Controller) probeMTU(peerID uint64) {
+	frame, err := c.eng.ProbeMTU(peerID, wire.MaxFrameSize)
+	if err != nil {
+		if !c.eng.HasSession(peerID) {
+			// The session dropped between the tick and the probe; this says
+			// nothing about the path, so let the next tick try again.
+			c.mu.Lock()
+			delete(c.mtuProbed, peerID)
+			c.mu.Unlock()
+			return
+		}
+		frame = 0
+	}
+	c.mu.Lock()
+	fn := c.onMTU
+	c.mu.Unlock()
+	if fn != nil {
+		fn(peerID, frame)
+	}
 }
 
 func (c *Controller) event(typ string, peerID uint64) {
@@ -230,6 +276,17 @@ func (c *Controller) Tick() {
 		return
 	}
 	for _, p := range c.peers.List() {
+		// The path MTU is measured once per direct connection: it decides
+		// the largest segment the inner TCP may build.
+		c.mu.Lock()
+		probed := c.mtuProbed[p.ID]
+		if p.State != peer.StateUp || !p.Direct {
+			delete(c.mtuProbed, p.ID)
+		} else if !probed && c.onMTU != nil {
+			c.mtuProbed[p.ID] = true
+			go c.probeMTU(p.ID)
+		}
+		c.mu.Unlock()
 		// Configured dialers connect without waiting for overlay traffic.
 		if p.Dialer {
 			_ = c.eng.EnsureSession(p.ID)

@@ -8,6 +8,10 @@ required them.
 
 ### Added
 
+- Automatic path-MTU negotiation: after a direct connection, the daemon
+  measures the largest unfragmented frame to every direct peer and raises the
+  overlay MTU (up to 1346) when all of them support it. The configured MTU is
+  the floor; a failed measurement leaves it unchanged.
 - `skein uninstall` removes the local installation and its data after
   confirmation; `--yes` confirms noninteractively.
 - Live mesh map: stable node layout, evidence-ranked links (direct, observed,

@@ -436,6 +436,11 @@ func (d *Daemon) startDataPlane() error {
 		d.closeDevicesLocked()
 		return err
 	}
+	// A new interface starts at the configured MTU; measure the paths again.
+	d.resetMTUNegotiation()
+	if d.ctl != nil {
+		d.ctl.ResetMTUProbes()
+	}
 	return nil
 }
 
@@ -554,4 +559,11 @@ func (a engineAdapter) Punch(peerID uint64, addr netip.AddrPort) error {
 		return e.Punch(peerID, addr)
 	}
 	return errors.New("dataplane paused")
+}
+
+func (a engineAdapter) ProbeMTU(peerID uint64, ceiling int) (int, error) {
+	if e := a.d.engine(); e != nil {
+		return e.ProbeMTU(peerID, ceiling)
+	}
+	return 0, errors.New("dataplane paused")
 }

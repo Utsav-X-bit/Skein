@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/identity"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/peer"
+	"github.com/Utsav-X-bit/skein/internal/pmtu"
 	"github.com/Utsav-X-bit/skein/internal/route"
 	"github.com/Utsav-X-bit/skein/internal/session"
 	"github.com/Utsav-X-bit/skein/internal/tun"
@@ -110,6 +112,12 @@ type Engine struct {
 	routes   *route.Table
 	sessions *session.Manager
 
+	// mtu is the largest inner packet this node may send. It starts at the
+	// configured MTU and may be raised by path-MTU negotiation; it is never
+	// lowered while the connection is up, so established TCP connections keep
+	// a segment size that still fits.
+	mtu atomic.Int64
+
 	counters Counters
 
 	mu       sync.Mutex
@@ -118,6 +126,9 @@ type Engine struct {
 	// fallbackDialers are non-dialer peers the control loop has armed
 	// for fallback dialing after a full silence timeout (M4 F-11).
 	fallbackDialers map[uint64]bool
+	// pendingProbes maps an in-flight path-MTU probe to its waiter.
+	pendingProbes map[uint64]chan struct{}
+	nextProbe     atomic.Uint64
 
 	now func() time.Time
 
@@ -148,7 +159,7 @@ func New(cfg Config, deps Deps) (*Engine, error) {
 	if cfg.MTU <= 0 {
 		return nil, errors.New("dataplane: mtu must be positive")
 	}
-	return &Engine{
+	eng := &Engine{
 		cfg:             cfg,
 		tun:             deps.TUN,
 		link:            deps.Link,
@@ -158,9 +169,33 @@ func New(cfg Config, deps Deps) (*Engine, error) {
 		inflight:        make(map[uint64]*inflight),
 		started:         make(map[uint64]time.Time),
 		fallbackDialers: make(map[uint64]bool),
+		pendingProbes:   make(map[uint64]chan struct{}),
 		now:             time.Now,
 		closed:          make(chan struct{}),
-	}, nil
+	}
+	eng.mtu.Store(int64(cfg.MTU))
+	return eng, nil
+}
+
+// MTU reports the largest inner packet this node currently sends.
+func (e *Engine) MTU() int { return int(e.mtu.Load()) }
+
+// SetMTU raises the send limit after path-MTU negotiation. It never lowers the
+// limit: existing TCP connections keep the MSS they negotiated, so a lower
+// interface MTU would make their packets oversize and silently dropped.
+func (e *Engine) SetMTU(mtu int) {
+	if mtu <= 0 || mtu > wire.MaxFrameSize {
+		return
+	}
+	for {
+		cur := e.mtu.Load()
+		if int64(mtu) <= cur {
+			return
+		}
+		if e.mtu.CompareAndSwap(cur, int64(mtu)) {
+			return
+		}
+	}
 }
 
 // SetClock overrides the clock for tests.
@@ -234,7 +269,9 @@ func (e *Engine) Close() error {
 }
 
 func (e *Engine) readTUN(ctx context.Context) error {
-	buf := make([]byte, e.cfg.MTU)
+	// The interface MTU can be raised by path-MTU negotiation, so the read
+	// buffer is sized for the largest frame the wire format can carry.
+	buf := make([]byte, wire.MaxFrameSize)
 	for {
 		n, err := e.tun.Read(buf)
 		if err != nil {
@@ -321,7 +358,7 @@ func (e *Engine) SendOverlayPacket(pkt []byte) error {
 		e.counters.InvalidPacket.Add(1)
 		return err
 	}
-	if len(pkt) > e.cfg.MTU {
+	if len(pkt) > e.MTU() {
 		e.counters.Oversize.Add(1)
 		return ErrOversize
 	}
@@ -556,6 +593,11 @@ func (e *Engine) handleEncrypted(src netip.AddrPort, h wire.Header, payload []by
 			return e.SendControl(h.From, wire.Pong, reply)
 		}
 		return nil
+	case wire.MTUProbe:
+		return e.handleMTUProbe(h.From, plaintext)
+	case wire.MTUProbeAck:
+		e.handleMTUProbeAck(plaintext)
+		return nil
 	case wire.Pong, wire.State, wire.Challenge, wire.ChallengeReply, wire.Punch:
 		e.handlerMu.RLock()
 		fn := e.onControl
@@ -672,6 +714,154 @@ func (e *Engine) checkExpired(peerID uint64) error {
 		return ErrExpired
 	}
 	return nil
+}
+
+// Path-MTU probing. A probe is an ordinary encrypted frame padded to an exact
+// size and sent from a don't-fragment socket: the kernel reports an oversized
+// datagram as an error (or an ICMP "fragmentation needed" drops it), so a
+// probe only counts when the peer acknowledges it. The acknowledgement travels
+// over the normal link to this node's control endpoint, which is where the
+// probe is resolved.
+const (
+	probeIDSize   = 8
+	probeAttempts = 2
+	probeTimeout  = 400 * time.Millisecond
+)
+
+// ErrProbeFailed reports that no probed size was acknowledged.
+var ErrProbeFailed = errors.New("dataplane: path-MTU probe was not acknowledged")
+
+// ProbeMTU returns the largest frame this node can send to peerID without IP
+// fragmentation, capped at ceiling. It requires an established session and a
+// direct endpoint; a relayed path is not measured.
+func (e *Engine) ProbeMTU(peerID uint64, ceiling int) (int, error) {
+	p, ok := e.peers.Get(peerID)
+	if !ok || !p.ActiveEndpoint.IsValid() {
+		return 0, ErrNoRoute
+	}
+	if _, ok := e.sessions.ActiveEpoch(peerID); !ok {
+		return 0, ErrNoSession
+	}
+	if ceiling <= 0 || ceiling > wire.MaxFrameSize {
+		ceiling = wire.MaxFrameSize
+	}
+	floor := e.MTU() + wire.Overhead
+	if minimum := wire.HeaderSize + wire.NonceSize + wire.TagSize + probeIDSize; floor < minimum {
+		floor = minimum
+	}
+	if ceiling <= floor {
+		return floor, nil
+	}
+	conn, err := pmtu.Open(p.ActiveEndpoint)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	lo, hi, best := floor, ceiling, 0
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		if e.probeFrame(conn, p.ActiveEndpoint, peerID, mid) {
+			best = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best == 0 {
+		return 0, ErrProbeFailed
+	}
+	return best, nil
+}
+
+// probeFrame sends one probe of exactly size bytes and reports whether the
+// peer acknowledged it. A lost probe is retried; a genuinely oversized one
+// never is, because the path drops it every time.
+func (e *Engine) probeFrame(conn *net.UDPConn, dst netip.AddrPort, peerID uint64, size int) bool {
+	for range probeAttempts {
+		id := e.nextProbe.Add(1)
+		wait := make(chan struct{})
+		e.mu.Lock()
+		e.pendingProbes[id] = wait
+		e.mu.Unlock()
+
+		frame, err := e.sealProbe(peerID, size, id)
+		if err == nil {
+			_, err = conn.WriteToUDPAddrPort(frame, dst)
+		}
+		if err != nil {
+			e.forgetProbe(id)
+			continue
+		}
+		select {
+		case <-wait:
+			return true
+		case <-time.After(probeTimeout):
+		}
+		e.forgetProbe(id)
+	}
+	return false
+}
+
+// sealProbe builds a frame of exactly size bytes whose plaintext carries id.
+func (e *Engine) sealProbe(peerID uint64, size int, id uint64) ([]byte, error) {
+	body := size - wire.Overhead
+	if body < probeIDSize {
+		return nil, ErrOversize
+	}
+	epoch, ok := e.sessions.ActiveEpoch(peerID)
+	if !ok {
+		return nil, ErrNoSession
+	}
+	plaintext := make([]byte, body)
+	binary.BigEndian.PutUint64(plaintext[:probeIDSize], id)
+	adArr := associatedData(wire.MTUProbe, peerID, e.cfg.LocalID, epoch)
+	ad := adArr[:]
+	_, counter, ct, err := e.sessions.Seal(peerID, ad, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	payload := wire.AppendNonce(nil, epoch, counter)
+	payload = append(payload, ct...)
+	return wire.Marshal(wire.Header{
+		Type:    wire.MTUProbe,
+		ToNext:  peerID,
+		ToFinal: peerID,
+		From:    e.cfg.LocalID,
+		TTL:     wire.MaxTTL,
+	}, payload)
+}
+
+func (e *Engine) forgetProbe(id uint64) {
+	e.mu.Lock()
+	delete(e.pendingProbes, id)
+	e.mu.Unlock()
+}
+
+// handleMTUProbe answers a probe from peer from. The acknowledgement is a
+// normal control frame, so it reaches this node's control endpoint.
+func (e *Engine) handleMTUProbe(from uint64, payload []byte) error {
+	if len(payload) < probeIDSize {
+		e.counters.InvalidPacket.Add(1)
+		return ErrBadPacket
+	}
+	return e.SendControl(from, wire.MTUProbeAck, payload[:probeIDSize])
+}
+
+// handleMTUProbeAck resolves the probe identified by the payload.
+func (e *Engine) handleMTUProbeAck(payload []byte) {
+	if len(payload) < probeIDSize {
+		e.counters.InvalidPacket.Add(1)
+		return
+	}
+	id := binary.BigEndian.Uint64(payload[:probeIDSize])
+	e.mu.Lock()
+	wait := e.pendingProbes[id]
+	delete(e.pendingProbes, id)
+	e.mu.Unlock()
+	if wait != nil {
+		close(wait)
+	}
 }
 
 // SendControl encrypts and sends a control frame to peerID.

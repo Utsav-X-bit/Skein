@@ -131,3 +131,13 @@ func deleteRouteArgs(prefix netip.Prefix, name string) [][]string {
 	}
 	return [][]string{{"netsh", "interface", base, "delete", "route", prefix.String(), "name=" + name}}
 }
+
+// setMTU applies a new interface MTU in place for both address families.
+func setMTU(name string, mtu int) error {
+	for _, family := range []string{"ipv4", "ipv6"} {
+		if _, err := runner("netsh", "interface", family, "set", "subinterface", "name="+name, "mtu="+strconv.Itoa(mtu), "store=active"); err != nil {
+			return err
+		}
+	}
+	return nil
+}

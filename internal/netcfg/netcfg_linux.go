@@ -131,3 +131,9 @@ func deleteRouteArgs(prefix netip.Prefix, name string) [][]string {
 	}
 	return [][]string{append(base, "route", "del", prefix.String(), "dev", name)}
 }
+
+// setMTU applies a new interface MTU in place.
+func setMTU(name string, mtu int) error {
+	_, err := runner("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu))
+	return err
+}

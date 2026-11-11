@@ -209,6 +209,7 @@ Windows installations do not require adding Skein to `PATH`; the commands above 
 - mDNS helps discover devices on the same LAN. It does not cross routers by itself.
 - STUN and hole punching help discover reachable addresses; they cannot guarantee connectivity through every NAT or firewall. A mesh member must be reachable to relay traffic when a direct path is unavailable.
 - Skein tries advertised IPv4 and IPv6 endpoints for direct connections and can route through another connected peer. The selected route is based on measured cost; neither IPv6 nor a direct route is guaranteed to win.
+- The configured MTU is a floor. Once a direct connection is up, the daemon measures the largest frame the path accepts without IP fragmentation and raises the overlay MTU when every directly connected peer supports it, so TCP builds larger segments. It never lowers the MTU while connected, and an unmeasurable path leaves the configured value in place.
 - Do not expose the local control socket or pipe to the internet. Service installations use a Unix socket on Linux and a named pipe on Windows.
 
 ## Updating

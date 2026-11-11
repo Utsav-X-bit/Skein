@@ -13,6 +13,8 @@ import (
 	"sync"
 
 	wgtun "golang.zx2c4.com/wireguard/tun"
+
+	"github.com/Utsav-X-bit/skein/internal/wire"
 )
 
 // Device is a byte-oriented TUN device.
@@ -69,7 +71,9 @@ func Open(name string, mtu int) (Device, error) {
 		write: make([][]byte, 1),
 	}
 	for i := range d.bufs {
-		d.bufs[i] = make([]byte, mtu)
+		// Path-MTU negotiation can raise the interface MTU up to the wire
+		// format's maximum, so buffers are sized for that, not the initial MTU.
+		d.bufs[i] = make([]byte, max(mtu, wire.MaxFrameSize))
 	}
 	return d, nil
 }

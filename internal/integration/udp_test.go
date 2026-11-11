@@ -18,6 +18,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/peer"
 	"github.com/Utsav-X-bit/skein/internal/route"
 	"github.com/Utsav-X-bit/skein/internal/session"
+	"github.com/Utsav-X-bit/skein/internal/wire"
 )
 
 // pipeTUN is an in-memory TUN device.
@@ -352,4 +353,46 @@ func TestUnknownPeerJoinsOverUDP(t *testing.T) {
 			return false
 		}
 	})
+}
+
+// TestPathMTUProbeOverUDP covers the probe handshake end to end over real UDP
+// sockets. Loopback has a huge path MTU, so every frame size up to the wire
+// maximum must be acknowledged, and a lower ceiling must be found exactly.
+func TestPathMTUProbeOverUDP(t *testing.T) {
+	psk := make([]byte, identity.KeySize)
+	for i := range psk {
+		psk[i] = byte(i + 11)
+	}
+	a := startEndpoint(t, psk, "10.144.144.1")
+	b := startEndpoint(t, psk, "10.144.144.2")
+	a.know(t, b, true)
+	b.know(t, a, false)
+	cancelA := a.run(t)
+	defer cancelA()
+	cancelB := b.run(t)
+	defer cancelB()
+
+	if err := a.eng.SendOverlayPacket(ipv4Packet(a.overlay, b.overlay, []byte("prime"))); err != nil && !errors.Is(err, dataplane.ErrNoSession) {
+		t.Fatalf("prime: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return a.sessions.HasSession(b.id.ID) && b.sessions.HasSession(a.id.ID)
+	})
+
+	frame, err := a.eng.ProbeMTU(b.id.ID, wire.MaxFrameSize)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if frame != wire.MaxFrameSize {
+		t.Fatalf("probed frame = %d, want %d", frame, wire.MaxFrameSize)
+	}
+
+	ceiling := wire.MaxFrameSize - 40
+	frame, err = a.eng.ProbeMTU(b.id.ID, ceiling)
+	if err != nil {
+		t.Fatalf("probe with ceiling: %v", err)
+	}
+	if frame != ceiling {
+		t.Fatalf("probed frame = %d, want %d", frame, ceiling)
+	}
 }

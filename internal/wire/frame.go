@@ -37,6 +37,10 @@ const (
 	Confirm MessageType = 8
 	// Punch asks a relay to introduce two peers so they can dial each other.
 	Punch MessageType = 9
+	// MTUProbe carries a padded path-MTU probe; the peer acknowledges it.
+	MTUProbe MessageType = 10
+	// MTUProbeAck answers an MTUProbe with the probe identifier.
+	MTUProbeAck MessageType = 11
 )
 
 // Frame layout constants.
@@ -65,7 +69,7 @@ type Header struct {
 // Encrypted reports whether the frame body is a Noise ciphertext envelope.
 func (t MessageType) Encrypted() bool {
 	switch t {
-	case Data, Ping, Pong, State, Challenge, ChallengeReply, Confirm, Punch:
+	case Data, Ping, Pong, State, Challenge, ChallengeReply, Confirm, Punch, MTUProbe, MTUProbeAck:
 		return true
 	case Handshake:
 		return false
@@ -76,7 +80,7 @@ func (t MessageType) Encrypted() bool {
 
 // Valid reports whether t is a known message type.
 func (t MessageType) Valid() bool {
-	return t >= Handshake && t <= Punch
+	return t >= Handshake && t <= MTUProbeAck
 }
 
 // AppendFrame appends a complete frame to dst and returns the extended slice.
