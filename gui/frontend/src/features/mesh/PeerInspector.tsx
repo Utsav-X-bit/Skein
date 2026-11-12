@@ -68,16 +68,39 @@ export function InspectorFrame({
   );
 }
 
-/** PeerInspector exposes only fields the daemon reports and actions it supports. */
-export function PeerInspector({
+/** useLeaveNetworkMutation is the shared "leave this network" action: it announces the departure, stops the dataplane, and invalidates the mesh queries. Both the desktop inspector and the mobile sheet render their own confirmation dialog around it. */
+export function useLeaveNetworkMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => PeerService.LeaveNetwork(),
+    onSuccess: (r) => {
+      toast.success(
+        r.propagated
+          ? "Left this network. Departure announced to reachable peers."
+          : "Left locally. No peer was reachable to receive the announcement.",
+        { action: { label: "Rejoin / Switch", onClick: () => { location.hash = "/settings?network=rejoin"; } } },
+      );
+      for (const key of ["peers", "routes", "status", "config"]) void qc.invalidateQueries({ queryKey: [key] });
+    },
+    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
+  });
+}
+
+/**
+ * PeerInspectorBody is the inspector content without its frame: the
+ * desktop PeerInspector wraps it in an InspectorFrame, the mobile
+ * peer sheet wraps it in a MobileSheet. It exposes only fields the
+ * daemon reports and actions it supports.
+ */
+export function PeerInspectorBody({
   peerId,
   status,
   peers,
   model,
   peerRates,
   lastTrafficAt,
-  onClose,
   onViewRoutes,
+  onLeaveRequest,
 }: {
   peerId: string | null;
   status: Status | null;
@@ -85,11 +108,9 @@ export function PeerInspector({
   model: MeshModel;
   peerRates: Record<string, Rate>;
   lastTrafficAt: Record<string, number>;
-  onClose: () => void;
   onViewRoutes: (destination: string) => void;
+  onLeaveRequest: () => void;
 }) {
-  const qc = useQueryClient();
-  const [confirmLeave, setConfirmLeave] = useState(false);
   const self = status?.id ?? "";
   const isSelf = peerId !== null && peerId === self;
   const peer = peerId ? peers.find((p) => p.id === peerId) ?? null : null;
@@ -109,26 +130,11 @@ export function PeerInspector({
     mutationFn: (id: string) => PeerService.Probe(id),
     onError: (e) => toast.error(errText(e)),
   });
-  const leave = useMutation({
-    mutationFn: () => PeerService.LeaveNetwork(),
-    onSuccess: (r) => {
-      toast.success(
-        r.propagated
-          ? "Left this network. Departure announced to reachable peers."
-          : "Left locally. No peer was reachable to receive the announcement.",
-        { action: { label: "Rejoin / Switch", onClick: () => { location.hash = "/settings?network=rejoin"; } } },
-      );
-      for (const key of ["peers", "routes", "status", "config"]) void qc.invalidateQueries({ queryKey: [key] });
-    },
-    onError: (e) => toast.error(`${errKind(e) ? errKind(e) + ": " : ""}${errText(e)}`),
-    onSettled: () => setConfirmLeave(false),
-  });
 
   if (!peerId) return null;
 
   const overlay = peer?.overlay_ipv4 || peer?.overlay_ipv6 || (isSelf ? status?.overlay_ipv4 : undefined);
   const probeResult = probe.data ?? liveProbe;
-  const title = isSelf ? status?.name || "This device" : peer?.name || node?.label || shortID(peerId);
   // The badge describes the selected route, not the remote machine's power.
   const routeBadge = selected
     ? selected.direct
@@ -157,12 +163,6 @@ export function PeerInspector({
 
   return (
     <>
-      <InspectorFrame
-        open
-        title={title}
-        description={isSelf ? "This device" : "Peer inspector"}
-        onClose={onClose}
-      >
         {isSelf ? (
           <>
             <div className="space-y-1">
@@ -178,7 +178,7 @@ export function PeerInspector({
             </div>
             <div>
               <div className="mono-label mb-1">membership</div>
-              <Button variant="danger" size="sm" onClick={() => setConfirmLeave(true)} disabled={leave.isPending}>
+              <Button variant="danger" size="sm" onClick={onLeaveRequest}>
                 Leave network
               </Button>
               <p className="mt-2 text-xs text-[var(--text-muted)]">
@@ -295,6 +295,57 @@ export function PeerInspector({
             )}
           </>
         )}
+    </>
+  );
+}
+
+/** PeerInspector is the desktop frame around PeerInspectorBody. */
+export function PeerInspector({
+  peerId,
+  status,
+  peers,
+  model,
+  peerRates,
+  lastTrafficAt,
+  onClose,
+  onViewRoutes,
+}: {
+  peerId: string | null;
+  status: Status | null;
+  peers: Peer[];
+  model: MeshModel;
+  peerRates: Record<string, Rate>;
+  lastTrafficAt: Record<string, number>;
+  onClose: () => void;
+  onViewRoutes: (destination: string) => void;
+}) {
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const leave = useLeaveNetworkMutation();
+  const isSelf = peerId !== null && peerId === status?.id;
+  const peer = peerId ? peers.find((p) => p.id === peerId) ?? null : null;
+  const node = peerId ? model.nodes.find((n) => n.id === peerId) ?? null : null;
+  const title = isSelf ? status?.name || "This device" : peer?.name || node?.label || (peerId ? shortID(peerId) : "");
+
+  if (!peerId) return null;
+
+  return (
+    <>
+      <InspectorFrame
+        open
+        title={title}
+        description={isSelf ? "This device" : "Peer inspector"}
+        onClose={onClose}
+      >
+        <PeerInspectorBody
+          peerId={peerId}
+          status={status}
+          peers={peers}
+          model={model}
+          peerRates={peerRates}
+          lastTrafficAt={lastTrafficAt}
+          onViewRoutes={onViewRoutes}
+          onLeaveRequest={() => setConfirmLeave(true)}
+        />
       </InspectorFrame>
 
       <Dialog open={confirmLeave} onOpenChange={setConfirmLeave}>

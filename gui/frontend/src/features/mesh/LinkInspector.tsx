@@ -11,19 +11,17 @@ import {
   type MeshModel,
 } from "./model";
 
-/** LinkInspector explains the evidence behind one edge. */
-export function LinkInspector({
+/** LinkInspectorBody is the link content without its frame: the desktop LinkInspector wraps it in an InspectorFrame, the mobile link sheet wraps it in a MobileSheet. */
+export function LinkInspectorBody({
   link,
   model,
   peers,
   activities,
-  onClose,
 }: {
   link: { from: string; to: string } | null;
   model: MeshModel;
   peers: Peer[];
   activities: Activity[];
-  onClose: () => void;
 }) {
   if (!link) return null;
 
@@ -56,12 +54,7 @@ export function LinkInspector({
     evidence === "direct" ? "success" : evidence === "observed" || evidence === "advertised" ? "info" : evidence === "route" ? "neutral" : "warning";
 
   return (
-    <InspectorFrame
-      open
-      title={`${nameOf(link.from)} → ${nameOf(link.to)}`}
-      description="Link inspector"
-      onClose={onClose}
-    >
+    <>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="mono-label">direction</div>
@@ -125,6 +118,37 @@ export function LinkInspector({
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+/** LinkInspector explains the evidence behind one edge. */
+export function LinkInspector({
+  link,
+  model,
+  peers,
+  activities,
+  onClose,
+}: {
+  link: { from: string; to: string } | null;
+  model: MeshModel;
+  peers: Peer[];
+  activities: Activity[];
+  onClose: () => void;
+}) {
+  if (!link) return null;
+
+  const self = model.nodes.find((n) => n.kind === "self")?.id ?? "";
+  const nameOf = (id: string) => (id === self ? "this device" : peers.find((p) => p.id === id)?.name || shortID(id));
+
+  return (
+    <InspectorFrame
+      open
+      title={`${nameOf(link.from)} → ${nameOf(link.to)}`}
+      description="Link inspector"
+      onClose={onClose}
+    >
+      <LinkInspectorBody link={link} model={model} peers={peers} activities={activities} />
     </InspectorFrame>
   );
 }
