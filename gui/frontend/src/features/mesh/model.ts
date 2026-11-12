@@ -139,7 +139,7 @@ export function routeSummary(
   nameOf: (id: string) => string,
 ): string {
   if (!route) return "no route";
-  if (route.direct) return route.family ? `direct · ${route.family}` : "direct";
+  if (route.direct) return route.family ? `direct · ${route.family} underlay` : "direct";
   return `via ${nameOf(route.nextHop)}`;
 }
 

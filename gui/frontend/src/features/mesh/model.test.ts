@@ -386,7 +386,7 @@ describe("routeSummary", () => {
   const nameOf = (id: string) => (id === "relay" ? "Relay" : id);
 
   it("names the selected route kind", () => {
-    expect(routeSummary(meshPath({ direct: true, nextHop: "dest", family: "IPv6" }), nameOf)).toBe("direct · IPv6");
+    expect(routeSummary(meshPath({ direct: true, nextHop: "dest", family: "IPv6" }), nameOf)).toBe("direct · IPv6 underlay");
     expect(routeSummary(meshPath({ direct: true, nextHop: "dest" }), nameOf)).toBe("direct");
     expect(routeSummary(meshPath(), nameOf)).toBe("via Relay");
   });

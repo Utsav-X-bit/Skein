@@ -21,6 +21,8 @@ export function Network() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "destination", dir: 1 });
 
+  const directLinks = useMemo(() => mesh.links.filter((l) => l.hops === 1), [mesh.links]);
+
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const filtered = mesh.model.paths.filter((p) =>
@@ -88,7 +90,6 @@ export function Network() {
                           </Button>
                         </th>
                       ))}
-                      <th className="mono-label px-3 py-2 font-normal">Selected</th>
                       <th className="mono-label px-3 py-2 font-normal">Full path</th>
                     </tr>
                   </thead>
@@ -110,8 +111,12 @@ export function Network() {
                             <div className="truncate">{nameOf(p.destination)}</div>
                             <div className="font-mono text-[10px] text-[var(--text-faint)]">{shortID(p.destination)}</div>
                           </td>
-                          <td className="px-3 py-2 text-xs">{nameOf(p.nextHop)}</td>
-                          <td className="px-3 py-2 text-xs">{routeSummary(p, nameOf)}</td>
+                          <td className="px-3 py-2 text-xs">
+                            <div>{nameOf(p.nextHop)}</div>
+                            <div className="font-mono text-[10px] text-[var(--text-faint)]">
+                              {p.direct ? routeSummary(p, nameOf) : "relay"}
+                            </div>
+                          </td>
                           <td className="tabular px-3 py-2">{p.costMs.toFixed(1)} ms</td>
                           <td className="px-3 py-2">{p.hops}</td>
                           <td className="px-3 py-2">
@@ -147,11 +152,11 @@ export function Network() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{mesh.links.length} peer links</CardTitle>
-          <span className="mono-label">advertised by neighbours</span>
+          <CardTitle>{directLinks.length} peer links</CardTitle>
+          <span className="mono-label">advertised by neighbours · one row per direction</span>
         </CardHeader>
         <CardContent className="p-0">
-          {mesh.links.length === 0 ? (
+          {directLinks.length === 0 ? (
             <EmptyState
               title="No peer links advertised"
               description="Neighbours advertise how they reach other members. Links appear after the next state exchange."
@@ -162,14 +167,13 @@ export function Network() {
               <table className="w-full text-left text-sm" aria-label="Peer links">
                 <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                   <tr>
-                    {["From", "To", "Via", "Cost", "Path"].map((h) => (
+                    {["Link", "Cost"].map((h) => (
                       <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
-                  {mesh.links.map((l) => {
-                    const via = l.hops === 1 ? "direct" : nameOf(l.path?.[1] ?? l.destination);
+                  {directLinks.map((l) => {
                     return (
                       <tr
                         key={`${l.from}>${l.destination}`}
@@ -179,13 +183,10 @@ export function Network() {
                         onKeyDown={(e) => rowKeyNav(e, () => setPeerId(l.destination), () => setPeerId(null))}
                         className="cursor-pointer hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
                       >
-                        <td className="px-3 py-2">{nameOf(l.from)}</td>
-                        <td className="px-3 py-2">{nameOf(l.destination)}</td>
-                        <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{via}</td>
-                        <td className="tabular px-3 py-2">{l.cost_ms.toFixed(1)} ms</td>
-                        <td className="max-w-[320px] truncate px-3 py-2 font-mono text-[10px] text-[var(--text-muted)]">
-                          {(l.path ?? []).map(nameOf).join(" → ")}
+                        <td className="px-3 py-2 font-mono text-xs">
+                          {nameOf(l.from)} → {nameOf(l.destination)}
                         </td>
+                        <td className="tabular px-3 py-2">{l.cost_ms.toFixed(1)} ms</td>
                       </tr>
                     );
                   })}
