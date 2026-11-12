@@ -50,6 +50,7 @@ export function ThroughputStrip() {
   const height = 90;
   const rxPaths = segments(rx, width, height, max);
   const txPaths = segments(tx, width, height, max);
+  const gaps = rx.includes(null) || tx.includes(null);
 
   return (
     <Card>
@@ -76,6 +77,11 @@ export function ThroughputStrip() {
               <polyline key={`tx-${i}`} points={points} fill="none" stroke="var(--relay)" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
             ))}
           </svg>
+        )}
+        {gaps && (
+          <p className="mt-2 text-[11px] leading-relaxed text-[var(--text-faint)]">
+            Gaps are windows where the app was hidden or the sampler paused; they are not zero traffic.
+          </p>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-[var(--text-muted)]">
           <span className="tabular">↓ {last ? formatBytesPerSec(last.rxPerSec) : "—"} rx</span>

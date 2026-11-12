@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Onboarding } from "@/routes/onboarding/Onboarding";
 import { useHistoryRecorder } from "@/features/activity/useHistoryRecorder";
+import { useLiveSampler } from "@/features/mesh/useMesh";
 import { useDaemonEvents } from "@/features/mesh/useDaemonEvents";
 import { nextSetupGate, setupOwnsWindow, type SetupGate } from "./onboardingGate";
 
@@ -29,6 +30,9 @@ export function AppShell() {
   // One writer for the whole app: opted-in history collects while the app
   // runs, not only while the Activity page is mounted.
   useHistoryRecorder();
+  // The live 2 s sampler feeds the session ring and the shell rates; starting
+  // it here keeps the throughput chart continuous across page changes.
+  useLiveSampler(true);
   // The one event subscription in the app: typed snapshots write the query
   // cache, lifecycle events feed the session store. Pages never subscribe.
   useDaemonEvents();
