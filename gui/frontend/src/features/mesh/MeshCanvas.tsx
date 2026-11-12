@@ -45,7 +45,10 @@ function positionsFor(layout: LayoutEntry[], self: string): Map<string, { x: num
     .filter((e) => e.id !== self && !e.direct)
     .sort((a, b) => (a.hops ?? Number.MAX_SAFE_INTEGER) - (b.hops ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id));
   const place = (entries: LayoutEntry[], radius: number, start: number) => {
-    const step = (Math.PI * 2) / Math.max(1, entries.length);
+    // Two peers evenly spaced sit opposite each other, so the edge between
+    // them runs straight through the centre card and disappears behind it.
+    // A minimum of three positions keeps that chord on one side of the hub.
+    const step = (Math.PI * 2) / Math.max(3, entries.length);
     entries.forEach((entry, i) => {
       positions.set(entry.id, {
         x: Center.x + Math.cos(start + i * step) * radius,

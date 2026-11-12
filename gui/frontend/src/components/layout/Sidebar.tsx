@@ -25,6 +25,11 @@ export function Sidebar() {
   // unstamped build.
   const version = useQuery({ queryKey: ["app-version"], queryFn: () => AppService.Version() });
   const versionLabel = version.data ?? (version.isError ? "—" : "…");
+  // The collapsed rail is 72 px wide: the full build string would wrap one
+  // character per line, so it shows the release line and keeps the exact
+  // build in the title/About page.
+  const release = versionLabel.split(/[+\s]/)[0].replace(/-dev$/, "");
+  const collapsedVersion = release && release !== "—" && release !== "…" ? `v${release}` : versionLabel;
   const collapsed = useUI((s) => s.sidebarCollapsed);
   const toggle = useUI((s) => s.toggleSidebar);
   return (
@@ -54,8 +59,8 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <div className={cn("border-t border-[var(--border)] p-3", collapsed && "text-center")}>
-        <div className="mono-label">{collapsed ? versionLabel : "Skein Desktop"}</div>
+      <div className={cn("border-t border-[var(--border)] p-3", collapsed && "text-center")} title={collapsed ? versionLabel : undefined}>
+        <div className="mono-label">{collapsed ? collapsedVersion : "Skein Desktop"}</div>
         {!collapsed && <div className="mt-1 font-mono text-[10px] text-[var(--text-faint)]">{versionLabel}</div>}
         {!collapsed && <div className="mt-1 text-xs text-[var(--text-faint)]">mesh control surface</div>}
       </div>
