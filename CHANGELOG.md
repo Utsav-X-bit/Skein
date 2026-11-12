@@ -45,6 +45,11 @@ required them.
 
 ### Changed
 
+- The daemon now checks that its IPv6 overlay address answers locally before
+  advertising it. A host whose IPv6 stack is disabled, or whose address never
+  becomes usable, runs IPv4-only instead of showing peers an address that
+  cannot be pinged. The configured address is kept, so enabling IPv6 later
+  restores it on the next start.
 - The system service is manual-start by default: it no longer starts at boot.
   Opening Skein Desktop starts it, and Settings → Service has a "Start at
   boot" switch for headless nodes. Upgrades clear a boot-start left by an

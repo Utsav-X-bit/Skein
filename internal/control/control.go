@@ -183,6 +183,16 @@ func (c *Controller) SetLocalName(name string) {
 	c.local.Name = name
 }
 
+// SetLocalOverlay changes the overlay addresses advertised in STATE. The
+// daemon uses it when the host turns out to be unable to carry an IPv6
+// overlay, so peers stop being told to use an address that cannot answer.
+func (c *Controller) SetLocalOverlay(v4, v6 netip.Addr) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.local.OverlayV4 = v4
+	c.local.OverlayV6 = v6
+}
+
 // SetEventHandler reports control transitions (peer_down) to the daemon.
 func (c *Controller) SetEventHandler(fn func(typ string, peerID uint64)) {
 	c.mu.Lock()

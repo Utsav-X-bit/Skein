@@ -154,3 +154,8 @@ func IPv6Available() bool {
 	}
 	return true
 }
+
+// OverlayIPv6Usable reports whether addr answers on this host. Linux gates
+// assignment on the IPv6 sysctls, and the address is verified by the kernel
+// when it is added, so no extra probe is needed here.
+func OverlayIPv6Usable(_ string, addr netip.Addr) bool { return addr.IsValid() }

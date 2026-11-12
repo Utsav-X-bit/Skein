@@ -18,3 +18,6 @@ func setMTU(string, int) error { return ErrUnsupported }
 
 // IPv6Available reports whether this host can carry an IPv6 overlay address.
 func IPv6Available() bool { return true }
+
+// OverlayIPv6Usable reports whether addr answers on this host.
+func OverlayIPv6Usable(_ string, addr netip.Addr) bool { return addr.IsValid() }

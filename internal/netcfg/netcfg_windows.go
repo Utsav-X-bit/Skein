@@ -5,6 +5,7 @@ package netcfg
 import (
 	"fmt"
 	"net/netip"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -145,3 +146,14 @@ func setMTU(name string, mtu int) error {
 // IPv6Available reports whether this host can carry an IPv6 overlay address.
 // IPv6 is part of every supported Windows release.
 func IPv6Available() bool { return true }
+
+// OverlayIPv6Usable reports whether addr answers on this host. Windows can
+// accept an IPv6 address on a Wintun adapter whose IPv6 stack is disabled or
+// whose address never leaves the tentative state; in both cases the address
+// is advertised but cannot answer, so the daemon must not use it.
+func OverlayIPv6Usable(_ string, addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return false
+	}
+	return exec.Command("ping", "-6", "-n", "1", "-w", "400", addr.String()).Run() == nil
+}

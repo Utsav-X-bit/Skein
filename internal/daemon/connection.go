@@ -394,6 +394,35 @@ func (d *Daemon) startDataPlane() error {
 			return err
 		}
 	}
+
+	addresses, routes := overlayPrefixes(cfg, d.overlayV6)
+	if warnings, err := netcfg.Conflicts(routes); err == nil {
+		for _, w := range warnings {
+			log.Printf("skein: warning: %s", w)
+		}
+	}
+	if err := netcfg.Reconcile(cfg.Node.Interface, routes, routes); err != nil {
+		log.Printf("skein: warning: reconcile: %v", err)
+	}
+	if err := netcfg.Configure(cfg.Node.Interface, cfg.Node.MTU, addresses, routes); err != nil {
+		d.closeDevicesLocked()
+		return err
+	}
+	// An address the host cannot answer on would be advertised to peers as
+	// reachable. Verify it now, before the engine and the controller are
+	// built, and fall back to IPv4-only when it does not answer.
+	if d.overlayV6.IsValid() && !netcfg.OverlayIPv6Usable(cfg.Node.Interface, d.overlayV6) {
+		log.Printf("skein: warning: overlay IPv6 %s does not answer on %s; running IPv4-only", d.overlayV6, cfg.Node.Interface)
+		_ = netcfg.Remove(cfg.Node.Interface,
+			[]netip.Prefix{netip.PrefixFrom(d.overlayV6, cfg.Node.OverlayIPv6Prefix.Bits())},
+			[]netip.Prefix{cfg.Node.OverlayIPv6Prefix})
+		d.overlayV6 = netip.Addr{}
+		if d.ctl != nil {
+			d.ctl.SetLocalOverlay(cfg.Node.OverlayIPv4, netip.Addr{})
+		}
+		d.merger.SetLocalOverlay(cfg.Node.OverlayIPv4, netip.Addr{})
+	}
+
 	eng, err := dataplane.New(dataplane.Config{
 		LocalID:   d.id.ID,
 		Identity:  d.id,
@@ -421,21 +450,6 @@ func (d *Daemon) startDataPlane() error {
 	}
 	d.eng = eng
 
-	addresses, routes := overlayPrefixes(cfg, d.overlayV6)
-	if warnings, err := netcfg.Conflicts(routes); err == nil {
-		for _, w := range warnings {
-			log.Printf("skein: warning: %s", w)
-		}
-	}
-	if err := netcfg.Reconcile(cfg.Node.Interface, routes, routes); err != nil {
-		log.Printf("skein: warning: reconcile: %v", err)
-	}
-	if err := netcfg.Configure(cfg.Node.Interface, cfg.Node.MTU, addresses, routes); err != nil {
-		_ = eng.Close()
-		d.eng = nil
-		d.closeDevicesLocked()
-		return err
-	}
 	// A new interface starts at the configured MTU; measure the paths again.
 	d.resetMTUNegotiation()
 	if d.ctl != nil {
