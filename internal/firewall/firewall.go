@@ -80,13 +80,16 @@ type Rule struct {
 // Status inspects the manager for Skein's rules without changing anything.
 // State is "ok" when every rule is present, "degraded" when the manager is
 // active but a rule is missing, and "unknown" when the manager could not be
-// queried.
+// queried. Android reports "managed" (see firewall_android.go).
 type Status struct {
 	Manager     string `json:"manager"`
 	State       string `json:"state"`
 	Rules       []Rule `json:"rules"`
 	LastCheckMS int64  `json:"last_check_ms"`
 	LastError   string `json:"last_error,omitempty"`
+	// Note is a human-readable explanation of the state (Android only:
+	// "routing is handled by the Android VpnService").
+	Note string `json:"note,omitempty"`
 }
 
 // ReadStatus inspects the firewall state for cfg without changing anything.

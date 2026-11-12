@@ -22,6 +22,7 @@ func firewallToAPI(st firewall.Status) api.FirewallStatus {
 		State:       st.State,
 		LastCheckMS: st.LastCheckMS,
 		LastError:   st.LastError,
+		Note:        st.Note,
 		Rules:       []api.FirewallRule{},
 	}
 	for _, r := range st.Rules {

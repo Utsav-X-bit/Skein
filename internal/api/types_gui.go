@@ -85,6 +85,8 @@ type FirewallStatus struct {
 	Rules       []FirewallRule `json:"rules"`
 	LastCheckMS int64          `json:"last_check_ms"`
 	LastError   string         `json:"last_error,omitempty"`
+	// Note is a human-readable explanation of the state (Android only).
+	Note string `json:"note,omitempty"`
 }
 
 // SecurityStatus exposes permission/ownership facts without secrets.
