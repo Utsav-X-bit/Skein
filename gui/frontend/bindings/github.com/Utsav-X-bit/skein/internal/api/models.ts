@@ -181,6 +181,11 @@ export interface FirewallStatus {
     "rules": FirewallRule[] | null;
     "last_check_ms": number;
     "last_error"?: string;
+
+    /**
+     * Note is a human-readable explanation of the state (Android only).
+     */
+    "note"?: string;
 }
 
 /**

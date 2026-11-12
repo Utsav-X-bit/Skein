@@ -31,6 +31,29 @@ import * as app$0 from "../../internal/app/models.js";
 import * as $models from "./models.js";
 
 /**
+ * CancelBootstrap stops an abandoned onboarding bootstrap server
+ * and releases the config-store lock it holds, so a later Connect
+ * can start the normal daemon. A successful bootstrap stops itself.
+ */
+export function CancelBootstrap(): $CancellablePromise<void> {
+    return $Call.ByID(4248519122);
+}
+
+/**
+ * EnsureBootstrap prepares the bootstrap server for verb ("init",
+ * "join" or "import"). The mobile Onboarding calls it after the user
+ * picks create/join and before submitting the form, so the bootstrap
+ * endpoint is up when SetupService.Init/Join posts. On Android it
+ * mints the single-use token and serves the daemon's bootstrap-only
+ * API over the in-process transport — the Android equivalent of the
+ * desktop helper minting a token and starting the service in
+ * bootstrap mode.
+ */
+export function EnsureBootstrap(verb: string): $CancellablePromise<void> {
+    return $Call.ByID(1155480702, verb);
+}
+
+/**
  * Import migrates a user-mode config into the system path, via
  * bootstrap. The source path is a local path the user typed, not a
  * secret; it travels in the bootstrap request body.

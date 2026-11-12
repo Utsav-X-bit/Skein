@@ -123,3 +123,8 @@ export const SystemReset = "system_reset";
  */
 export const UpdateAvailable = "update:available";
 
+/**
+ * Name of the custom event "vpn:permission".
+ */
+export const VpnPermission = "vpn:permission";
+

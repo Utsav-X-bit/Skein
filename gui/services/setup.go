@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -86,9 +87,38 @@ func (s *SetupService) Rejoin(ctx context.Context, invite string) (api.JoinResul
 	return res, err
 }
 
-// NetworkResetResult preserves completed destructive work across a later
-// helper failure. Wails discards a return value when an error is also returned,
-// so a failed stop must be data: retrying reset would lose the original backup.
+// ensureBootstrapImpl starts the bootstrap server for verb. It is
+// overridden on Android (setup_android.go), where the server runs
+// in-process; elsewhere onboarding uses the desktop helper flow and
+// this reports that the in-process server is unavailable. The method
+// itself lives here, untagged, so the bindings generator sees it on
+// every platform.
+var ensureBootstrapImpl = func(ctx context.Context, verb string) error {
+	return errors.New("the in-process bootstrap server is only available on Android")
+}
+
+var cancelBootstrapImpl = func(ctx context.Context) error {
+	return errors.New("the in-process bootstrap server is only available on Android")
+}
+
+// EnsureBootstrap prepares the bootstrap server for verb ("init",
+// "join" or "import"). The mobile Onboarding calls it after the user
+// picks create/join and before submitting the form, so the bootstrap
+// endpoint is up when SetupService.Init/Join posts. On Android it
+// mints the single-use token and serves the daemon's bootstrap-only
+// API over the in-process transport — the Android equivalent of the
+// desktop helper minting a token and starting the service in
+// bootstrap mode.
+func (s *SetupService) EnsureBootstrap(ctx context.Context, verb string) error {
+	return ensureBootstrapImpl(ctx, verb)
+}
+
+// CancelBootstrap stops an abandoned onboarding bootstrap server
+// and releases the config-store lock it holds, so a later Connect
+// can start the normal daemon. A successful bootstrap stops itself.
+func (s *SetupService) CancelBootstrap(ctx context.Context) error {
+	return cancelBootstrapImpl(ctx)
+}
 type NetworkResetResult struct {
 	Backup        string `json:"backup"`
 	FirewallError string `json:"firewall_error,omitempty"`

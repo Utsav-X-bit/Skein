@@ -15,6 +15,7 @@ import * as SecurityService from "./securityservice.js";
 import * as ServiceService from "./serviceservice.js";
 import * as SetupService from "./setupservice.js";
 import * as UpdateService from "./updateservice.js";
+import * as VpnService from "./vpnservice.js";
 export {
     AppService,
     ConfigService,
@@ -29,7 +30,8 @@ export {
     SecurityService,
     ServiceService,
     SetupService,
-    UpdateService
+    UpdateService,
+    VpnService
 };
 
 export type {
@@ -40,5 +42,7 @@ export type {
     NetworkResetResult,
     OfflineIdentity,
     PingResult,
-    UpdateInfo
+    UpdateInfo,
+    VpnPermission,
+    VpnPermissionEvent
 } from "./models.js";

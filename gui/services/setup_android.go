@@ -25,25 +25,11 @@ func init() {
 		}
 		return app.MintBootstrapToken(verb)
 	}
-}
-
-// EnsureBootstrap prepares the in-process bootstrap server for verb
-// ("init", "join" or "import"). The mobile Onboarding calls it after
-// the user picks create/join and before submitting the form, so the
-// bootstrap endpoint is up when SetupService.Init/Join posts. It
-// mints the single-use token and serves the daemon's bootstrap-only
-// API over the in-process transport — the Android equivalent of the
-// desktop helper minting a token and starting the service in
-// bootstrap mode.
-func (s *SetupService) EnsureBootstrap(ctx context.Context, verb string) error {
-	_ = ctx
-	return android.EnsureBootstrap(verb)
-}
-
-// CancelBootstrap stops an abandoned onboarding bootstrap server
-// and releases the config-store lock it holds, so a later Connect
-// can start the normal daemon. A successful bootstrap stops itself.
-func (s *SetupService) CancelBootstrap(ctx context.Context) error {
-	_ = ctx
-	return android.StopBootstrap()
+	// The in-process bootstrap server lives in internal/android.
+	ensureBootstrapImpl = func(_ context.Context, verb string) error {
+		return android.EnsureBootstrap(verb)
+	}
+	cancelBootstrapImpl = func(_ context.Context) error {
+		return android.StopBootstrap()
+	}
 }

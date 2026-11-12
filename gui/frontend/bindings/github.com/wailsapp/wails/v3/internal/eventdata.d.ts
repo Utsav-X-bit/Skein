@@ -38,6 +38,7 @@ declare module "@wailsio/runtime" {
             "system_imported": api$0.Event;
             "system_reset": api$0.Event;
             "update:available": services$0.UpdateInfo;
+            "vpn:permission": services$0.VpnPermissionEvent;
         }
     }
 }

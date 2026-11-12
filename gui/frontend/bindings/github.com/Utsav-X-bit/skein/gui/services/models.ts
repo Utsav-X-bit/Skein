@@ -49,11 +49,6 @@ export interface InitRequest {
     "stun_server"?: string;
 }
 
-/**
- * NetworkResetResult preserves completed destructive work across a later
- * helper failure. Wails discards a return value when an error is also returned,
- * so a failed stop must be data: retrying reset would lose the original backup.
- */
 export interface NetworkResetResult {
     "backup": string;
     "firewall_error"?: string;
@@ -86,4 +81,23 @@ export interface PingResult {
 export interface UpdateInfo {
     "version": string;
     "notes"?: string;
+}
+
+/**
+ * VpnPermission is the vpn_permission state the design doc specifies.
+ */
+export interface VpnPermission {
+    /**
+     * "granted" | "denied" | "unknown"
+     */
+    "state": string;
+    "vpn_active": boolean;
+}
+
+/**
+ * VpnPermissionEvent is the payload of EventVpnPermission.
+ */
+export interface VpnPermissionEvent {
+    "granted": boolean;
+    "state": string;
 }
