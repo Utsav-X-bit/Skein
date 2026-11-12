@@ -21,8 +21,6 @@ export function Network() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "destination", dir: 1 });
 
-  const directLinks = useMemo(() => mesh.links.filter((l) => l.hops === 1), [mesh.links]);
-
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const filtered = mesh.model.paths.filter((p) =>
@@ -152,11 +150,11 @@ export function Network() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{directLinks.length} peer links</CardTitle>
-          <span className="mono-label">advertised by neighbours · one row per direction</span>
+          <CardTitle>{mesh.links.length} advertised routes</CardTitle>
+          <span className="mono-label">one row per direction · via names the first hop</span>
         </CardHeader>
         <CardContent className="p-0">
-          {directLinks.length === 0 ? (
+          {mesh.links.length === 0 ? (
             <EmptyState
               title="No peer links advertised"
               description="Neighbours advertise how they reach other members. Links appear after the next state exchange."
@@ -167,13 +165,15 @@ export function Network() {
               <table className="w-full text-left text-sm" aria-label="Peer links">
                 <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                   <tr>
-                    {["Link", "Cost"].map((h) => (
+                    {["From", "To", "Via", "Cost"].map((h) => (
                       <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
-                  {directLinks.map((l) => {
+                  {mesh.links.map((l) => {
+                    const via =
+                      l.hops === 1 ? "direct" : l.path?.[1] === self ? "you" : nameOf(l.path?.[1] ?? l.destination);
                     return (
                       <tr
                         key={`${l.from}>${l.destination}`}

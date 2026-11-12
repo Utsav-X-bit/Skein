@@ -153,11 +153,15 @@ func TestWithdrawDestinationRemovesDirectAndAdvertised(t *testing.T) {
 	}
 }
 
-func TestPathLoopAndSelfAreRejected(t *testing.T) {
+func TestPathLoopAndRepeatsAreRejected(t *testing.T) {
 	tbl := NewTable(peerA)
 	mustDirect(t, tbl, peerB, time.Millisecond)
-	if err := tbl.MergeAdvertisement(peerB, adv(1, time.Millisecond, peerB, peerA, peerC)); err == nil {
-		t.Fatal("expected a path through the local node to be rejected")
+	// A path through the local node is kept for the map but never selected.
+	if err := tbl.MergeAdvertisement(peerB, adv(1, time.Millisecond, peerB, peerA, peerC)); err != nil {
+		t.Fatalf("through-self advertisement rejected: %v", err)
+	}
+	if _, ok := tbl.Lookup(peerC); ok {
+		t.Fatal("through-self advertisement was selected as a route")
 	}
 	if err := tbl.MergeAdvertisement(peerB, adv(2, time.Millisecond, peerB, peerC, peerC)); err == nil {
 		t.Fatal("expected a repeated peer to be rejected")
@@ -241,5 +245,33 @@ func TestAdvertisementsExposePeerLinks(t *testing.T) {
 	}
 	if got[0].From != 2 || got[0].Destination != 3 || got[0].Hops != 1 || len(got[0].Path) != 2 {
 		t.Fatalf("advertisement = %+v, want 2 -> 3 in one hop", got[0])
+	}
+}
+
+// An advertisement that routes through this node cannot be selected, but it
+// is the evidence that two peers reach each other via this device; the UI
+// needs it even though recompute ignores it.
+func TestAdvertisementThroughSelfIsKeptForDisplay(t *testing.T) {
+	tbl := NewTable(1)
+	if err := tbl.UpdateDirect(DirectLink{PeerID: 2, RTT: 10 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	adv := Advertisement{
+		Destination: 3,
+		Cost:        20 * time.Millisecond,
+		Hops:        2,
+		Path:        []uint64{2, 1, 3},
+		Seq:         1,
+		Expires:     time.Now().Add(time.Minute),
+	}
+	if err := tbl.MergeAdvertisement(2, adv); err != nil {
+		t.Fatalf("merge advertisement through self: %v", err)
+	}
+	if _, ok := tbl.Lookup(3); ok {
+		t.Fatal("route through self was selected")
+	}
+	got := tbl.Advertisements()
+	if len(got) != 1 || got[0].From != 2 || got[0].Destination != 3 || got[0].Hops != 2 {
+		t.Fatalf("advertisements = %+v, want the through-self path kept for display", got)
 	}
 }

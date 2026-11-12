@@ -138,9 +138,6 @@ func (t *Table) MergeAdvertisement(from uint64, adv Advertisement) error {
 	}
 	seen := make(map[uint64]struct{}, len(adv.Path))
 	for _, id := range adv.Path {
-		if id == t.self {
-			return fmt.Errorf("route: advertisement path loops through the local node")
-		}
 		if id == 0 {
 			return fmt.Errorf("route: advertisement path contains a zero peer ID")
 		}
@@ -149,6 +146,9 @@ func (t *Table) MergeAdvertisement(from uint64, adv Advertisement) error {
 		}
 		seen[id] = struct{}{}
 	}
+	// A path through this node is not a usable route (recompute skips it),
+	// but it is the only evidence that two peers reach each other through
+	// this device. Keep it for display instead of rejecting it.
 	if adv.Cost < 0 {
 		return fmt.Errorf("route: advertisement cost must not be negative")
 	}

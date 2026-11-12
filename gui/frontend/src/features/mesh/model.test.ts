@@ -250,7 +250,7 @@ describe("buildMesh", () => {
     ]);
   });
 
-  it("walks a multi-hop advertisement without inventing an RTT", () => {
+  it("draws one chord for a multi-hop advertisement, keeping its path", () => {
     const model = buildMesh(
       "self",
       [],
@@ -259,8 +259,25 @@ describe("buildMesh", () => {
       [],
       now,
     );
-    expect(model.edges.map((e) => e.id)).toEqual(["a>b", "b>c"]);
-    expect(model.edges.every((e) => e.evidence === "advertised" && e.rttMs === undefined)).toBe(true);
+    expect(model.edges).toHaveLength(1);
+    expect(model.edges[0]).toMatchObject({ id: "a>c", from: "a", to: "c", evidence: "advertised", path: ["a", "b", "c"], hops: 2 });
+    expect(model.edges[0].rttMs).toBeUndefined();
+  });
+
+  it("merges both directions of an advertised pair into one chord", () => {
+    const model = buildMesh(
+      "self",
+      [],
+      [],
+      [
+        { from: "a", destination: "c", hops: 2, cost_ms: 9, path: ["a", "self", "c"] },
+        { from: "c", destination: "a", hops: 1, cost_ms: 4, path: ["c", "a"] },
+      ],
+      [],
+      now,
+    );
+    expect(model.edges).toHaveLength(1);
+    expect(model.edges[0]).toMatchObject({ evidence: "advertised", hops: 1, rttMs: 4 });
   });
 
   it("maps routes to paths", () => {

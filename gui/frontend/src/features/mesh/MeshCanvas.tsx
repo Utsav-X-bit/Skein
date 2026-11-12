@@ -231,11 +231,7 @@ export function MeshCanvas({
   const layoutKey = JSON.stringify(layout);
   const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self), [layoutKey, self]);
   const rates = useMemo(() => linkRates(activities), [activities]);
-  // Only one-hop advertisements are drawn; the table keeps every path.
-  const visibleEdges = useMemo(
-    () => model.edges.filter((edge) => edge.evidence !== "advertised" || edge.hops === 1),
-    [model.edges],
-  );
+  const visibleEdges = useMemo(() => model.edges, [model.edges]);
   const evidencePresent = useMemo(() => new Set(visibleEdges.map((edge) => edge.evidence)), [visibleEdges]);
 
   const nameOf = useMemo(
@@ -275,6 +271,10 @@ export function MeshCanvas({
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
         const flowing = shouldFlow(edge.evidence, rate, motion);
         const selected = selectedLink?.from === edge.from && selectedLink?.to === edge.to;
+        const label =
+          edge.evidence === "advertised" && edge.hops && edge.hops > 1
+            ? `via ${edge.path?.[1] === self ? "you" : nameOf(edge.path?.[1] ?? edge.to)}`
+            : undefined;
         const color =
           edge.evidence === "direct"
             ? "var(--accent)"
@@ -294,7 +294,7 @@ export function MeshCanvas({
           targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
-          data: { flowing, color },
+          data: { flowing, color, label },
           style: {
             stroke: color,
             strokeWidth: selected ? 2.8 : edge.evidence === "advertised" ? 2.2 : edge.evidence === "direct" ? 2 : 1.6,
@@ -302,10 +302,13 @@ export function MeshCanvas({
               edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "4 4" : undefined,
             opacity: edge.evidence === "route" ? 0.5 : 1,
           },
-          markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
+          markerEnd:
+            edge.evidence === "advertised"
+              ? undefined
+              : { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
         }),
-    [visibleEdges, positions, self, peerRates, rates, motion, selectedLink],
+    [visibleEdges, positions, self, peerRates, rates, motion, selectedLink, nameOf],
   );
 
   useEffect(() => {

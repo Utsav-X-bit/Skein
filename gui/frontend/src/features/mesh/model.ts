@@ -215,22 +215,33 @@ export function buildMesh(
   }
 
   // A neighbour's advertisement is the only evidence of how two other
-  // members reach each other. A one-hop advertisement is a direct peer
-  // link; a longer path is a claimed chain. Local routes already describe
-  // this node's own paths, so self-originated advertisements are skipped.
+  // members reach each other. Draw one chord per unordered pair: the
+  // directions live in the links table, while the map answers "are they
+  // linked?". The shortest advertised path wins the chord's via label.
+  const advertisedPairs = new Map<
+    string,
+    { from: string; to: string; hops: number; costMs: number; path: string[] }
+  >();
   for (const l of links) {
-    if (!l.from || l.from === self) continue;
+    if (!l.from || !l.destination || l.from === self) continue;
     const path = l.path && l.path.length > 0 ? l.path : [l.from, l.destination];
-    const chain = path[0] === l.from ? path : [l.from, ...path];
-    for (const id of chain) ensureNode(id);
-    for (let i = 0; i < chain.length - 1; i++) {
-      addEdge(chain[i], chain[i + 1], "advertised", l.hops === 1 ? l.cost_ms : undefined);
-      const edge = edges.get(`${chain[i]}>${chain[i + 1]}`);
-      if (edge && edge.evidence === "advertised") {
-        edge.path = chain;
-        edge.hops = l.hops;
-        edge.costMs = l.cost_ms;
-      }
+    const key = [l.from, l.destination].sort().join("|");
+    const prev = advertisedPairs.get(key);
+    if (!prev || l.hops < prev.hops || (l.hops === prev.hops && l.cost_ms < prev.costMs)) {
+      advertisedPairs.set(key, { from: l.from, to: l.destination, hops: l.hops, costMs: l.cost_ms, path });
+    }
+  }
+  for (const ad of advertisedPairs.values()) {
+    ensureNode(ad.from);
+    ensureNode(ad.to);
+    const existing = edges.get(`${ad.from}>${ad.to}`) ?? edges.get(`${ad.to}>${ad.from}`);
+    if (existing && (existing.evidence === "direct" || existing.evidence === "observed")) continue;
+    addEdge(ad.from, ad.to, "advertised", ad.hops === 1 ? ad.costMs : undefined);
+    const edge = edges.get(`${ad.from}>${ad.to}`);
+    if (edge && edge.evidence === "advertised") {
+      edge.path = ad.path;
+      edge.hops = ad.hops;
+      edge.costMs = ad.costMs;
     }
   }
 
