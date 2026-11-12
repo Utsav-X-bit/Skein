@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -160,6 +161,15 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	if st := loadPausedState(); st.Paused {
 		// A service restart honors a persisted pause: stay down until Connect.
 		d.conn = &conn{state: ConnPaused, reason: st.PausedReason, since: time.Now()}
+	} else if runtime.GOOS == "android" {
+		// Android has no TUN until the VpnService establishes one and
+		// hands its FD to the daemon (tun.SetAndroidFd), so a fresh
+		// Android daemon starts paused: the connect flow (VPN
+		// permission -> establish -> SetAndroidFd -> Connect) resumes
+		// it. Starting "connecting" instead would block
+		// startDataPlane for up to 60s waiting for an FD that cannot
+		// exist yet.
+		d.conn = &conn{state: ConnPaused, reason: "vpn-not-started", since: time.Now()}
 	} else {
 		d.conn = &conn{state: ConnConnecting, since: time.Now()}
 	}

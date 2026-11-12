@@ -11,10 +11,6 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 )
 
-// accessFile is where the IPC layer persists granted caller uids, one per
-// line (W1-owned format).
-const accessFile = "/etc/skein/access"
-
 // Security implements api.GUI: ownership and permission facts the GUI shows
 // as notices. No secrets.
 func (d *Daemon) Security() api.SecurityStatus {
@@ -45,14 +41,16 @@ func fileMode(path string) string {
 	return info.Mode().String()
 }
 
-// grantedUIDs reads the persisted granted-uid list from the IPC layer.
-// Lines are "uid" or "uid:role" (Step 1); roles are stripped here because
-// this view lists granted identities, not their roles.
+// grantedUIDs reads the persisted granted-uid list from the IPC layer
+// (controlAccessFile: /etc/skein/access on Unix, the app-private
+// access file on Android). Lines are "uid" or "uid:role" (Step 1);
+// roles are stripped here because this view lists granted identities,
+// not their roles.
 func grantedUIDs() []uint32 {
 	if runtime.GOOS == "windows" {
 		return nil // Windows grants are SIDs, persisted by the pipe layer
 	}
-	raw, err := os.ReadFile(accessFile)
+	raw, err := os.ReadFile(controlAccessFile)
 	if err != nil {
 		return nil
 	}

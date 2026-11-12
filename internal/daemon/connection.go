@@ -22,7 +22,6 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/firewall"
 	"github.com/Utsav-X-bit/skein/internal/link"
 	"github.com/Utsav-X-bit/skein/internal/netcfg"
-	"github.com/Utsav-X-bit/skein/internal/tun"
 	"github.com/Utsav-X-bit/skein/internal/version"
 	"github.com/Utsav-X-bit/skein/internal/wire"
 )
@@ -44,6 +43,11 @@ func stateFile() string {
 	}
 	if p := securityEnv("SKEIN_STATE_FILE"); p != "" {
 		return p
+	}
+	if runtime.GOOS == "android" {
+		// The app-private files dir, not /var/lib/skein: an
+		// unprivileged app cannot write the system state dir.
+		return androidStateFile()
 	}
 	if runtime.GOOS == "windows" {
 		return filepath.Join(os.Getenv("ProgramData"), "Skein", "state.json")
@@ -387,7 +391,7 @@ func (d *Daemon) startDataPlane() error {
 		}
 	}
 	if d.tun == nil {
-		d.tun, err = tun.Open(cfg.Node.Interface, cfg.Node.MTU)
+		d.tun, err = openTun(cfg)
 		if err != nil {
 			_ = d.link.Close()
 			d.link = nil
