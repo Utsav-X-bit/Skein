@@ -1,9 +1,9 @@
-import type { Activity, Peer, Route } from "@/lib/api";
+import type { Activity, Link, Peer, Route } from "@/lib/api";
 
 export type CounterSample = { t: number; rx: number; tx: number; uptime: number };
 export type Rate = { rxPerSec: number; txPerSec: number };
 export type HistorySample = { t: number; rxPerSec: number; txPerSec: number; peersUp: number; peersTotal: number };
-export type Evidence = "direct" | "route" | "observed";
+export type Evidence = "direct" | "observed" | "advertised" | "route";
 export type MeshNode = {
   id: string;
   label: string;
@@ -14,7 +14,18 @@ export type MeshNode = {
   transport?: string;
   hops?: number;
 };
-export type MeshEdge = { id: string; from: string; to: string; evidence: Evidence; fresh: boolean; rttMs?: number };
+export type MeshEdge = {
+  id: string;
+  from: string;
+  to: string;
+  evidence: Evidence;
+  fresh: boolean;
+  rttMs?: number;
+  /** Full path of a neighbour advertisement, starting at the advertiser. */
+  path?: string[];
+  hops?: number;
+  costMs?: number;
+};
 export type MeshPath = {
   destination: string;
   nextHop: string;
@@ -94,11 +105,11 @@ export function activityWindow(
 // shouldFlow gates the link flow marker: route segments never animate, and
 // motion needs both permission and a proven positive rate in either direction.
 export function shouldFlow(evidence: Evidence, rate: Rate | null | undefined, motionAllowed: boolean): boolean {
-  if (!motionAllowed || evidence === "route") return false;
+  if (!motionAllowed || evidence === "route" || evidence === "advertised") return false;
   return rate != null && rate.rxPerSec + rate.txPerSec > 0;
 }
 
-const evidenceRank: Record<Evidence, number> = { route: 0, observed: 1, direct: 2 };
+const evidenceRank: Record<Evidence, number> = { route: 0, advertised: 1, observed: 2, direct: 3 };
 
 // linkFamily reports the underlay address family of a peer's observed direct
 // link. peer.path is the daemon's "v4"/"v6" link path; the endpoint carries
@@ -133,6 +144,7 @@ export function buildMesh(
   self: string,
   peers: Peer[],
   routes: Route[],
+  links: Link[],
   activities: Activity[],
   now: number,
 ): MeshModel {
@@ -197,6 +209,26 @@ export function buildMesh(
     const chain = [self, ...(path.length > 0 ? path : [r.destination])];
     for (let i = 0; i < chain.length; i++) ensureNode(chain[i]);
     for (let i = 0; i < chain.length - 1; i++) addEdge(chain[i], chain[i + 1], "route");
+  }
+
+  // A neighbour's advertisement is the only evidence of how two other
+  // members reach each other. A one-hop advertisement is a direct peer
+  // link; a longer path is a claimed chain. Local routes already describe
+  // this node's own paths, so self-originated advertisements are skipped.
+  for (const l of links) {
+    if (!l.from || l.from === self) continue;
+    const path = l.path && l.path.length > 0 ? l.path : [l.from, l.destination];
+    const chain = path[0] === l.from ? path : [l.from, ...path];
+    for (const id of chain) ensureNode(id);
+    for (let i = 0; i < chain.length - 1; i++) {
+      addEdge(chain[i], chain[i + 1], "advertised", l.hops === 1 ? l.cost_ms : undefined);
+      const edge = edges.get(`${chain[i]}>${chain[i + 1]}`);
+      if (edge && edge.evidence === "advertised") {
+        edge.path = chain;
+        edge.hops = l.hops;
+        edge.costMs = l.cost_ms;
+      }
+    }
   }
 
   // Observed evidence expires: a stale sample proves nothing about the link now.

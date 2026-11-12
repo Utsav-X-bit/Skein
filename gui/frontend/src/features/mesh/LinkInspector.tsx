@@ -50,9 +50,10 @@ export function LinkInspector({
     }
     return false;
   });
-  const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || (id === self ? "this device" : shortID(id));
+  const nameOf = (id: string) => (id === self ? "this device" : peers.find((p) => p.id === id)?.name || shortID(id));
   const evidence = edge?.evidence ?? "unknown";
-  const evidenceTone = evidence === "direct" ? "success" : evidence === "observed" ? "info" : evidence === "route" ? "neutral" : "warning";
+  const evidenceTone =
+    evidence === "direct" ? "success" : evidence === "observed" || evidence === "advertised" ? "info" : evidence === "route" ? "neutral" : "warning";
 
   return (
     <InspectorFrame
@@ -64,17 +65,24 @@ export function LinkInspector({
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="mono-label">direction</div>
-          <div className="truncate font-mono text-xs">{shortID(link.from)} → {shortID(link.to)}</div>
+          <div className="truncate font-mono text-xs">{nameOf(link.from)} → {nameOf(link.to)}</div>
         </div>
         <Badge tone={evidenceTone}>{evidence}</Badge>
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div><div className="mono-label">transport</div><div>{latest?.transport || "unknown"}</div></div>
-        <div><div className="mono-label">reporting origin</div><div className="font-mono text-xs">{latest ? shortID(latest.origin) : "—"}</div></div>
+        <div><div className="mono-label">reporting origin</div><div className="font-mono text-xs">{latest ? nameOf(latest.origin) : "—"}</div></div>
         <div><div className="mono-label">rtt</div><div className="tabular">{latest ? `${latest.rtt_ms.toFixed(1)} ms` : "—"}</div></div>
         <div><div className="mono-label">jitter</div><div className="tabular">{latest ? `${latest.jitter_ms.toFixed(1)} ms` : "—"}</div></div>
       </div>
+
+      {edge?.evidence === "advertised" && edge.path && (
+        <div>
+          <div className="mono-label">advertised path</div>
+          <div className="truncate font-mono text-xs">{edge.path.map(nameOf).join(" → ")}</div>
+        </div>
+      )}
 
       <div>
         <div className="mono-label">throughput</div>

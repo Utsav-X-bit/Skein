@@ -235,6 +235,18 @@ export interface LeaveResult {
 }
 
 /**
+ * Link is one peer-to-peer edge a neighbour advertised: From reaches
+ * Destination in Hops links through Path, which starts at From.
+ */
+export interface Link {
+    "from": string;
+    "destination": string;
+    "hops": number;
+    "cost_ms": number;
+    "path"?: string[] | null;
+}
+
+/**
  * LogEntry is one daemon log line.
  */
 export interface LogEntry {

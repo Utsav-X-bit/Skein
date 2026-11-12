@@ -22,6 +22,10 @@ export function Activities(): $CancellablePromise<api$0.Activity[] | null> {
     return $Call.ByID(2640732868);
 }
 
+export function Links(): $CancellablePromise<api$0.Link[] | null> {
+    return $Call.ByID(470760930);
+}
+
 /**
  * Ping probes one overlay IP with the system ping binary. The address is
  * parsed and re-rendered, so a hostname, flag, or shell fragment can never

@@ -51,6 +51,16 @@ type Route struct {
 	Path        []string `json:"path,omitempty"`
 }
 
+// Link is one peer-to-peer edge a neighbour advertised: From reaches
+// Destination in Hops links through Path, which starts at From.
+type Link struct {
+	From        string   `json:"from"`
+	Destination string   `json:"destination"`
+	Hops        uint8    `json:"hops"`
+	CostMs      float64  `json:"cost_ms"`
+	Path        []string `json:"path,omitempty"`
+}
+
 // Activity is a payload-free, aggregate authenticated mesh link sample.
 type Activity struct {
 	Origin      string   `json:"origin"`

@@ -31,11 +31,12 @@ export function MeshTable({
   const facts = useMemo(() => {
     const direct = new Set(model.edges.filter((e) => e.from === self && e.evidence === "direct").map((e) => e.to));
     const observed = new Set(model.edges.filter((e) => e.evidence === "observed").flatMap((e) => [e.from, e.to]));
+    const advertised = new Set(model.edges.filter((e) => e.evidence === "advertised").flatMap((e) => [e.from, e.to]));
     const routed = new Set(model.edges.filter((e) => e.evidence === "route").flatMap((e) => [e.from, e.to]));
-    return { direct, observed, routed };
+    return { direct, observed, advertised, routed };
   }, [model.edges, self]);
 
-  const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || shortID(id);
+  const nameOf = (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id));
 
   return (
     <div className="space-y-4">
@@ -56,9 +57,11 @@ export function MeshTable({
                   ? "direct"
                   : facts.observed.has(node.id)
                     ? "observed"
-                    : facts.routed.has(node.id)
-                      ? "route"
-                      : "unknown";
+                    : facts.advertised.has(node.id)
+                      ? "advertised"
+                      : facts.routed.has(node.id)
+                        ? "route"
+                        : "unknown";
               const rate = peerRates[node.id];
               const route = model.paths.find((p) => p.destination === node.id);
               const routeText = node.kind === "self" ? "—" : route ? routeSummary(route, nameOf) : node.kind === "peer" ? "no route" : "—";
@@ -93,7 +96,7 @@ export function MeshTable({
         <table className="w-full text-left text-sm" aria-label="Mesh links">
           <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
             <tr>
-              {["Link", "Evidence", "RTT"].map((h) => (
+              {["Link", "Evidence", "Path", "RTT"].map((h) => (
                 <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>
               ))}
             </tr>
@@ -113,6 +116,7 @@ export function MeshTable({
                 >
                   <td className="px-3 py-2 font-mono text-xs">{nameOf(edge.from)} → {nameOf(edge.to)}</td>
                   <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{edge.evidence}{edge.fresh ? "" : " · stale"}</td>
+                  <td className="max-w-[240px] truncate px-3 py-2 text-xs text-[var(--text-muted)]">{edge.path ? edge.path.map(nameOf).join(" → ") : "—"}</td>
                   <td className="tabular px-3 py-2">{edge.rttMs !== undefined ? `${Math.round(edge.rttMs)} ms` : "—"}</td>
                 </tr>
               );

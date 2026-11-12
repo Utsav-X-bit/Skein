@@ -190,7 +190,7 @@ export function MeshCanvas({
   const rates = useMemo(() => linkRates(activities), [activities]);
 
   const nodes = useMemo(() => {
-    const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || shortID(id);
+    const nameOf = (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id));
     return model.nodes.map((node) => {
       const route = model.paths.find((p) => p.destination === node.id);
       const routeText =
@@ -222,7 +222,14 @@ export function MeshCanvas({
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
         const flowing = shouldFlow(edge.evidence, rate, motion);
         const selected = selectedLink?.from === edge.from && selectedLink?.to === edge.to;
-        const color = edge.evidence === "direct" ? "var(--accent)" : edge.evidence === "observed" ? "var(--info)" : "var(--text-faint)";
+        const color =
+          edge.evidence === "direct"
+            ? "var(--accent)"
+            : edge.evidence === "observed"
+              ? "var(--info)"
+              : edge.evidence === "advertised"
+                ? "var(--warning)"
+                : "var(--text-faint)";
         const from = positions.get(edge.from) ?? Center;
         const to = positions.get(edge.to) ?? Center;
         const [sourceSide, targetSide] = facingSides(to.x - from.x, to.y - from.y);
@@ -238,8 +245,9 @@ export function MeshCanvas({
           style: {
             stroke: color,
             strokeWidth: selected ? 2.6 : 1.5,
-            strokeDasharray: edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : undefined,
-            opacity: edge.evidence === "route" ? 0.55 : 1,
+            strokeDasharray:
+              edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "1 4" : undefined,
+            opacity: edge.evidence === "route" ? 0.55 : edge.evidence === "advertised" ? 0.8 : 1,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
@@ -273,6 +281,7 @@ export function MeshCanvas({
         <div className="flex flex-wrap items-center gap-4 text-[11px] text-[var(--text-muted)]">
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> direct</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> observed</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--warning)]" /> advertised</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" /> route</span>
           {!motion && <span>motion reduced · arrows only</span>}
         </div>

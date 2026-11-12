@@ -20,6 +20,7 @@ export type {
     Invite,
     JoinResult,
     LeaveResult,
+    Link,
     LogEntry,
     Peer,
     ProbeResult,

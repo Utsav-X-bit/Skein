@@ -98,7 +98,7 @@ export function PeerInspector({
   const routes = peerId ? model.paths.filter((p) => p.destination === peerId || p.path.includes(peerId)) : [];
   const selected = peerId ? model.paths.find((p) => p.destination === peerId) : undefined;
   const presence = presenceOf(peer, peerId ? lastTrafficAt[peerId] : undefined, Date.now(), selected !== undefined && !selected.direct);
-  const nameOf = (id: string) => peers.find((p) => p.id === id)?.name || shortID(id);
+  const nameOf = (id: string) => (id === status?.id ? "this device" : peers.find((p) => p.id === id)?.name || shortID(id));
   const liveProbe = useLive((s) => (peerId ? s.probes[peerId] : undefined));
 
   const ping = useMutation({
@@ -249,7 +249,7 @@ export function PeerInspector({
                 <ul className="space-y-1 text-xs">
                   {routes.map((p) => (
                     <li key={p.destination} className="flex items-center justify-between gap-2">
-                      <span className="font-mono">{shortID(p.destination)} · {routeSummary(p, shortID)}</span>
+                      <span className="font-mono">{nameOf(p.destination)} · {routeSummary(p, nameOf)}</span>
                       <span className="tabular text-[var(--text-muted)]">{p.hops} hops · {p.costMs.toFixed(1)} ms</span>
                     </li>
                   ))}

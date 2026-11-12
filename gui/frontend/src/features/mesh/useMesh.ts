@@ -6,6 +6,7 @@ import {
   PeerService,
   errText,
   type Activity,
+  type Link,
   type Peer,
   type Route,
   type Status,
@@ -25,6 +26,7 @@ export const MeshKeys = {
   status: ["status"],
   peers: ["peers"],
   routes: ["routes"],
+  links: ["links"],
   activities: ["activities"],
 };
 
@@ -122,6 +124,7 @@ function startSampler(qc: QueryClient): () => void {
   const live = setInterval(() => void tick(), LiveIntervalMs);
   const reconcile = setInterval(() => {
     void qc.invalidateQueries({ queryKey: MeshKeys.routes });
+    void qc.invalidateQueries({ queryKey: MeshKeys.links });
     void qc.invalidateQueries({ queryKey: MeshKeys.activities });
   }, ReconcileIntervalMs);
 
@@ -159,6 +162,7 @@ export type MeshData = {
   status: Status | null;
   peers: Peer[];
   routes: Route[];
+  links: Link[];
   activities: Activity[];
   model: MeshModel;
   rate: Rate | null;
@@ -195,6 +199,12 @@ export function useMesh(): MeshData {
     staleTime: 5_000,
     retry: 0,
   });
+  const linksQ = useQuery({
+    queryKey: MeshKeys.links,
+    queryFn: () => NetworkService.Links(),
+    staleTime: 5_000,
+    retry: 0,
+  });
   const activitiesQ = useQuery({
     queryKey: MeshKeys.activities,
     queryFn: () => NetworkService.Activities(),
@@ -208,13 +218,14 @@ export function useMesh(): MeshData {
 
   const peers = peersQ.data ?? [];
   const routes = routesQ.data ?? [];
+  const links = linksQ.data ?? [];
   const activities = useMemo(
     () => dedupeActivities([...(activitiesQ.data ?? []), ...liveActivities]),
     [activitiesQ.data, liveActivities],
   );
   const self = statusQ.data?.id ?? "";
   const model = useMemo(() => {
-    const base = buildMesh(self, peers, routes, activities, Date.now());
+    const base = buildMesh(self, peers, routes, links, activities, Date.now());
     const status = statusQ.data;
     if (!status) return base;
     const overlay = status.overlay_ipv4 || status.overlay_ipv6 || undefined;
@@ -228,19 +239,22 @@ export function useMesh(): MeshData {
           : node,
       ),
     };
-  }, [self, peers, routes, activities, rates.sampledAt, statusQ.data]);
+  }, [self, peers, routes, links, activities, rates.sampledAt, statusQ.data]);
 
   // Event-driven cache writes count as successful snapshots, so this is the
   // freshest moment the UI knows the mesh, not a fetch time.
   const staleSince =
-    Math.max(statusQ.dataUpdatedAt, peersQ.dataUpdatedAt, routesQ.dataUpdatedAt, activitiesQ.dataUpdatedAt) || null;
+    Math.max(statusQ.dataUpdatedAt, peersQ.dataUpdatedAt, routesQ.dataUpdatedAt, linksQ.dataUpdatedAt, activitiesQ.dataUpdatedAt) || null;
 
+  // Links are additive: an older daemon without /api/v1/links must not break
+  // the whole mesh view, so its error is not part of the failure.
   const failure = statusQ.error ?? peersQ.error ?? routesQ.error ?? activitiesQ.error;
 
   const refetch = () => {
     void statusQ.refetch();
     void peersQ.refetch();
     void routesQ.refetch();
+    void linksQ.refetch();
     void activitiesQ.refetch();
   };
 
@@ -248,13 +262,14 @@ export function useMesh(): MeshData {
     status: statusQ.data ?? null,
     peers,
     routes,
+    links,
     activities,
     model,
     rate: rates.total,
     peerRates: rates.peers,
     lastTrafficAt,
     staleSince,
-    loading: statusQ.isLoading || peersQ.isLoading || routesQ.isLoading || activitiesQ.isLoading,
+    loading: statusQ.isLoading || peersQ.isLoading || routesQ.isLoading || linksQ.isLoading || activitiesQ.isLoading,
     error: failure ? errText(failure) : null,
     refetch,
   };

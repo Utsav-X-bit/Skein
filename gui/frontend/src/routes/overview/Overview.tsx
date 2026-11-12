@@ -7,7 +7,7 @@ import { Metric } from "@/components/ui/metric";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatAge } from "@/features/mesh/model";
-import { formatDuration } from "@/lib/utils";
+import { formatDuration, shortID } from "@/lib/utils";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
 import { usePeerParam } from "@/features/mesh/hooks";
 import { MeshCanvas } from "@/features/mesh/MeshCanvas";
@@ -142,6 +142,7 @@ export function Overview() {
         open={routesOpen}
         onClose={() => setRoutesOpen(false)}
         paths={mesh.model.paths}
+        nameOf={(id) => (id === mesh.status?.id ? "this device" : mesh.peers.find((p) => p.id === id)?.name || shortID(id))}
         selected={peerId}
         onSelect={(destination) => {
           selectPeer(destination);

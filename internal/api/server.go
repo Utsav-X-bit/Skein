@@ -19,6 +19,7 @@ type StateReader interface {
 	Status() Status
 	Peers() []Peer
 	Routes() []Route
+	Links() []Link
 	Activities() []Activity
 	Config() ConfigView
 	Events() <-chan Event
@@ -134,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	// Step 12: no peer-removal route here — removed, not deprecated.
 	// A peer leaves itself via POST /api/v1/system/leave (ADR-002).
 	mux.HandleFunc("GET /api/v1/routes", s.wrapRole(RoleRead, s.getRoutes))
+	mux.HandleFunc("GET /api/v1/links", s.wrapRole(RoleRead, s.getLinks))
 	mux.HandleFunc("GET /api/v1/activities", s.wrapRole(RoleRead, s.getActivities))
 	mux.HandleFunc("GET /api/v1/config", s.wrapRole(RoleRead, s.getConfig))
 	mux.HandleFunc("POST /api/v1/name", s.wrapRole(RoleMutate, s.postName))
@@ -348,6 +350,14 @@ func (s *Server) getRoutes(w http.ResponseWriter, r *http.Request) {
 		routes = []Route{}
 	}
 	writeJSON(w, http.StatusOK, routes)
+}
+
+func (s *Server) getLinks(w http.ResponseWriter, r *http.Request) {
+	links := s.state.Links()
+	if links == nil {
+		links = []Link{}
+	}
+	writeJSON(w, http.StatusOK, links)
 }
 
 func (s *Server) getActivities(w http.ResponseWriter, r *http.Request) {

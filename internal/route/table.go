@@ -242,6 +242,39 @@ func (t *Table) Lookup(destination uint64) (Route, bool) {
 	return r, true
 }
 
+// OriginAdvertisement is one route a direct neighbour advertised. The
+// embedded Path starts at From and ends at Destination.
+type OriginAdvertisement struct {
+	From uint64
+	Advertisement
+}
+
+// Advertisements returns every unexpired advertisement, sorted by origin and
+// destination. It is the peer-to-peer view of the mesh: each entry says From
+// reaches Destination through Path, whether or not the local node selects
+// that route.
+func (t *Table) Advertisements() []OriginAdvertisement {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := t.now()
+	out := make([]OriginAdvertisement, 0)
+	for from, advs := range t.advert {
+		for _, adv := range advs {
+			if adv.Expires.Before(now) {
+				continue
+			}
+			out = append(out, OriginAdvertisement{From: from, Advertisement: cloneAdv(adv)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		return out[i].Destination < out[j].Destination
+	})
+	return out
+}
+
 // Routes returns every resolved route sorted by destination.
 func (t *Table) Routes() []Route {
 	t.mu.RLock()

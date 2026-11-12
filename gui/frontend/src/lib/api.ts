@@ -14,7 +14,7 @@ import * as IdentityService from "../../bindings/github.com/Utsav-X-bit/skein/gu
 
 export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService };
 
-export type { Connection, Status, Peer, Route, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
+export type { Connection, Status, Peer, Route, Link, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
 
 // DaemonEvent is the lifecycle envelope from internal/api.Event. The Go
 // bridge (gui/services/events.go) forwards each one as a Wails event named

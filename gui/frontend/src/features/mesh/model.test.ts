@@ -162,25 +162,25 @@ describe("buildMesh", () => {
   const now = 10_000;
 
   it("adds no edge for a non-direct peer without route or activity", () => {
-    const model = buildMesh("self", [peer("p1", { direct: false })], [], [], now);
+    const model = buildMesh("self", [peer("p1", { direct: false })], [], [], [], now);
     expect(model.edges).toEqual([]);
     expect(model.nodes.map((n) => n.id)).toContain("p1");
   });
 
   it("adds a direct edge for a direct, up peer", () => {
-    const model = buildMesh("self", [peer("p1", { direct: true, rtt_ms: 12 })], [], [], now);
+    const model = buildMesh("self", [peer("p1", { direct: true, rtt_ms: 12 })], [], [], [], now);
     expect(model.edges).toEqual([
       { id: "self>p1", from: "self", to: "p1", evidence: "direct", fresh: true, rttMs: 12 },
     ]);
   });
 
   it("adds no direct edge for a direct peer that is not up", () => {
-    const model = buildMesh("self", [peer("p1", { direct: true, state: "down" })], [], [], now);
+    const model = buildMesh("self", [peer("p1", { direct: true, state: "down" })], [], [], [], now);
     expect(model.edges).toEqual([]);
   });
 
   it("walks a route path from self", () => {
-    const model = buildMesh("self", [], [route("b", ["a", "b"])], [], now);
+    const model = buildMesh("self", [], [route("b", ["a", "b"])], [], [], now);
     expect(model.edges).toEqual([
       { id: "self>a", from: "self", to: "a", evidence: "route", fresh: false },
       { id: "a>b", from: "a", to: "b", evidence: "route", fresh: false },
@@ -190,13 +190,13 @@ describe("buildMesh", () => {
   });
 
   it("keeps the route destination node even with an empty path", () => {
-    const model = buildMesh("self", [], [route("b", [], { next_hop: "b", hops: 1 })], [], now);
+    const model = buildMesh("self", [], [route("b", [], { next_hop: "b", hops: 1 })], [], [], now);
     expect(model.nodes.map((n) => n.id)).toContain("b");
     expect(model.edges).toEqual([{ id: "self>b", from: "self", to: "b", evidence: "route", fresh: false }]);
   });
 
   it("prefers direct over route for the same edge", () => {
-    const model = buildMesh("self", [peer("a", { direct: true })], [route("b", ["a", "b"])], [], now);
+    const model = buildMesh("self", [peer("a", { direct: true })], [route("b", ["a", "b"])], [], [], now);
     const edges = model.edges.filter((e) => e.from === "self" && e.to === "a");
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({ evidence: "direct", fresh: true });
@@ -205,6 +205,7 @@ describe("buildMesh", () => {
   it("adds an observed edge from self activity", () => {
     const model = buildMesh(
       "self",
+      [],
       [],
       [],
       [activity({ origin: "self", destination: "dest", path: ["dest"], rtt_ms: 8 })],
@@ -216,22 +217,49 @@ describe("buildMesh", () => {
   });
 
   it("adds an observed edge between relay hops, dropping the duplicated origin", () => {
-    const model = buildMesh("self", [], [], [activity({ origin: "a", destination: "b", path: ["a", "b"] })], now);
+    const model = buildMesh("self", [], [], [], [activity({ origin: "a", destination: "b", path: ["a", "b"] })], now);
     expect(model.edges).toEqual([{ id: "a>b", from: "a", to: "b", evidence: "observed", fresh: true }]);
   });
 
   it("prefers observed over route for the same edge", () => {
-    const model = buildMesh("self", [], [route("a", ["a"])], [activity({ origin: "self", path: ["a"] })], now);
+    const model = buildMesh("self", [], [route("a", ["a"])], [], [activity({ origin: "self", path: ["a"] })], now);
     expect(model.edges).toEqual([{ id: "self>a", from: "self", to: "a", evidence: "observed", fresh: true }]);
   });
 
   it("ignores expired activity", () => {
-    const model = buildMesh("self", [], [], [activity({ origin: "self", path: ["dest"], expires_ms: now })], now);
+    const model = buildMesh("self", [], [], [], [activity({ origin: "self", path: ["dest"], expires_ms: now })], now);
     expect(model.edges).toEqual([]);
   });
 
+  it("draws a neighbour's direct advertisement as a peer link", () => {
+    const model = buildMesh(
+      "self",
+      [peer("a", { direct: false }), peer("c", { direct: false })],
+      [],
+      [{ from: "a", destination: "c", hops: 1, cost_ms: 5, path: ["a", "c"] }],
+      [],
+      now,
+    );
+    expect(model.edges).toEqual([
+      expect.objectContaining({ id: "a>c", from: "a", to: "c", evidence: "advertised", rttMs: 5, path: ["a", "c"], hops: 1 }),
+    ]);
+  });
+
+  it("walks a multi-hop advertisement without inventing an RTT", () => {
+    const model = buildMesh(
+      "self",
+      [],
+      [],
+      [{ from: "a", destination: "c", hops: 2, cost_ms: 9, path: ["a", "b", "c"] }],
+      [],
+      now,
+    );
+    expect(model.edges.map((e) => e.id)).toEqual(["a>b", "b>c"]);
+    expect(model.edges.every((e) => e.evidence === "advertised" && e.rttMs === undefined)).toBe(true);
+  });
+
   it("maps routes to paths", () => {
-    const model = buildMesh("self", [], [route("b", ["a", "b"])], [], now);
+    const model = buildMesh("self", [], [route("b", ["a", "b"])], [], [], now);
     expect(model.paths).toEqual([{ destination: "b", nextHop: "a", path: ["a", "b"], hops: 2, costMs: 10, direct: false }]);
   });
 
@@ -240,6 +268,7 @@ describe("buildMesh", () => {
       "self",
       [peer("p1", { direct: true, path: "v6", endpoint: "[2001:db8::1]:51820" })],
       [route("p1", ["p1"])],
+      [],
       [],
       now,
     );
@@ -251,6 +280,7 @@ describe("buildMesh", () => {
       "self",
       [peer("relay", { direct: true, path: "v4" }), peer("dest", { direct: true })],
       [route("dest", ["relay", "dest"])],
+      [],
       [],
       now,
     );
@@ -265,12 +295,12 @@ describe("buildMesh", () => {
   });
 
   it("flags stale when every peer row is older than 15 s", () => {
-    expect(buildMesh("self", [peer("p1", { last_seen_ms: 20_000 })], [], [], now).stale).toBe(true);
-    expect(buildMesh("self", [peer("p1", { last_seen_ms: 5_000 })], [], [], now).stale).toBe(false);
+    expect(buildMesh("self", [peer("p1", { last_seen_ms: 20_000 })], [], [], [], now).stale).toBe(true);
+    expect(buildMesh("self", [peer("p1", { last_seen_ms: 5_000 })], [], [], [], now).stale).toBe(false);
     expect(
-      buildMesh("self", [peer("p1", { last_seen_ms: 20_000 }), peer("p2", { last_seen_ms: 5_000 })], [], [], now).stale,
+      buildMesh("self", [peer("p1", { last_seen_ms: 20_000 }), peer("p2", { last_seen_ms: 5_000 })], [], [], [], now).stale,
     ).toBe(false);
-    expect(buildMesh("self", [], [], [], now).stale).toBe(false);
+    expect(buildMesh("self", [], [], [], [], now).stale).toBe(false);
   });
 });
 

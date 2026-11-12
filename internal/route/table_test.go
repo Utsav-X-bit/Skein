@@ -216,3 +216,30 @@ func TestResetOriginAcceptsRestartedPeer(t *testing.T) {
 		t.Fatal("route missing after the reset")
 	}
 }
+
+// Advertisements are the peer-to-peer view: a neighbour's route to another
+// member stays visible even when the local node has a better direct route.
+func TestAdvertisementsExposePeerLinks(t *testing.T) {
+	tbl := NewTable(1)
+	if err := tbl.UpdateDirect(DirectLink{PeerID: 2, RTT: 10 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	adv := Advertisement{
+		Destination: 3,
+		Cost:        5 * time.Millisecond,
+		Hops:        1,
+		Path:        []uint64{2, 3},
+		Seq:         1,
+		Expires:     time.Now().Add(time.Minute),
+	}
+	if err := tbl.MergeAdvertisement(2, adv); err != nil {
+		t.Fatalf("merge advertisement: %v", err)
+	}
+	got := tbl.Advertisements()
+	if len(got) != 1 {
+		t.Fatalf("advertisements = %+v, want one", got)
+	}
+	if got[0].From != 2 || got[0].Destination != 3 || got[0].Hops != 1 || len(got[0].Path) != 2 {
+		t.Fatalf("advertisement = %+v, want 2 -> 3 in one hop", got[0])
+	}
+}

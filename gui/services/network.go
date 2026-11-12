@@ -58,6 +58,16 @@ func (s *NetworkService) Routes(ctx context.Context) ([]api.Route, error) {
 	return out, err
 }
 
+func (s *NetworkService) Links(ctx context.Context) ([]api.Link, error) {
+	c, err := ControlClient()
+	if err != nil {
+		return nil, err
+	}
+	var out []api.Link
+	err = c.do(ctx, "GET", "/api/v1/links", nil, &out)
+	return out, err
+}
+
 func (s *NetworkService) Activities(ctx context.Context) ([]api.Activity, error) {
 	c, err := ControlClient()
 	if err != nil {

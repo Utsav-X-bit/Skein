@@ -55,6 +55,15 @@ func (f *fakeState) Routes() []Route {
 	return []Route{{Destination: "0123456789abcdef", NextHop: "0123456789abcdef", CostMs: 12.4, Hops: 1}}
 }
 func (f *fakeState) Activities() []Activity { return nil }
+func (f *fakeState) Links() []Link {
+	return []Link{{
+		From:        "0123456789abcdef",
+		Destination: "fedcba9876543210",
+		Hops:        1,
+		CostMs:      12.4,
+		Path:        []string{"0123456789abcdef", "fedcba9876543210"},
+	}}
+}
 func (f *fakeState) Config() ConfigView {
 	return ConfigView{OverlayIPv4: "10.144.144.1", NetworkSecret: "redacted", APIToken: "redacted"}
 }
@@ -280,5 +289,23 @@ func TestSetNameEndpoint(t *testing.T) {
 	}
 	if rec := doKernel(t, h, http.MethodPost, "/api/v1/name", `not json`, nil, 1000); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad json code = %d", rec.Code)
+	}
+}
+
+func TestLinksReturnsAdvertisedPeerLinks(t *testing.T) {
+	srv, _, _, _ := newTestServer(t)
+	rec := do(t, srv.Handler(), http.MethodGet, "/api/v1/links", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/links = %d, want 200", rec.Code)
+	}
+	var links []Link
+	if err := json.Unmarshal(rec.Body.Bytes(), &links); err != nil {
+		t.Fatalf("decode links: %v", err)
+	}
+	if len(links) != 1 || links[0].From != "0123456789abcdef" || links[0].Destination != "fedcba9876543210" || links[0].Hops != 1 {
+		t.Fatalf("links = %+v, want the advertised peer link", links)
+	}
+	if len(links[0].Path) != 2 || links[0].Path[0] != links[0].From {
+		t.Fatalf("path = %v, want it to start at the advertiser", links[0].Path)
 	}
 }

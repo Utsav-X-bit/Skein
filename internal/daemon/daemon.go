@@ -661,6 +661,27 @@ func (d *Daemon) Routes() []api.Route {
 	return out
 }
 
+// Links implements api.StateReader with the peer-to-peer routes neighbours
+// advertise. The local route table keeps these even when a direct route wins,
+// so the map can show how two other members reach each other.
+func (d *Daemon) Links() []api.Link {
+	list := d.routes.Advertisements()
+	out := make([]api.Link, 0, len(list))
+	for _, a := range list {
+		row := api.Link{
+			From:        fmt.Sprintf("%016x", a.From),
+			Destination: fmt.Sprintf("%016x", a.Destination),
+			Hops:        a.Hops,
+			CostMs:      float64(a.Cost) / float64(time.Millisecond),
+		}
+		for _, id := range a.Path {
+			row.Path = append(row.Path, fmt.Sprintf("%016x", id))
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // Activities exposes fresh authenticated aggregate samples for the dashboard.
 func (d *Daemon) Activities() []api.Activity {
 	samples := d.activity.Snapshot(time.Now())

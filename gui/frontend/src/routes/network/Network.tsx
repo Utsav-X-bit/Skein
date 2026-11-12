@@ -118,7 +118,7 @@ export function Network() {
                             <div className="flex flex-wrap items-center gap-1 font-mono text-[10px]">
                               {chain.map((hop, i) => (
                                 <span key={`${hop}-${i}`} className={selected ? "text-[var(--accent)]" : "text-[var(--text-muted)]"}>
-                                  {i === 0 ? "you" : shortID(hop)}{i < chain.length - 1 ? " →" : ""}
+                                  {i === 0 ? "you" : nameOf(hop)}{i < chain.length - 1 ? " →" : ""}
                                 </span>
                               ))}
                             </div>
@@ -144,6 +144,57 @@ export function Network() {
           onViewRoutes={(destination) => setPeerId(destination)}
         />
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{mesh.links.length} peer links</CardTitle>
+          <span className="mono-label">advertised by neighbours</span>
+        </CardHeader>
+        <CardContent className="p-0">
+          {mesh.links.length === 0 ? (
+            <EmptyState
+              title="No peer links advertised"
+              description="Neighbours advertise how they reach other members. Links appear after the next state exchange."
+              className="m-4"
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm" aria-label="Peer links">
+                <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
+                  <tr>
+                    {["From", "To", "Via", "Cost", "Path"].map((h) => (
+                      <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {mesh.links.map((l) => {
+                    const via = l.hops === 1 ? "direct" : nameOf(l.path?.[1] ?? l.destination);
+                    return (
+                      <tr
+                        key={`${l.from}>${l.destination}`}
+                        data-row
+                        tabIndex={0}
+                        onClick={() => setPeerId(l.destination)}
+                        onKeyDown={(e) => rowKeyNav(e, () => setPeerId(l.destination), () => setPeerId(null))}
+                        className="cursor-pointer hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
+                      >
+                        <td className="px-3 py-2">{nameOf(l.from)}</td>
+                        <td className="px-3 py-2">{nameOf(l.destination)}</td>
+                        <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{via}</td>
+                        <td className="tabular px-3 py-2">{l.cost_ms.toFixed(1)} ms</td>
+                        <td className="max-w-[320px] truncate px-3 py-2 font-mono text-[10px] text-[var(--text-muted)]">
+                          {(l.path ?? []).map(nameOf).join(" → ")}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

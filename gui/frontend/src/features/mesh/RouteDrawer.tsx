@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { shortID } from "@/lib/utils";
 import { routeSummary, type MeshPath } from "./model";
 
 /** RouteDrawer is the route list without leaving the map. */
@@ -11,12 +10,14 @@ export function RouteDrawer({
   paths,
   selected,
   onSelect,
+  nameOf,
 }: {
   open: boolean;
   onClose: () => void;
   paths: MeshPath[];
   selected: string | null;
   onSelect: (destination: string) => void;
+  nameOf: (id: string) => string;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -58,7 +59,7 @@ export function RouteDrawer({
           ) : (
             <ul className="divide-y divide-[var(--border)]">
               {paths.map((p) => {
-                const chain = p.path.length > 0 ? ["you", ...p.path.map(shortID)] : ["you", shortID(p.destination)];
+                const chain = p.path.length > 0 ? ["you", ...p.path.map(nameOf)] : ["you", nameOf(p.destination)];
                 return (
                   <li key={p.destination}>
                     <button
@@ -67,11 +68,11 @@ export function RouteDrawer({
                       className={`w-full px-4 py-3 text-left hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${selected === p.destination ? "bg-[var(--accent-soft)]" : ""}`}
                     >
                       <div className="flex items-center justify-between gap-3">
-                        <span className="font-mono text-xs">{shortID(p.destination)}</span>
+                        <span className="font-mono text-xs">{nameOf(p.destination)}</span>
                         <span className="tabular text-xs text-[var(--text-muted)]">{p.costMs.toFixed(1)} ms</span>
                       </div>
                       <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-                        {routeSummary(p, shortID)} · {p.hops} {p.hops === 1 ? "hop" : "hops"}
+                        {routeSummary(p, nameOf)} · {p.hops} {p.hops === 1 ? "hop" : "hops"}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-[var(--text-faint)]">{chain.join(" → ")}</div>
                     </button>
