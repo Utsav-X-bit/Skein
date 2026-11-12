@@ -11,10 +11,13 @@ import * as HistoryService from "../../bindings/github.com/Utsav-X-bit/skein/gui
 import * as UpdateService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/updateservice";
 import * as SecurityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/securityservice";
 import * as IdentityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/identityservice";
+import * as SetupService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
+import * as VpnService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/vpnservice";
 
-export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService };
+export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService, SetupService, VpnService };
 
 export type { Connection, Status, Peer, Route, Link, Activity, ConfigView, ConfigPatch, ConfigPatchResult, Invite, LogEntry, FirewallStatus, SecurityStatus, ServiceStatus, ProbeResult, DiagnosticBundle, Capabilities } from "../../bindings/github.com/Utsav-X-bit/skein/internal/api/models";
+export type { VpnPermission, VpnPermissionEvent } from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/models";
 
 // DaemonEvent is the lifecycle envelope from internal/api.Event. The Go
 // bridge (gui/services/events.go) forwards each one as a Wails event named
