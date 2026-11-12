@@ -5,7 +5,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
-import com.wails.app.BuildConfig;
+import com.skein.app.BuildConfig;
 
 /**
  * WailsJSBridge provides the JavaScript interface that allows the web frontend

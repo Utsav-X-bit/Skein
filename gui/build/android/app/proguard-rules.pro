@@ -8,5 +8,5 @@
 }
 
 # Keep Wails bridge classes
--keep class com.wails.app.WailsBridge { *; }
--keep class com.wails.app.WailsJSBridge { *; }
+-keep class com.skein.app.WailsBridge { *; }
+-keep class com.skein.app.WailsJSBridge { *; }
