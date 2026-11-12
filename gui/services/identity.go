@@ -10,27 +10,22 @@ import (
 	"strings"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
-	"github.com/Utsav-X-bit/skein/internal/app"
 	"github.com/Utsav-X-bit/skein/internal/configstore"
 	"github.com/Utsav-X-bit/skein/internal/identity"
 )
 
 // systemConfigDirs are the privileged config locations the GUI must never
 // write, even when the user asks for a path inside one. The daemon (or the
-// elevated helper) owns them; the GUI is unprivileged. app.SystemDir is the
-// install root on every platform (it follows a redirected ProgramData on
-// Windows); the rest are the other Unix roots.
-//
-// It is a function, not a package-level var: app.SystemDir on Android is
-// set from Java after startup (SetFilesDir), so a value captured at
-// package init would predate it.
-func systemConfigDirs() []string {
-	return []string{
-		app.SystemDir(),
-		`C:\Program Files\Skein`,
-		"/usr",
-		"/var",
-	}
+// elevated helper) owns them; the GUI is unprivileged. The platform
+// install root (app.SystemDir) is checked live by isSystemConfigDir via
+// liveSystemDir, not stored here: on Android it is set from Java after
+// startup, so a value captured at package init would predate it — and
+// on Android the app-private files dir is app-owned, not privileged,
+// so it is not a protected root at all there.
+var systemConfigDirs = []string{
+	`C:\Program Files\Skein`,
+	"/usr",
+	"/var",
 }
 
 // IdentityService exposes the daemon's public identity and creates an
@@ -148,7 +143,11 @@ func offlineTargetDir(targetDir string) (string, error) {
 // /private/etc) cannot be used to slip past the refusal. Windows paths
 // compare case-insensitively.
 func isSystemConfigDir(dir string) bool {
-	for _, sys := range systemConfigDirs() {
+	roots := systemConfigDirs
+	if sys := liveSystemDir(); sys != "" {
+		roots = append([]string{sys}, roots...)
+	}
+	for _, sys := range roots {
 		if isUnder(sys, dir) {
 			return true
 		}
