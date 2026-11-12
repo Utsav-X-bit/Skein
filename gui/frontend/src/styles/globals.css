@@ -158,6 +158,24 @@
 .animate-flow { animation: skein-flow 1.4s linear infinite; }
 .animate-float { animation: skein-float 4s ease-in-out infinite; }
 
+/* Mobile bottom sheet: slide-up in, slide-down out (transform only).
+   Reduced motion (see the .reduce-motion rule below) collapses both
+   to a near-instant fade. */
+@keyframes skein-sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes skein-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.mobile-sheet[data-state="open"] { animation: skein-sheet-in 220ms ease-out; }
+.mobile-sheet[data-state="closed"] { animation: skein-sheet-in 180ms ease-in reverse; }
+.mobile-sheet-overlay[data-state="open"] { animation: skein-fade-in 180ms ease-out; }
+.mobile-sheet-overlay[data-state="closed"] { animation: skein-fade-in 150ms ease-in reverse; }
+.reduce-motion .mobile-sheet[data-state="open"],
+.reduce-motion .mobile-sheet[data-state="closed"] { animation: skein-fade-in 150ms ease-out; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

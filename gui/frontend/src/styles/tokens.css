@@ -50,6 +50,12 @@
   --command-bar-h: 56px;
   --inspector-w: 320px;
 
+  /* Mobile shell metrics (design brief §1.2) */
+  --nav-h: calc(64px + env(safe-area-inset-bottom, 0px));
+  --sheet-radius: var(--radius-xl);
+  --tap-min: 48px;
+  --connect-h: 56px;
+
   /* Motion — spec §5.3. Allowed: transform, opacity, stroke-dashoffset;
      filter/box-shadow only on small elements. */
   --dur-hover: 120ms;
