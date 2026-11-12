@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -131,25 +133,145 @@ var (
 // observed state already satisfies want is not an error when the state proves
 // the whole intent (start/stop/uninstall); wants that the state cannot prove
 // (install/restart/purge) set helperMustSucceed and always surface it.
+//
+// Failures are rendered for the user, not the developer: see serviceFailure.
 func (s *ServiceService) mutate(ctx context.Context, verb string, want stateWanted, args ...string) error {
 	helperErr := runHelper(ctx, verb, args...)
 	st, stateErr := observeState(ctx, want)
 	if stateErr != nil {
-		if helperErr != nil {
-			return fmt.Errorf("service %s: helper failed: %v; last observed state %s, result unconfirmed: %w", verb, helperErr, st.State, stateErr)
-		}
-		return fmt.Errorf("service %s: helper reported success but last observed state %s is unconfirmed: %w", verb, st.State, stateErr)
+		return unconfirmedState(verb, st.State, helperErr, stateErr)
 	}
 	if !want.holds(st.State) {
-		if helperErr != nil {
-			return fmt.Errorf("service %s: helper failed: %v (authoritative state after mutation: %s, want %s)", verb, helperErr, st.State, want.name)
-		}
-		return fmt.Errorf("service %s: helper reported success but authoritative state is %s, want %s", verb, st.State, want.name)
+		return serviceFailure(verb, want, st.State, helperErr, false)
 	}
 	if helperErr != nil && want.helperMustSucceed {
-		return fmt.Errorf("service %s: helper failed: %v (authoritative state after mutation is %s, but that state cannot confirm the requested result)", verb, helperErr, st.State)
+		return serviceFailure(verb, want, st.State, helperErr, true)
 	}
 	return nil
+}
+
+// plainError is user-facing text with the technical cause kept for errors.Is
+// and for logs. Error prints only the message, so a JSON envelope or an exit
+// status never reaches the banner.
+type plainError struct {
+	msg   string
+	cause error
+}
+
+func (e *plainError) Error() string { return e.msg }
+func (e *plainError) Unwrap() error { return e.cause }
+
+// serviceFailure explains a mutation that did not reach want. stateProves is
+// set when the observed state already matches but the helper failed, so the
+// result cannot be confirmed.
+func serviceFailure(verb string, want stateWanted, st service.State, helperErr error, stateProves bool) error {
+	detail := ""
+	if helperErr != nil {
+		detail = strings.ToLower(helperErr.Error())
+	}
+	switch {
+	case st == service.StateMissing && (verb == "start" || verb == "restart"):
+		// Nothing to retry: the unit is not registered, so setup is the
+		// next step, not another start.
+		return &plainError{
+			msg:   "Skein's background service isn't installed on this machine yet. Create or join a network first; that installs it.",
+			cause: helperErr,
+		}
+	case strings.Contains(detail, "config not found"), strings.Contains(detail, "no configuration"):
+		return &plainError{
+			msg:   "Skein has no network configuration on this machine yet. Create or join a network first.",
+			cause: helperErr,
+		}
+	}
+	switch {
+	case stateProves:
+		return &plainError{
+			msg:   fmt.Sprintf("The service is %s, but the helper reported a failure, so the result is unconfirmed. Details: %s", stateName(st), helperErr),
+			cause: helperErr,
+		}
+	case helperErr == nil:
+		return &plainError{
+			msg: fmt.Sprintf("The helper reported success, but the service is %s instead of %s. Open Diagnostics → Logs, then retry.", stateName(st), want.name),
+		}
+	default:
+		if st == service.StateMissing {
+			return &plainError{
+				msg:   fmt.Sprintf("The service could not be %s. Details: %s", past(verb), helperErr),
+				cause: helperErr,
+			}
+		}
+		return &plainError{
+			msg:   fmt.Sprintf("The service could not be %s; it is %s. Details: %s", past(verb), stateName(st), helperErr),
+			cause: helperErr,
+		}
+	}
+}
+
+// unconfirmedState reports a mutation whose resulting state could not be read.
+func unconfirmedState(verb string, st service.State, helperErr, stateErr error) error {
+	cause := errors.Join(helperErr, stateErr)
+	if errors.Is(stateErr, context.DeadlineExceeded) || errors.Is(stateErr, context.Canceled) {
+		return &plainError{
+			msg:   fmt.Sprintf("The service is still %s and did not finish %s in time. Open Diagnostics → Logs, then retry.", stateName(st), gerund(verb)),
+			cause: cause,
+		}
+	}
+	msg := fmt.Sprintf("Skein could not read the service state after %s (%s).", gerund(verb), stateErr)
+	if helperErr != nil {
+		msg += fmt.Sprintf(" The helper also failed (%s).", helperErr)
+	}
+	msg += " Open Diagnostics → Logs, then retry."
+	return &plainError{msg: msg, cause: cause}
+}
+
+// stateName is the observed state as prose, not as the API's wire value.
+func stateName(st service.State) string {
+	switch st {
+	case service.StateMissing:
+		return "not installed"
+	case service.StateStopped:
+		return "stopped"
+	case service.StateStarting:
+		return "starting"
+	case service.StateStopping:
+		return "stopping"
+	case service.StateRunning:
+		return "running"
+	case service.StateError:
+		return "in a failed state"
+	default:
+		return "in an unknown state"
+	}
+}
+
+func past(verb string) string {
+	switch verb {
+	case "install":
+		return "installed"
+	case "uninstall":
+		return "removed"
+	case "restart":
+		return "restarted"
+	case "stop":
+		return "stopped"
+	default:
+		return "started"
+	}
+}
+
+func gerund(verb string) string {
+	switch verb {
+	case "install":
+		return "installing"
+	case "uninstall":
+		return "removing"
+	case "restart":
+		return "restarting"
+	case "stop":
+		return "stopping"
+	default:
+		return "starting"
+	}
 }
 
 // observeState reads the authoritative OS state after a mutation. A

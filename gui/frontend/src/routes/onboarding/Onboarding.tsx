@@ -118,6 +118,14 @@ export function Onboarding({ compact = false, onBegin, onExit }: { compact?: boo
       return { message: errDisplay(error), label: "Retry with administrator approval", action: "retry" as const };
     }
     const text = errText(error).toLowerCase();
+    if (text.includes("isn't installed")) {
+      // The unit is absent: retrying cannot succeed, setup is the next step.
+      return {
+        message: errDisplay(error),
+        label: "Back to setup",
+        action: "welcome" as const,
+      };
+    }
     if (text.includes("already exists")) {
       return {
         message: "A network is already configured on this device. Its configuration and identity were left in place.",
@@ -144,6 +152,10 @@ export function Onboarding({ compact = false, onBegin, onExit }: { compact?: boo
 
   const runOutcome = () => {
     if (!outcome) return;
+    if (outcome.action === "welcome") {
+      go("welcome");
+      return;
+    }
     if (outcome.action === "settings") {
       navigate("/settings?network=switch");
       return;

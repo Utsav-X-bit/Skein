@@ -225,3 +225,22 @@ func TestMutationReportsUnreadableState(t *testing.T) {
 		t.Fatalf("Start error = %v, want both helper failure and state read failure", err)
 	}
 }
+
+// The onboarding "Start service" path on a machine with no registered unit
+// must explain setup, not repeat systemd's wording or the helper envelope.
+func TestStartOnMissingServiceExplainsSetup(t *testing.T) {
+	helperErr := errors.New("service: systemctl start: exit status 5: Failed to start skein.service: Unit skein.service not found.")
+	stubLifecycle(t, fixedStatus(service.StateMissing), recordHelper(new([]helperCall), helperErr))
+
+	err := (&ServiceService{}).Start(context.Background())
+	if err == nil {
+		t.Fatal("Start = nil, want error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "isn't installed") || !strings.Contains(got, "Create or join a network") {
+		t.Fatalf("Start error = %q, want plain setup guidance", got)
+	}
+	if strings.Contains(got, "systemctl") || strings.Contains(got, "missing") {
+		t.Fatalf("Start error = %q, want no systemd or state jargon", got)
+	}
+}
