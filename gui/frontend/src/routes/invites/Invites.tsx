@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Copy, Plus, RefreshCw, ShieldAlert, ShieldQuestion } from "lucide-react";
+import { Copy, Plus, RefreshCw, Share2, ShieldAlert, ShieldQuestion } from "lucide-react";
 import { toast } from "sonner";
 import { InviteService, errText, type Invite } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +58,33 @@ function InvitePanel({ kind }: { kind: "peer" | "network" }) {
             {invite.snapshot && <Badge tone="warning">address snapshot</Badge>}
           </div>
           <CopyField value={invite.value} label={kind === "peer" ? "peer introduction" : "network join string"} secret={kind === "network"} />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={async () => {
+                // Android share sheet when the WebView offers it;
+                // clipboard is the guaranteed fallback (and the only
+                // path for the network join string's secret on desktop).
+                if (typeof navigator.share === "function") {
+                  try {
+                    await navigator.share({ title: "Skein invite", text: invite.value });
+                    return;
+                  } catch (e) {
+                    if (e instanceof DOMException && e.name === "AbortError") return;
+                  }
+                }
+                try {
+                  await navigator.clipboard.writeText(invite.value);
+                  toast.success("Copied — share it from the clipboard");
+                } catch {
+                  toast.error("Sharing is not available; select the text and copy it manually.");
+                }
+              }}
+            >
+              <Share2 size={14} /> Share…
+            </Button>
+          </div>
           <p className="text-xs leading-relaxed text-[var(--text-faint)]">
             {kind === "network"
               ? "Copying puts the secret on the clipboard, where other applications and clipboard history may read it; a screenshot or a shoulder-surf shows it too. Skein cannot prevent that, so reveal and copy it deliberately and dismiss it afterwards."

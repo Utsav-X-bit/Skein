@@ -85,12 +85,14 @@ function Choice<T extends string>({
   );
 }
 
-export function Settings() {
+export function Settings({ mobile = false }: { mobile?: boolean }) {
   const qc = useQueryClient();
   const theme = useUI((s) => s.theme);
   const motion = useUI((s) => s.motion);
   const setTheme = useUI((s) => s.setTheme);
   const setMotion = useUI((s) => s.setMotion);
+  const animateFlow = useUI((s) => s.animateFlow);
+  const setAnimateFlow = useUI((s) => s.setAnimateFlow);
 
   // Dirty-state protection: while the form has unsaved edits, incoming
   // snapshots are ignored and polling pauses, so a refetch can never clobber
@@ -361,24 +363,37 @@ export function Settings() {
             {svc.isError && <span role="status">state unavailable: {errDisplay(svc.error)}</span>}
           </div>
 
-          <div className="flex items-start justify-between gap-4 rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3">
-            <div>
-              <div className="text-sm font-medium">Start at boot</div>
-              <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
-                Off by default. The service starts when you open Skein Desktop; turn this on to keep the mesh up after a reboot without the app.
-              </p>
+          {!mobile && (
+            <div className="flex items-start justify-between gap-4 rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3">
+              <div>
+                <div className="text-sm font-medium">Start at boot</div>
+                <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+                  Off by default. The service starts when you open Skein Desktop; turn this on to keep the mesh up after a reboot without the app.
+                </p>
+              </div>
+              <Switch
+                checked={svc.data?.enabled ?? false}
+                disabled={busy || boot.isPending || !svc.data?.installed}
+                onCheckedChange={(value) => boot.mutate(value)}
+                aria-label="Start the service at boot"
+              />
             </div>
-            <Switch
-              checked={svc.data?.enabled ?? false}
-              disabled={busy || boot.isPending || !svc.data?.installed}
-              onCheckedChange={(value) => boot.mutate(value)}
-              aria-label="Start the service at boot"
-            />
-          </div>
+          )}
 
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3 text-xs leading-relaxed text-[var(--text-muted)]">
-            <span className="font-medium text-[var(--text)]">Before any elevation: </span>
-            these controls use only the minimal helper&apos;s fixed verbs — the app never gets a shell and keeps no administrator access afterwards. Install re-registers and starts an existing daemon; first-run create or join registers a fresh service instead. Start, Stop and Restart change the service lifecycle. Repair stops, re-registers and starts, stopping at the first failed step. Uninstall removes the service and keeps configuration and identity. Every verb may ask for approval (pkexec on Linux, UAC on Windows); the real OS state is re-read after each one, including failures.
+            {mobile ? (
+              <>
+                <span className="font-medium text-[var(--text)]">Android VPN service: </span>
+                Start, Stop and Restart control the in-app VPN service that carries the mesh tunnel — there is no system service or administrator
+                helper on Android. Android shows a persistent notification while the VPN runs, and the tunnel stops when the app is swiped away.
+                Install, Repair and Uninstall are not available on Android.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-[var(--text)]">Before any elevation: </span>
+                these controls use only the minimal helper&apos;s fixed verbs — the app never gets a shell and keeps no administrator access afterwards. Install re-registers and starts an existing daemon; first-run create or join registers a fresh service instead. Start, Stop and Restart change the service lifecycle. Repair stops, re-registers and starts, stopping at the first failed step. Uninstall removes the service and keeps configuration and identity. Every verb may ask for approval (pkexec on Linux, UAC on Windows); the real OS state is re-read after each one, including failures.
+              </>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -391,15 +406,19 @@ export function Settings() {
             <Button variant="secondary" disabled={busy} onClick={() => service.mutate("restart")}>
               Restart
             </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("install")}>
-              Install
-            </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("repair")}>
-              Repair
-            </Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("uninstall")}>
-              Uninstall
-            </Button>
+            {!mobile && (
+              <>
+                <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("install")}>
+                  Install
+                </Button>
+                <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("repair")}>
+                  Repair
+                </Button>
+                <Button variant="secondary" disabled={busy} onClick={() => setConfirmAction("uninstall")}>
+                  Uninstall
+                </Button>
+              </>
+            )}
           </div>
 
           {repairStep && <p className="text-xs text-[var(--text-muted)]" role="status">Repair: {repairStep}…</p>}
@@ -418,12 +437,15 @@ export function Settings() {
 
           {svc.data?.last_error && <p className="text-xs text-[var(--text-muted)]">Last service error: {svc.data.last_error}</p>}
 
-          <p className="text-xs text-[var(--text-muted)]">
-            While the service is stopped, <Link className="underline" to="/security">Security</Link> and{" "}
-            <Link className="underline" to="/logs">Diagnostics</Link> stay available so you can inspect the last state before restarting.
-          </p>
+          {!mobile && (
+            <p className="text-xs text-[var(--text-muted)]">
+              While the service is stopped, <Link className="underline" to="/security">Security</Link> and{" "}
+              <Link className="underline" to="/logs">Diagnostics</Link> stay available so you can inspect the last state before restarting.
+            </p>
+          )}
 
-          <Dialog open={confirmAction !== ""} onOpenChange={(open) => { if (!open) setConfirmAction(""); }}>
+          {!mobile && (
+            <Dialog open={confirmAction !== ""} onOpenChange={(open) => { if (!open) setConfirmAction(""); }}>
             <DialogContent>
               <DialogTitle>
                 {confirmAction === "install" ? "Install the service?" : confirmAction === "repair" ? "Repair the service?" : "Uninstall the service?"}
@@ -453,7 +475,8 @@ export function Settings() {
                 </Button>
               </div>
             </DialogContent>
-          </Dialog>
+            </Dialog>
+          )}
         </CardContent>
       </Card>
 
@@ -498,12 +521,11 @@ export function Settings() {
             label="theme"
             value={theme}
             onChange={setTheme}
-            options={[
-              ["dark", "Dark"],
-              ["light", "Light"],
-              ["hc", "High contrast"],
-            ]}
+            options={mobile ? [["dark", "Dark"]] : [["dark", "Dark"], ["light", "Light"], ["hc", "High contrast"]]}
           />
+          {mobile && (
+            <p className="text-xs text-[var(--text-muted)]">Dark only in v1 — Light coming in v1.1.</p>
+          )}
           <Choice<Motion>
             label="motion"
             value={motion}
@@ -514,6 +536,14 @@ export function Settings() {
               ["full", "Full"],
             ]}
           />
+          {mobile && (
+            <div className="flex items-center gap-3">
+              <Switch id="animate-flow" aria-label="Animate mesh flow" checked={animateFlow} onCheckedChange={setAnimateFlow} />
+              <Label htmlFor="animate-flow" className="mb-0">
+                Animate mesh flow
+              </Label>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
