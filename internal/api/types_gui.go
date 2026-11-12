@@ -30,6 +30,7 @@ type ServiceStatus struct {
 	State     string `json:"state"`
 	Manager   string `json:"manager"`
 	Installed bool   `json:"installed"`
+	Enabled   bool   `json:"enabled"`
 	Version   string `json:"version,omitempty"`
 	LastError string `json:"last_error,omitempty"`
 }

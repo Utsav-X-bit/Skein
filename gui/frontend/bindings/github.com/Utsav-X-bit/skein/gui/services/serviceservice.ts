@@ -45,6 +45,14 @@ export function Restart(): $CancellablePromise<void> {
     return $Call.ByID(2932051867);
 }
 
+/**
+ * SetStartAtBoot turns boot start on or off and verifies the OS state.
+ * Registration is manual by default; this is the explicit opt-in.
+ */
+export function SetStartAtBoot(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1623694401, enabled);
+}
+
 export function Start(): $CancellablePromise<void> {
     return $Call.ByID(1516752140);
 }

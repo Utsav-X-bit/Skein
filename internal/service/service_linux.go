@@ -120,15 +120,9 @@ func install(executable, configPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeUnitAtomic(unit, nil, false); err != nil {
-		return err
-	}
-	if out, err := exec.Command("systemctl", "enable", Name+".service").CombinedOutput(); err != nil {
-		os.Remove(unitPath)
-		_ = exec.Command("systemctl", "daemon-reload").Run()
-		return fmt.Errorf("service: enable: %w: %s", err, out)
-	}
-	return nil
+	// Registration is manual by default: the desktop starts the service
+	// when it opens, and Enable is the explicit opt-in for boot start.
+	return writeUnitAtomic(unit, nil, false)
 }
 
 func rewrite(executable, configPath string) error {
@@ -164,6 +158,14 @@ func stop() error {
 
 func restart() error {
 	return systemctl("restart")
+}
+
+func enable() error {
+	return systemctl("enable")
+}
+
+func disable() error {
+	return systemctl("disable")
 }
 
 func systemctl(action string) error {

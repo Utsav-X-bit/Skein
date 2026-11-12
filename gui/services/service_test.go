@@ -244,3 +244,34 @@ func TestStartOnMissingServiceExplainsSetup(t *testing.T) {
 		t.Fatalf("Start error = %q, want no systemd or state jargon", got)
 	}
 }
+
+// Boot start is a policy change: a zero helper exit is not success unless the
+// OS reports the requested start type afterwards.
+func TestSetStartAtBootVerifiesThePolicy(t *testing.T) {
+	var calls []helperCall
+	stubLifecycle(t, func() (service.Status, error) {
+		return service.Status{State: service.StateRunning, Enabled: true}, nil
+	}, recordHelper(&calls, nil))
+	if err := (&ServiceService{}).SetStartAtBoot(context.Background(), true); err != nil {
+		t.Fatalf("SetStartAtBoot(true) = %v", err)
+	}
+	if len(calls) != 1 || calls[0].verb != "enable" {
+		t.Fatalf("helper calls = %+v, want one enable", calls)
+	}
+
+	calls = nil
+	stubLifecycle(t, func() (service.Status, error) {
+		return service.Status{State: service.StateRunning, Enabled: false}, nil
+	}, recordHelper(&calls, nil))
+	if err := (&ServiceService{}).SetStartAtBoot(context.Background(), false); err != nil {
+		t.Fatalf("SetStartAtBoot(false) = %v", err)
+	}
+	if len(calls) != 1 || calls[0].verb != "disable" {
+		t.Fatalf("helper calls = %+v, want one disable", calls)
+	}
+
+	stubLifecycle(t, fixedStatus(service.StateRunning), recordHelper(new([]helperCall), nil))
+	if err := (&ServiceService{}).SetStartAtBoot(context.Background(), true); err == nil {
+		t.Fatal("SetStartAtBoot = nil, want an error when the OS did not apply it")
+	}
+}

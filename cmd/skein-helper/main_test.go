@@ -9,7 +9,7 @@ import (
 
 var retainedVerbs = []string{
 	"bootstrap", "install", "uninstall", "start", "stop", "restart",
-	"status", "grant-user", "revoke-user", "set-owner",
+	"enable", "disable", "status", "grant-user", "revoke-user", "set-owner",
 }
 
 var removedVerbEndpoints = map[string]string{

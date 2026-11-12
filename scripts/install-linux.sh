@@ -12,7 +12,9 @@
 # Fresh install writes files/policy/group only. The desktop create/join
 # bootstrap registers the service; this script never invents config or tokens.
 # Upgrade stops the service before replacing binaries, then runs
-# skein-helper install and requires running+enabled, keeping /etc/skein.
+# skein-helper install and requires running, keeping /etc/skein. The
+# service is registered manual-start by default: the desktop starts it
+# when opened, and Settings → Service can enable boot start.
 # The daemon applies firewall rules when a network connects.
 
 set -euo pipefail
@@ -629,17 +631,16 @@ if [ "$HAD_CONFIG" -eq 1 ]; then
         *'"ok":true'*) ;;
         *) die "skein-helper install did not report success" ;;
     esac
+    # Manual start is the new default. Clear a boot-start symlink left by
+    # an older install; Settings → Service turns it back on if wanted.
+    run_root systemctl disable skein.service >/dev/null 2>&1 || true
     st=$(run_root /usr/libexec/skein-helper status 2>&1 || true)
-    if ! grep -q '"state":"running"' <<<"$st" || ! grep -q '"enabled":true' <<<"$st"; then
-        run_root systemctl enable skein.service >/dev/null 2>&1 || true
-        st=$(run_root /usr/libexec/skein-helper status 2>&1 || true)
-    fi
-    if ! grep -q '"state":"running"' <<<"$st" || ! grep -q '"enabled":true' <<<"$st"; then
+    if ! grep -q '"state":"running"' <<<"$st"; then
         printf '%s\n' "$st" >&2
         run_root systemctl status skein.service --no-pager >&2 || true
         command -v journalctl >/dev/null 2>&1 \
             && run_root journalctl -u skein.service -n 20 --no-pager >&2 || true
-        die "the service did not reach running+enabled; config/identity were kept"
+        die "the service did not reach running; config/identity were kept"
     fi
 fi
 

@@ -43,7 +43,10 @@ to the daemon control API):
                         secret-rotation endpoint sequence restarts
                         the service through it, and no daemon
                         endpoint restarts the service)
-  status                service state (unprivileged)
+  enable | disable      start the service at boot / only on demand.
+                        Registration is manual by default: the desktop
+                        starts the service when it opens.
+  status                service state and boot policy (unprivileged)
   grant-user <uid> [--role read|mutate|secret]
                         (Linux) persist uid in the access file and apply the socket ACL;
                         default role is mutate (explicit human elevation, not a
@@ -213,7 +216,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var privilegedVerb bool
 	switch verb {
-	case "bootstrap", "install", "uninstall", "start", "stop", "restart", "grant-user", "set-owner", "revoke-user":
+	case "bootstrap", "install", "uninstall", "start", "stop", "restart", "enable", "disable", "grant-user", "set-owner", "revoke-user":
 		privilegedVerb = true
 	case "status", "help", "-h", "--help":
 	default:
@@ -255,6 +258,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		st, _ := service.ReadStatus()
 		return result(stdout, nil, map[string]any{"state": string(st.State)})
+	case "enable", "disable":
+		var err error
+		if verb == "enable" {
+			err = service.Enable()
+		} else {
+			err = service.Disable()
+		}
+		if err != nil {
+			return fail(stdout, err)
+		}
+		st, _ := service.ReadStatus()
+		return result(stdout, nil, map[string]any{"enabled": st.Enabled})
 	case "status":
 		st, err := service.ReadStatus()
 		if err != nil {

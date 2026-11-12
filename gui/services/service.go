@@ -41,7 +41,12 @@ func (s *ServiceService) Status(context.Context) (api.ServiceStatus, error) {
 	if err != nil {
 		return api.ServiceStatus{State: "error", Manager: managerName(), LastError: err.Error()}, nil
 	}
-	return api.ServiceStatus{State: string(st.State), Manager: managerName(), Installed: st.State != service.StateMissing}, nil
+	return api.ServiceStatus{
+		State:     string(st.State),
+		Manager:   managerName(),
+		Installed: st.State != service.StateMissing,
+		Enabled:   st.Enabled,
+	}, nil
 }
 
 func (s *ServiceService) Install(ctx context.Context) error {
@@ -62,6 +67,26 @@ func (s *ServiceService) Restart(ctx context.Context) error {
 
 func (s *ServiceService) Uninstall(ctx context.Context) error {
 	return s.mutate(ctx, "uninstall", wantMissing)
+}
+
+// SetStartAtBoot turns boot start on or off and verifies the OS state.
+// Registration is manual by default; this is the explicit opt-in.
+func (s *ServiceService) SetStartAtBoot(ctx context.Context, enabled bool) error {
+	verb := "disable"
+	if enabled {
+		verb = "enable"
+	}
+	if err := runHelper(ctx, verb); err != nil {
+		return &plainError{msg: fmt.Sprintf("The start-at-boot setting could not be changed. Details: %s", err), cause: err}
+	}
+	st, err := readServiceStatus()
+	if err != nil {
+		return &plainError{msg: fmt.Sprintf("The start-at-boot setting could not be verified. Details: %s", err), cause: err}
+	}
+	if st.Enabled != enabled {
+		return &plainError{msg: "The service did not apply the start-at-boot setting. Open Diagnostics → Logs, then retry."}
+	}
+	return nil
 }
 
 // InstallWithDaemon is Install with the packaging-known daemon path

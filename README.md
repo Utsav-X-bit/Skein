@@ -70,7 +70,7 @@ Launch **Skein** from your application menu, or run:
 skein-desktop
 ```
 
-Continue with [Connect your devices](#connect-your-devices). On a fresh installation, the service is registered and started when you create or join a network—not before.
+Continue with [Connect your devices](#connect-your-devices). On a fresh installation, the service is registered and started when you create or join a network—not before. It is manual-start: opening the desktop starts it, it does not start at boot, and **Settings → Service → Start at boot** enables boot start when you want a headless node.
 
 <details>
 <summary>Preview the install or use binaries you already built</summary>
@@ -115,7 +115,7 @@ You do **not** need to download Wintun separately. The Setup executable bundles 
 
 `-ExecutionPolicy Bypass` applies only to that PowerShell process; it does not permanently change your execution policy. Review scripts before running them, and do not disable SmartScreen or antivirus protection to force an installation.
 
-The Setup executable installs the desktop, daemon, helper, CLI, and Wintun together in `%ProgramFiles%\Skein` (normally `C:\Program Files\Skein`). This location is fixed so setup still works after a network reset. On a fresh installation, creating or joining a network registers and starts the service.
+The Setup executable installs the desktop, daemon, helper, CLI, and Wintun together in `%ProgramFiles%\Skein` (normally `C:\Program Files\Skein`). This location is fixed so setup still works after a network reset. On a fresh installation, creating or joining a network registers and starts the service. It is manual-start: opening the desktop starts it, and **Settings → Service → Start at boot** enables boot start.
 
 <details>
 <summary>Build without installing, ARM64, or manual prerequisites</summary>

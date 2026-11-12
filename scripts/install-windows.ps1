@@ -227,6 +227,10 @@ if (-not $SkipService) {
         & $helper install --daemon (Join-Path $InstallDir "skeind.exe")
         if ($LASTEXITCODE -ne 0) { Fail "skein-helper install failed (exit $LASTEXITCODE)." }
 
+        # Manual start is the new default: clear an auto-start left by an
+        # older install. Settings -> Service turns it back on if wanted.
+        & $helper disable | Out-Null
+
         Write-Host "Verifying service status..."
         & $helper status
         if ($LASTEXITCODE -ne 0) { Fail "skein-helper status failed (exit $LASTEXITCODE)." }

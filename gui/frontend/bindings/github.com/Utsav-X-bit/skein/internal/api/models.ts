@@ -316,6 +316,7 @@ export interface ServiceStatus {
     "state": string;
     "manager": string;
     "installed": boolean;
+    "enabled": boolean;
     "version"?: string;
     "last_error"?: string;
 }

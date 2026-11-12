@@ -43,8 +43,12 @@ required them.
   Retry-stop-only partial completion, one-time bootstrap secret.
 - Command palette, session notifications, cross-surface filters.
 
-### Fixed
+### Changed
 
+- The system service is manual-start by default: it no longer starts at boot.
+  Opening Skein Desktop starts it, and Settings → Service has a "Start at
+  boot" switch for headless nodes. Upgrades clear a boot-start left by an
+  older install; re-enable it in Settings → Service.
 - Service failures are explained in plain language instead of showing the
   helper's JSON envelope and internal state names. A missing service unit now
   points at setup, and the onboarding offers "Back to setup" rather than a

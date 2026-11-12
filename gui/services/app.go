@@ -2,9 +2,11 @@ package services
 
 import (
 	"context"
+	"log"
 	"runtime"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
+	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
@@ -18,7 +20,23 @@ func (s *AppService) ServiceStartup(ctx context.Context, _ any) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	go s.watchEvents(streamCtx)
+	// The service is manual-start by default: opening the desktop starts it.
+	go startInstalledService(streamCtx)
 	return nil
+}
+
+// startInstalledService starts an installed, stopped service so launching the
+// desktop brings the mesh up without a boot-time unit. It never installs, and
+// it leaves a running or mid-transition service alone.
+func startInstalledService(ctx context.Context) {
+	st, err := readServiceStatus()
+	if err != nil || st.State == service.StateMissing || st.State == service.StateRunning ||
+		st.State == service.StateStarting || st.State == service.StateStopping {
+		return
+	}
+	if err := (&ServiceService{}).Start(ctx); err != nil {
+		log.Printf("skein: desktop: starting the service on launch: %v", err)
+	}
 }
 
 // ServiceShutdown stops the event subscription.

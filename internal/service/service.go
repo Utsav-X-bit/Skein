@@ -44,6 +44,14 @@ func Stop() error { return stop() }
 // Restart restarts the service. It needs elevation (helper verbs).
 func Restart() error { return restart() }
 
+// Enable makes the service start at boot. It needs elevation (helper verbs).
+// The default registration is manual: the desktop starts the service when it
+// is opened, and this is the opt-in for a headless node.
+func Enable() error { return enable() }
+
+// Disable returns the service to manual start (the default).
+func Disable() error { return disable() }
+
 // Install registers the daemon as a system service. Step 6: the
 // candidate is validated (skeind only, regular non-symlink file,
 // non-world-writable parent) before any registration write, so a

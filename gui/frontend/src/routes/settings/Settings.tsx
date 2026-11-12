@@ -197,6 +197,20 @@ export function Settings() {
     },
   });
 
+  // Boot start is a policy, not a lifecycle state: the helper changes the
+  // unit/SCM start type and ServiceService re-reads it before returning.
+  const boot = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      await ServiceService.SetStartAtBoot(enabled);
+      return ServiceService.Status();
+    },
+    onSuccess: (status) => {
+      qc.setQueryData(["service"], status);
+      toast.success(status.enabled ? "The service will start at boot." : "The service starts when you open Skein Desktop.");
+    },
+    onError: (e) => toast.error(errDisplay(e)),
+  });
+
   const svc = useQuery({
     queryKey: ["service"],
     queryFn: () => ServiceService.Status(),
@@ -342,6 +356,21 @@ export function Settings() {
             <span>installed: {svc.data ? (svc.data.installed ? "yes" : "no") : "unknown"}</span>
             {svc.data?.version && <span>version: {svc.data.version}</span>}
             {svc.isError && <span role="status">state unavailable: {errDisplay(svc.error)}</span>}
+          </div>
+
+          <div className="flex items-start justify-between gap-4 rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3">
+            <div>
+              <div className="text-sm font-medium">Start at boot</div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+                Off by default. The service starts when you open Skein Desktop; turn this on to keep the mesh up after a reboot without the app.
+              </p>
+            </div>
+            <Switch
+              checked={svc.data?.enabled ?? false}
+              disabled={busy || boot.isPending || !svc.data?.installed}
+              onCheckedChange={(value) => boot.mutate(value)}
+              aria-label="Start the service at boot"
+            />
           </div>
 
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface-raised)] p-3 text-xs leading-relaxed text-[var(--text-muted)]">

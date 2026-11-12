@@ -33,7 +33,7 @@ func install(executable, configPath string) error {
 	if err != nil {
 		return err
 	}
-	if out, err := scCmd("create", Name, "binPath=", binPath, "start=", "auto", "DisplayName=", "Skein mesh VPN").CombinedOutput(); err != nil {
+	if out, err := scCmd("create", Name, "binPath=", binPath, "start=", "demand", "DisplayName=", "Skein mesh VPN").CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc create: %w: %s", err, out)
 	}
 	if out, err := scCmd("description", Name, "Skein mesh VPN daemon").CombinedOutput(); err != nil {
@@ -43,6 +43,23 @@ func install(executable, configPath string) error {
 	if out, err := scCmd("failure", Name, "reset=86400",
 		"actions=restart/5000/restart/10000/restart/30000").CombinedOutput(); err != nil {
 		return fmt.Errorf("service: sc failure: %w: %s", err, out)
+	}
+	return nil
+}
+
+func enable() error {
+	return scStartMode("auto")
+}
+
+func disable() error {
+	return scStartMode("demand")
+}
+
+// scStartMode sets the SCM start type: auto starts at boot, demand is the
+// manual default.
+func scStartMode(mode string) error {
+	if out, err := scCmd("config", Name, "start=", mode).CombinedOutput(); err != nil {
+		return fmt.Errorf("service: sc config start=%s: %w: %s", mode, err, out)
 	}
 	return nil
 }
