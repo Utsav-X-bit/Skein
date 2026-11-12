@@ -1,6 +1,12 @@
-import { BaseEdge, getStraightPath, type Edge, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 
-export type MeshEdgeData = { flowing: boolean; color: string };
+export type MeshEdgeData = {
+  flowing: boolean;
+  color: string;
+  /** Short label rendered at the edge midpoint (advertised peer links). */
+  label?: string;
+  curvature?: number;
+};
 export type MeshFlowEdge = Edge<MeshEdgeData, "mesh">;
 
 /**
@@ -12,18 +18,23 @@ export function MeshEdge({
   id,
   sourceX,
   sourceY,
+  sourcePosition,
   targetX,
   targetY,
+  targetPosition,
   markerEnd,
   interactionWidth,
   style,
   data,
 }: EdgeProps<MeshFlowEdge>) {
-  const [edgePath] = getStraightPath({
+  const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
+    sourcePosition,
     targetX,
     targetY,
+    targetPosition,
+    curvature: data?.curvature ?? 0.2,
   });
   return (
     <>
@@ -32,6 +43,30 @@ export function MeshEdge({
         <circle r={2.5} fill={data.color} pointerEvents="none">
           <animateMotion path={edgePath} dur="2s" repeatCount="indefinite" />
         </circle>
+      )}
+      {data?.label && (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px) translateY(-11px)`,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              color: "var(--text-muted)",
+              borderRadius: 999,
+              padding: "2px 6px",
+              fontFamily: "var(--font-mono)",
+              fontSize: 8,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+            }}
+          >
+            {data.label}
+          </div>
+        </EdgeLabelRenderer>
       )}
     </>
   );

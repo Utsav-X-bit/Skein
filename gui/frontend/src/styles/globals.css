@@ -180,3 +180,41 @@
 .react-flow__minimap, .react-flow__minimap svg { background: #101216 !important; }
 .react-flow__minimap-mask { fill: rgba(0,0,0,.55) !important; }
 .react-flow__controls { background: var(--surface) !important; border: 1px solid var(--border); border-radius: 8px; }
+
+/* Mesh canvas: quiet dot grid over a faint accent glow, so the cards and
+   links carry the hierarchy. */
+.mesh-canvas {
+  background:
+    radial-gradient(ellipse 60% 55% at 50% 45%, color-mix(in oklch, var(--accent) 6%, transparent), transparent 70%),
+    var(--surface);
+}
+
+.react-flow__controls {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 9px !important;
+  overflow: hidden;
+  box-shadow: 0 8px 24px -16px #000;
+}
+.react-flow__controls-button {
+  width: 28px !important;
+  height: 28px !important;
+  background: var(--surface) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-muted) !important;
+  fill: var(--text-muted) !important;
+}
+.react-flow__controls-button:hover {
+  background: var(--surface-raised) !important;
+  color: var(--text) !important;
+  fill: var(--text) !important;
+}
+.react-flow__controls-button:last-child {
+  border-bottom: 0 !important;
+}
+.react-flow__controls-button svg {
+  fill: currentColor !important;
+  max-width: 12px;
+  max-height: 12px;
+}

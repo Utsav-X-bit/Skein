@@ -72,6 +72,8 @@ it("attaches straight links to facing card sides in every direction", () => {
   expect(facingSides(-150, 0)).toEqual(["left", "right"]);
   expect(facingSides(150, -40)).toEqual(["right", "left"]);
   expect(facingSides(-40, 150)).toEqual(["bottom", "top"]);
+  expect(facingSides(150, -150)).toEqual(["top", "bottom"]);
+  expect(facingSides(-150, -150)).toEqual(["top", "bottom"]);
 });
 
 describe("computeRate", () => {

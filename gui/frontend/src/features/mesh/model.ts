@@ -64,7 +64,10 @@ const ActiveWindowMs = 10_000;
 
 /** Attach a straight link to the two card sides facing one another. */
 export function facingSides(dx: number, dy: number): [string, string] {
-  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? ["right", "left"] : ["left", "right"];
+  // Prefer the vertical handles when the axes are close. At a 45° fan the
+  // floating-point difference between dx and dy would otherwise give two
+  // symmetric peers different attachment sides.
+  if (Math.abs(dx) > Math.abs(dy) * 1.2) return dx > 0 ? ["right", "left"] : ["left", "right"];
   return dy > 0 ? ["bottom", "top"] : ["top", "bottom"];
 }
 

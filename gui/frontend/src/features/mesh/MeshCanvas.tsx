@@ -31,8 +31,8 @@ type NodeData = {
 type LayoutEntry = { id: string; direct: boolean; hops: number | null };
 
 const Center = { x: 360, y: 250 };
-const InnerRadius = 190;
-const OuterRadius = 300;
+const InnerRadius = 260;
+const OuterRadius = 380;
 const HandlePositions = [Position.Top, Position.Right, Position.Bottom, Position.Left];
 
 // Positions depend only on the sorted node-id list plus direct/hop facts, so
@@ -45,14 +45,19 @@ function positionsFor(layout: LayoutEntry[], self: string): Map<string, { x: num
     .filter((e) => e.id !== self && !e.direct)
     .sort((a, b) => (a.hops ?? Number.MAX_SAFE_INTEGER) - (b.hops ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id));
   const place = (entries: LayoutEntry[], radius: number, start: number) => {
-    // Two peers evenly spaced sit opposite each other, so the edge between
-    // them runs straight through the centre card and disappears behind it.
-    // A minimum of three positions keeps that chord on one side of the hub.
-    const step = (Math.PI * 2) / Math.max(3, entries.length);
+    if (entries.length === 0) return;
+    // Small meshes read best as a fan above the hub: two peers sit diagonally
+    // left and right, so their mutual edge is a visible chord instead of a
+    // line hidden behind the centre card. Four or more fill the ring.
+    const fan = entries.length <= 3;
+    const spread = fan ? Math.PI / 2 : Math.PI * 2;
+    const step = entries.length > 1 ? spread / (entries.length - 1) : 0;
+    const first = fan ? -Math.PI / 2 - spread / 2 : start;
     entries.forEach((entry, i) => {
+      const angle = entries.length === 1 ? -Math.PI / 2 : first + i * step;
       positions.set(entry.id, {
-        x: Center.x + Math.cos(start + i * step) * radius,
-        y: Center.y + Math.sin(start + i * step) * radius,
+        x: Center.x + Math.cos(angle) * radius,
+        y: Center.y + Math.sin(angle) * radius,
       });
     });
   };
@@ -107,14 +112,24 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
       }}
       onClick={() => onSelect(node.id)}
       style={{
-        background: palette.card,
+        background: `linear-gradient(180deg, ${palette.card}, color-mix(in oklch, ${palette.card} 86%, #000))`,
         color: palette.text,
-        borderColor: selected ? palette.accent : palette.border,
-        boxShadow: selected ? `0 0 0 1px ${palette.accent}` : undefined,
+        borderColor:
+          selected
+            ? palette.accent
+            : node.kind === "self"
+              ? `color-mix(in oklch, ${palette.accent} 45%, ${palette.border})`
+              : palette.border,
+        boxShadow:
+          node.kind === "self"
+            ? `0 0 0 1px ${palette.accent}22, 0 14px 32px -18px ${palette.accent}66`
+            : selected
+              ? `0 0 0 1px ${palette.accent}`
+              : undefined,
       }}
       className={cn(
-        "w-[168px] cursor-pointer rounded-lg border px-3 py-2 text-left shadow-lg outline-none",
-        "focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+        "w-[178px] cursor-pointer rounded-[14px] border px-3 pb-2.5 pt-2.5 text-left shadow-lg outline-none transition-colors",
+        "hover:border-[var(--border-strong)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
       )}
     >
       {HandlePositions.map((position) => (
@@ -123,8 +138,7 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
           <Handle id={`target-${position}`} type="target" position={position} isConnectable={false} style={{ visibility: "hidden" }} />
         </Fragment>
       ))}
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-xs font-medium">{node.label}</span>
+      <div className="flex items-center gap-2">
         <span
           aria-hidden
           className="h-2 w-2 shrink-0 rounded-full"
@@ -135,11 +149,25 @@ function MeshNodeView({ data }: NodeProps<Node<NodeData>>) {
                 : node.state === "degraded"
                   ? palette.relay
                   : palette.faint,
+            boxShadow: node.state === "up" || node.kind === "self" ? `0 0 8px ${palette.up}88` : undefined,
           }}
         />
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-tight">{node.label}</span>
+        {node.kind === "self" && (
+          <span
+            className="shrink-0 rounded-full border px-1.5 py-0.5 text-[8px] tracking-[0.12em]"
+            style={{
+              borderColor: `color-mix(in oklch, ${palette.accent} 35%, transparent)`,
+              color: palette.accent,
+              background: `color-mix(in oklch, ${palette.accent} 8%, transparent)`,
+            }}
+          >
+            HUB
+          </span>
+        )}
       </div>
-      <div className="mono-label mt-1 truncate" style={{ color: palette.faint }}>{node.overlay ?? shortID(node.id)}</div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-[10px]" style={{ color: palette.muted }}>
+      <div className="mt-1 truncate font-mono text-[10px]" style={{ color: palette.faint }}>{node.overlay ?? shortID(node.id)}</div>
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px]" style={{ color: palette.muted }}>
         <span className="truncate">{node.kind === "self" ? "up · this device" : `${node.state} · ${node.transport ?? "unknown"}`}</span>
         <span className="tabular shrink-0">{node.rttMs !== undefined ? `${Math.round(node.rttMs)} ms` : "—"}</span>
       </div>
@@ -192,8 +220,12 @@ export function MeshCanvas({
   const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self), [layoutKey, self]);
   const rates = useMemo(() => linkRates(activities), [activities]);
 
+  const nameOf = useMemo(
+    () => (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id)),
+    [peers, self],
+  );
+
   const nodes = useMemo(() => {
-    const nameOf = (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id));
     return model.nodes.map((node) => {
       const route = model.paths.find((p) => p.destination === node.id);
       const routeText =
@@ -216,7 +248,7 @@ export function MeshCanvas({
         style: { background: "transparent", border: "none", padding: 0, boxShadow: "none" },
       };
     });
-  }, [model.nodes, model.paths, peers, positions, selectedPeer, onSelectPeer, mode]);
+  }, [model.nodes, model.paths, peers, positions, selectedPeer, onSelectPeer, mode, nameOf]);
 
   const edges = useMemo(
     () =>
@@ -233,6 +265,12 @@ export function MeshCanvas({
               : edge.evidence === "advertised"
                 ? "var(--warning)"
                 : "var(--text-faint)";
+        const label =
+          edge.evidence === "advertised"
+            ? edge.hops === 1
+              ? "advertised"
+              : `via ${nameOf(edge.path?.[1] ?? edge.to)}`
+            : undefined;
         const from = positions.get(edge.from) ?? Center;
         const to = positions.get(edge.to) ?? Center;
         const [sourceSide, targetSide] = facingSides(to.x - from.x, to.y - from.y);
@@ -244,18 +282,18 @@ export function MeshCanvas({
           targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
-          data: { flowing, color },
+          data: { flowing, color, label, curvature: edge.evidence === "advertised" ? 0.32 : 0.18 },
           style: {
             stroke: color,
-            strokeWidth: selected ? 2.6 : 1.5,
+            strokeWidth: selected ? 2.8 : edge.evidence === "direct" ? 2 : 1.6,
             strokeDasharray:
-              edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "1 4" : undefined,
-            opacity: edge.evidence === "route" ? 0.55 : edge.evidence === "advertised" ? 0.8 : 1,
+              edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "1 5" : undefined,
+            opacity: edge.evidence === "route" ? 0.5 : edge.evidence === "advertised" ? 0.9 : 1,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
       }),
-    [model.edges, positions, self, peerRates, rates, motion, selectedLink],
+    [model.edges, positions, self, peerRates, rates, motion, selectedLink, nameOf],
   );
 
   useEffect(() => {
@@ -281,7 +319,7 @@ export function MeshCanvas({
             Table
           </Button>
         </div>
-        <div className="flex flex-wrap items-center gap-4 text-[11px] text-[var(--text-muted)]">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> direct</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> observed</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--warning)]" /> advertised</span>
@@ -290,7 +328,7 @@ export function MeshCanvas({
         </div>
       </div>
 
-      <div className="relative h-[clamp(360px,55vh,560px)] w-full overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
+      <div className="mesh-canvas relative h-[clamp(360px,55vh,560px)] w-full overflow-hidden rounded-lg border border-[var(--border)]">
         <div
           // display:none, not visibility:hidden: React Flow sets an inline
           // visibility on in-viewport nodes, which would override an
@@ -311,7 +349,7 @@ export function MeshCanvas({
             edgesFocusable={mode === "map"}
             elementsSelectable
             fitView
-            fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
+            fitViewOptions={{ padding: 0.2, maxZoom: 1.3 }}
             minZoom={0.4}
             maxZoom={1.6}
             onNodeClick={(_, node) => onSelectPeer(node.id)}
