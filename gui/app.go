@@ -43,6 +43,7 @@ func New() *App {
 	application.RegisterEvent[api.Event](services.EventSystemReset)
 	application.RegisterEvent[api.Event](services.EventSystemImported)
 	application.RegisterEvent[api.Event](services.EventLeaveDataplaneStopFailed)
+	application.RegisterEvent[services.VpnPermissionEvent](services.EventVpnPermission)
 
 	var a *App
 	a = &App{

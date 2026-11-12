@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/app"
+	"github.com/Utsav-X-bit/skein/internal/bootstrap"
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/daemon"
 	"github.com/Utsav-X-bit/skein/internal/identity"
@@ -42,7 +44,170 @@ var (
 	d        *daemon.Daemon
 	cancel   context.CancelFunc
 	runDone  chan error
+
+	// Bootstrap-mode server state (onboarding only). The bootstrap
+	// daemon holds the config-store lock from NewBootstrap until
+	// Close, so it must be stopped — by success, by cancel, or by
+	// Start — before the normal daemon can start.
+	bsMu    sync.Mutex
+	bs      *daemon.Bootstrap
+	bsSrv   *http.Server
+	bsToken string
+	bsVerb  string
 )
+
+// FilesDir returns the app-private files dir SetFilesDir recorded,
+// or "" before the Java side reports it (MainActivity.onCreate).
+func FilesDir() string {
+	hostMu.Lock()
+	defer hostMu.Unlock()
+	return filesDir
+}
+
+// ConfigExists reports whether a network config already exists in
+// the app-private files dir.
+func ConfigExists() bool {
+	hostMu.Lock()
+	dir := filesDir
+	hostMu.Unlock()
+	if dir == "" {
+		dir = app.SystemConfigPath()
+		// SystemConfigPath already joins the dir; use it directly.
+		_, err := os.Stat(dir)
+		return err == nil
+	}
+	_, err := os.Stat(filepath.Join(dir, "skein.toml"))
+	return err == nil
+}
+
+// EnsureBootstrap mints a single-use bootstrap token for verb and
+// serves the daemon's bootstrap-only API over the in-process
+// transport, so the GUI's SetupService.Init/Join/Import can post
+// exactly as on desktop — but with no helper and no system service:
+// the token is minted in-process (same UID, no elevation) and the
+// endpoint is served in-process. The token is stored here so the
+// services layer returns this exact token instead of minting a
+// second one: bootstrap.Mint refuses while a valid token exists
+// ("already in progress"), and NewBootstrap requires a valid state.
+//
+// Callers must call StopBootstrap when onboarding is abandoned; a
+// successful bootstrap stops itself via the outcome watcher below.
+func EnsureBootstrap(verb string) error {
+	hostMu.Lock()
+	dir := filesDir
+	hostMu.Unlock()
+	if dir == "" {
+		return errors.New("android: files dir not set; call SetFilesDir first")
+	}
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	if bs != nil {
+		if bsVerb == verb {
+			return nil
+		}
+		// Switching verbs: the stored token is bound to the old
+		// verb, so cancel it before minting for the new one.
+		_ = stopBootstrapLocked()
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skein.toml")); err == nil {
+		return errors.New("android: already configured; bootstrap is closed")
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("android: bootstrap config check: %w", err)
+	}
+	token, err := app.MintBootstrapToken(verb)
+	if err != nil {
+		return fmt.Errorf("android: mint bootstrap token: %w", err)
+	}
+	bsrv, err := daemon.NewBootstrap(daemon.BootstrapOptions{
+		ConfigPath:   filepath.Join(dir, "skein.toml"),
+		IdentityPath: filepath.Join(dir, "identity.key"),
+		StatePath:    app.BootstrapStatePath(),
+		AccessPath:   app.AccessPath,
+	})
+	if err != nil {
+		_ = bootstrap.DeleteState(app.BootstrapStatePath())
+		return fmt.Errorf("android: bootstrap server: %w", err)
+	}
+	// Serve the bootstrap-only handler over the in-process listener
+	// with the same ConnContext as the normal control server, so the
+	// handler sees the app's UID as the kernel caller.
+	srv := &http.Server{Handler: bsrv.Handler(), ConnContext: api.CallerContext}
+	go func() { _ = srv.Serve(inproc.Default) }()
+	bs, bsSrv, bsToken, bsVerb = bsrv, srv, token, verb
+	go watchBootstrapOutcome(bsrv)
+	return nil
+}
+
+// watchBootstrapOutcome closes a committed bootstrap (releasing the
+// config-store lock) and resets the in-process listener, so the
+// normal daemon can start cleanly afterwards. It watches until the
+// bootstrap token's TTL is safely past (12 minutes), then gives up:
+// a failed or abandoned bootstrap is left for StopBootstrap. The
+// watcher must outlive the user's form-filling, not just the POST.
+func watchBootstrapOutcome(bsrv *daemon.Bootstrap) {
+	for i := 0; i < 3600; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if _, ok := bsrv.Outcome(); ok {
+			_ = StopBootstrap()
+			return
+		}
+		bsMu.Lock()
+		current := bs
+		bsMu.Unlock()
+		if current != bsrv {
+			return
+		}
+	}
+}
+
+// TakeBootstrapToken returns the token EnsureBootstrap minted for
+// verb, exactly once. The SetupService mint override calls this so a
+// second mint (which bootstrap.Mint would refuse) never happens.
+func TakeBootstrapToken(verb string) (string, bool) {
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	if bs == nil || bsVerb != verb || bsToken == "" {
+		return "", false
+	}
+	tok := bsToken
+	bsToken = ""
+	return tok, true
+}
+
+// BootstrapRunning reports whether the onboarding bootstrap server
+// is up.
+func BootstrapRunning() bool {
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	return bs != nil
+}
+
+// StopBootstrap closes the bootstrap server (releasing the config
+// lock) and resets the in-process listener. Safe to call when no
+// bootstrap is running.
+func StopBootstrap() error {
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	return stopBootstrapLocked()
+}
+
+func stopBootstrapLocked() error {
+	if bs == nil {
+		return nil
+	}
+	bsrv := bs
+	srv := bsSrv
+	bs, bsSrv, bsToken, bsVerb = nil, nil, "", ""
+	// Close the HTTP server first so Serve unblocks, then release
+	// the config-store lock; Reset drops the listener the bootstrap
+	// handler served, so a later daemon gets a fresh one (host.Start
+	// also Resets, but an abandoned onboarding must not wait for that).
+	if srv != nil {
+		_ = srv.Close()
+	}
+	inproc.Reset()
+	return bsrv.Close()
+}
 
 // SetFilesDir points the daemon and the app paths at the app's
 // private files dir (Context.getFilesDir() from Java). It must be
@@ -82,6 +247,9 @@ func Started() bool {
 // the VpnService has established the TUN and SetTunFd has delivered
 // the FD.
 func Start() error {
+	// An abandoned onboarding bootstrap holds the config-store lock;
+	// stop it before the normal daemon tries to acquire it.
+	_ = StopBootstrap()
 	hostMu.Lock()
 	defer hostMu.Unlock()
 	if d != nil {

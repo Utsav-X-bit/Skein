@@ -114,6 +114,19 @@ func mintBootstrapToken(verb, cfgPath, keyPath, statePath string) (string, error
 	return base64.RawURLEncoding.EncodeToString(token), nil
 }
 
+// MintBootstrapToken mints a single-use bootstrap token for verb and
+// returns it, without installing or starting any service. The caller
+// is responsible for serving the bootstrap endpoint the token is
+// presented to. This is the Android path: the GUI and the daemon are
+// the same UID in one process, so there is no helper to mint through
+// and no service to install — the in-process bootstrap server (see
+// internal/android) serves the endpoint directly. The token is
+// single-use with a 10-minute TTL, bound to the invoking caller, and
+// is never logged; it lives only in memory until presented once.
+func MintBootstrapToken(verb string) (string, error) {
+	return mintBootstrapToken(verb, SystemConfigPath(), SystemIdentityPath(), BootstrapStatePath())
+}
+
 func MintBootstrap(verb string) (string, error) {
 	cfgPath := SystemConfigPath()
 	statePath := BootstrapStatePath()

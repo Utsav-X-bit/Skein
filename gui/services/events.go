@@ -80,6 +80,7 @@ var EventPayloads = map[string]any{
 	EventServiceChanged:    api.ServiceStatus{},
 	EventUpdateAvailable:   UpdateInfo{},
 	EventPeerProbe:         api.ProbeResult{},
+	EventVpnPermission:     VpnPermissionEvent{},
 }
 
 // watchEvents subscribes to the daemon SSE stream and re-emits typed Wails

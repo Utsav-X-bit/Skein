@@ -20,6 +20,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.ConsoleMessage;
@@ -34,6 +35,7 @@ import android.webkit.WebViewClient;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.webkit.WebViewAssetLoader;
 
@@ -58,6 +60,13 @@ public class MainActivity extends AppCompatActivity {
     private static final String WAILS_SCHEME = "https";
     private static final String WAILS_HOST = "wails.localhost";
     private static final int FILE_PICKER_REQUEST = 7001;
+    // System VPN consent dialog (VpnService.prepare()).
+    private static final int VPN_REQUEST_CODE = 7005;
+
+    // The live activity, for the Go side's static VPN entry points
+    // (requestVpnPermission and friends are instance methods called
+    // from Go through the cached JNI activity reference).
+    private static MainActivity instance;
 
     private WebView webView;
     private Uri devServer;
@@ -90,9 +99,14 @@ public class MainActivity extends AppCompatActivity {
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
 
+    // Go natives implemented in libwails.so (gui/jni_android.go).
+    private native void nativeInitSkeinBridge(String filesDir);
+    private native void nativeVpnPermissionResult(boolean granted);
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
         setContentView(R.layout.activity_main);
 
         String devURL = WailsBridge.devServerURL(this);
@@ -101,6 +115,15 @@ public class MainActivity extends AppCompatActivity {
         // Initialize the native Go library
         bridge = new WailsBridge(this);
         bridge.initialize();
+
+        // Hand Go the JVM/activity reference and the app-private files
+        // dir before any VPN flow runs. Safe to call before the page
+        // loads: it only caches references and records the dir.
+        try {
+            nativeInitSkeinBridge(getFilesDir().getAbsolutePath());
+        } catch (UnsatisfiedLinkError e) {
+            Log.w(TAG, "nativeInitSkeinBridge unavailable (desktop/dev build?)", e);
+        }
 
         // Set up WebView
         setupWebView();
@@ -276,6 +299,75 @@ public class MainActivity extends AppCompatActivity {
         String url = devServer != null ? devServer.toString() + "/" : WAILS_SCHEME + "://" + WAILS_HOST + "/";
         if (DEBUG) Log.d(TAG, "Loading URL: " + url);
         webView.loadUrl(url);
+    }
+
+    // ---- Skein VPN permission flow (B1) ---------------------------------
+    // Called from Go (gui/jni_android.go) through the cached activity
+    // reference. All of these may arrive on a non-UI thread, so each
+    // posts to the main thread where Android requires it.
+
+    /**
+     * Launch the system VPN consent dialog. If Skein is already
+     * authorised, VpnService.prepare() returns null and the granted
+     * result is reported at once; otherwise the dialog appears and
+     * its outcome lands in onActivityResult, which reports it to Go
+     * via nativeVpnPermissionResult (the frontend learns it as the
+     * "vpn:permission" Wails event).
+     */
+    public void requestVpnPermission() {
+        runOnUiThread(() -> {
+            try {
+                Intent intent = SkeinVpnService.prepareIntent(this);
+                if (intent == null) {
+                    nativeVpnPermissionResult(true);
+                    return;
+                }
+                startActivityForResult(intent, VPN_REQUEST_CODE);
+            } catch (Exception e) {
+                Log.e(TAG, "requestVpnPermission failed", e);
+                nativeVpnPermissionResult(false);
+            }
+        });
+    }
+
+    /** True when Skein is already authorised to run a VPN. */
+    public boolean vpnPermissionGranted() {
+        return SkeinVpnService.prepareIntent(this) == null;
+    }
+
+    /** Open the system VPN settings so the user can re-enable Skein. */
+    public void openVpnSettings() {
+        runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Settings.ACTION_VPN_SETTINGS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                Log.e(TAG, "openVpnSettings failed", e);
+            }
+        });
+    }
+
+    /** Start the SkeinVpnService (daemon start + TUN + connect). */
+    public void startVpnService() {
+        runOnUiThread(() -> {
+            try {
+                ContextCompat.startForegroundService(this, SkeinVpnService.connectIntent(this));
+            } catch (Exception e) {
+                Log.e(TAG, "startVpnService failed", e);
+            }
+        });
+    }
+
+    /** Stop the SkeinVpnService (disconnect + daemon stop). */
+    public void stopVpnService() {
+        runOnUiThread(() -> {
+            try {
+                startService(SkeinVpnService.disconnectIntent(this));
+            } catch (Exception e) {
+                Log.e(TAG, "stopVpnService failed", e);
+            }
+        });
     }
 
     /**
@@ -520,6 +612,19 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == VPN_REQUEST_CODE) {
+            // The system VPN dialog was answered. Report it to Go,
+            // which records the state and emits "vpn:permission".
+            // A denial is not terminal: Android shows the dialog
+            // again on the next request; only the user revoking in
+            // system Settings makes it permanent.
+            try {
+                nativeVpnPermissionResult(resultCode == RESULT_OK);
+            } catch (UnsatisfiedLinkError e) {
+                Log.w(TAG, "nativeVpnPermissionResult unavailable", e);
+            }
+            return;
+        }
         if (requestCode == PHOTO_CAPTURE_REQUEST || requestCode == VIDEO_CAPTURE_REQUEST) {
             handleCaptureResult(resultCode, data);
             return;
@@ -926,6 +1031,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (instance == this) {
+            instance = null;
+        }
         unregisterSystemEventReceivers();
         if (bridge != null) {
             bridge.shutdown();

@@ -58,5 +58,6 @@ func AllServices() []application.Service {
 		application.NewService(&SetupService{}),
 		application.NewService(&SecurityService{}),
 		application.NewService(&IdentityService{}),
+		application.NewService(&VpnService{}),
 	}
 }
