@@ -31,8 +31,8 @@ type NodeData = {
 type LayoutEntry = { id: string; direct: boolean; hops: number | null };
 
 const Center = { x: 360, y: 250 };
-const InnerRadius = 150;
-const OuterRadius = 270;
+const InnerRadius = 190;
+const OuterRadius = 300;
 const HandlePositions = [Position.Top, Position.Right, Position.Bottom, Position.Left];
 
 // Positions depend only on the sorted node-id list plus direct/hop facts, so
