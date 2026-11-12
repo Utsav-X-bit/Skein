@@ -271,10 +271,6 @@ export function MeshCanvas({
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
         const flowing = shouldFlow(edge.evidence, rate, motion);
         const selected = selectedLink?.from === edge.from && selectedLink?.to === edge.to;
-        const label =
-          edge.evidence === "advertised" && edge.hops && edge.hops > 1
-            ? `via ${edge.path?.[1] === self ? "you" : nameOf(edge.path?.[1] ?? edge.to)}`
-            : undefined;
         const color =
           edge.evidence === "direct"
             ? "var(--accent)"
@@ -294,7 +290,7 @@ export function MeshCanvas({
           targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
-          data: { flowing, color, label },
+          data: { flowing, color },
           style: {
             stroke: color,
             strokeWidth: selected ? 2.8 : edge.evidence === "advertised" ? 2.2 : edge.evidence === "direct" ? 2 : 1.6,
@@ -308,7 +304,7 @@ export function MeshCanvas({
               : { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
         }),
-    [visibleEdges, positions, self, peerRates, rates, motion, selectedLink, nameOf],
+    [visibleEdges, positions, self, peerRates, rates, motion, selectedLink],
   );
 
   useEffect(() => {
