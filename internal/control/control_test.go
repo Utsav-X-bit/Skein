@@ -579,3 +579,41 @@ func TestDirectPeerPathIsProbedOnce(t *testing.T) {
 		t.Fatalf("probes = %d, want 1", probes)
 	}
 }
+
+// Every candidate's reply must reach the probe: the settle window compares
+// them, so a later-arriving reply cannot erase the token on the first one.
+func TestProbeChoosesTheEarliestCandidateReply(t *testing.T) {
+	f := newFixture(t)
+	slow := netip.MustParseAddrPort("198.51.100.9:11010")
+	fast := netip.MustParseAddrPort("203.0.113.7:11010")
+	if !f.peers.AddCandidate(f.peerID, slow, peer.SourceConfig) || !f.peers.AddCandidate(f.peerID, fast, peer.SourceConfig) {
+		t.Fatal("candidates not added")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := f.now
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			frames := f.eng.frames(wire.Challenge)
+			if len(frames) >= 3 {
+				token := frames[0].body
+				// The slow candidate replies first, the fast one a moment
+				// earlier on the clock; the probe must keep the earliest.
+				f.now = base.Add(10 * time.Millisecond)
+				f.ctl.HandleControl(f.peerID, slow, wire.ChallengeReply, token)
+				f.now = base.Add(2 * time.Millisecond)
+				f.ctl.HandleControl(f.peerID, fast, wire.ChallengeReply, token)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	if err := f.ctl.Probe(ctx, f.peerID); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	p, _ := f.peers.Get(f.peerID)
+	if p.ActiveEndpoint != fast {
+		t.Fatalf("active endpoint = %s, want the earliest reply %s", p.ActiveEndpoint, fast)
+	}
+}

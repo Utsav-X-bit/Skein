@@ -709,8 +709,9 @@ func (c *Controller) HandleControl(from uint64, src netip.AddrPort, typ wire.Mes
 		var token [16]byte
 		copy(token[:], payload)
 		c.mu.Lock()
+		// Do not delete the token here: the probe compares every candidate's
+		// reply during its settle window and removes the token itself.
 		waiters := c.challenges[token]
-		delete(c.challenges, token)
 		c.mu.Unlock()
 		for _, ch := range waiters {
 			select {
