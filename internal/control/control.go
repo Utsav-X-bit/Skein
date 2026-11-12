@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,9 @@ const (
 	StateInterval = 5 * time.Second
 	ProbeTimeout  = 2 * time.Second
 	PunchInterval = 30 * time.Second
+	// PathProbeInterval debounces automatic candidate probes: a peer that
+	// advertises several endpoints is probed at most this often.
+	PathProbeInterval = 15 * time.Second
 	// TombstoneRetention bounds how long a departure is re-gossiped
 	// (M4 P8): two STATE TTLs (180 s) from learning it. An offline peer
 	// that reconnects within that window to any node carrying the
@@ -104,9 +109,14 @@ type Controller struct {
 	// mtuProbed records peers whose path MTU has been measured for this
 	// connection, so a probe runs once per peer, not every tick.
 	mtuProbed map[uint64]bool
-	onEvent   func(typ string, peerID uint64)
-	onMTU     func(peerID uint64, frame int)
-	paused    bool
+	// candidatesSeen fingerprints each peer's candidate set; a change (or
+	// the first observation) probes once so a LAN address advertised after
+	// the handshake can replace the public endpoint.
+	candidatesSeen map[uint64]string
+	pathProbeAt    map[uint64]time.Time
+	onEvent        func(typ string, peerID uint64)
+	onMTU          func(peerID uint64, frame int)
+	paused         bool
 }
 
 type trafficSample struct{ rx, tx uint64 }
@@ -137,25 +147,27 @@ func New(local Local, peers *peer.Table, routes *route.Table, merger *discovery.
 		return nil, errors.New("control: all dependencies are required")
 	}
 	ctl := &Controller{
-		local:        local,
-		peers:        peers,
-		routes:       routes,
-		merger:       merger,
-		eng:          eng,
-		now:          time.Now,
-		lastPing:     make(map[uint64]time.Time),
-		firstSeen:    make(map[uint64]time.Time),
-		fallbackOn:   make(map[uint64]bool),
-		tombstones:   make(map[uint64]tombstone),
-		pendingTomb:  make(map[uint64]map[uint64]bool),
-		lastPunch:    make(map[uint64]time.Time),
-		lastPunchIn:  make(map[punchKey]time.Time),
-		punchPending: make(map[punchKey]pendingNonce),
-		observed:     make(map[uint64]netip.AddrPort),
-		challenges:   make(map[[16]byte][]chan challengeReply),
-		trafficPrev:  make(map[uint64]trafficSample),
-		lastRTT:      make(map[uint64]time.Duration),
-		mtuProbed:    make(map[uint64]bool),
+		local:          local,
+		peers:          peers,
+		routes:         routes,
+		merger:         merger,
+		eng:            eng,
+		now:            time.Now,
+		lastPing:       make(map[uint64]time.Time),
+		firstSeen:      make(map[uint64]time.Time),
+		fallbackOn:     make(map[uint64]bool),
+		tombstones:     make(map[uint64]tombstone),
+		pendingTomb:    make(map[uint64]map[uint64]bool),
+		lastPunch:      make(map[uint64]time.Time),
+		lastPunchIn:    make(map[punchKey]time.Time),
+		punchPending:   make(map[punchKey]pendingNonce),
+		observed:       make(map[uint64]netip.AddrPort),
+		challenges:     make(map[[16]byte][]chan challengeReply),
+		trafficPrev:    make(map[uint64]trafficSample),
+		lastRTT:        make(map[uint64]time.Duration),
+		mtuProbed:      make(map[uint64]bool),
+		candidatesSeen: make(map[uint64]string),
+		pathProbeAt:    make(map[uint64]time.Time),
 	}
 	merger.OnDeparted = ctl.handleDeparted
 	return ctl, nil
@@ -238,6 +250,26 @@ func (c *Controller) probeMTU(peerID uint64) {
 	}
 }
 
+// candidateKey fingerprints a peer's candidate set, ignoring order.
+func candidateKey(p peer.Peer) string {
+	addrs := make([]string, 0, len(p.Candidates))
+	for _, cand := range p.Candidates {
+		addrs = append(addrs, cand.Addr.String())
+	}
+	sort.Strings(addrs)
+	return strings.Join(addrs, ",")
+}
+
+// probePath re-evaluates a peer's candidates in the background. The first
+// candidate to answer becomes the active endpoint, so the fastest path wins.
+func (c *Controller) probePath(peerID uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), ProbeTimeout+time.Second)
+	defer cancel()
+	if err := c.Probe(ctx, peerID); err != nil {
+		log.Printf("skein: path probe for %016x: %v", peerID, err)
+	}
+}
+
 func (c *Controller) event(typ string, peerID uint64) {
 	c.mu.Lock()
 	fn := c.onEvent
@@ -297,6 +329,22 @@ func (c *Controller) Tick() {
 			go c.probeMTU(p.ID)
 		}
 		c.mu.Unlock()
+		// A responder adopts the handshake source as its endpoint. When the
+		// peer also advertises other candidates (usually its LAN address),
+		// probe once per candidate set so the fastest path wins.
+		if len(p.Candidates) > 1 {
+			key := candidateKey(p)
+			c.mu.Lock()
+			changed := c.candidatesSeen[p.ID] != key
+			canProbe := p.State == peer.StateUp && p.Direct && c.eng.HasSession(p.ID) &&
+				(c.pathProbeAt[p.ID].IsZero() || now.Sub(c.pathProbeAt[p.ID]) >= PathProbeInterval)
+			if changed && canProbe {
+				c.candidatesSeen[p.ID] = key
+				c.pathProbeAt[p.ID] = now
+				go c.probePath(p.ID)
+			}
+			c.mu.Unlock()
+		}
 		// Configured dialers connect without waiting for overlay traffic.
 		if p.Dialer {
 			_ = c.eng.EnsureSession(p.ID)
@@ -749,14 +797,34 @@ func (c *Controller) Probe(ctx context.Context, peerID uint64) error {
 	case <-timer.C:
 		return errors.New("control: no candidate answered the challenge")
 	case reply := <-ch:
-		rtt := reply.at.Sub(sentAt)
+		// Collect the replies that are already in flight for a short window
+		// and keep the earliest arrival. Processing order is not proof of
+		// which path is fastest, and a LAN address must not lose to a public
+		// one because its datagram was scheduled a moment later.
+		best := reply
+		settle := time.NewTimer(25 * time.Millisecond)
+		defer settle.Stop()
+	collect:
+		for {
+			select {
+			case r := <-ch:
+				if r.at.Before(best.at) {
+					best = r
+				}
+			case <-settle.C:
+				break collect
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		rtt := best.at.Sub(sentAt)
 		if rtt <= 0 {
 			rtt = time.Millisecond
 		}
 		// The challenge proves the peer is reachable over the path it arrived
 		// on, so that source becomes the active endpoint.
-		c.peers.SetActive(peerID, reply.addr, rtt, "udp", reply.at)
-		c.peers.AddCandidate(peerID, reply.addr, peer.SourceProbe)
+		c.peers.SetActive(peerID, best.addr, rtt, "udp", best.at)
+		c.peers.AddCandidate(peerID, best.addr, peer.SourceProbe)
 		return nil
 	}
 }
