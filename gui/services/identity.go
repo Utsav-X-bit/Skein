@@ -20,11 +20,17 @@ import (
 // elevated helper) owns them; the GUI is unprivileged. app.SystemDir is the
 // install root on every platform (it follows a redirected ProgramData on
 // Windows); the rest are the other Unix roots.
-var systemConfigDirs = []string{
-	app.SystemDir(),
-	`C:\Program Files\Skein`,
-	"/usr",
-	"/var",
+//
+// It is a function, not a package-level var: app.SystemDir on Android is
+// set from Java after startup (SetFilesDir), so a value captured at
+// package init would predate it.
+func systemConfigDirs() []string {
+	return []string{
+		app.SystemDir(),
+		`C:\Program Files\Skein`,
+		"/usr",
+		"/var",
+	}
 }
 
 // IdentityService exposes the daemon's public identity and creates an
@@ -142,7 +148,7 @@ func offlineTargetDir(targetDir string) (string, error) {
 // /private/etc) cannot be used to slip past the refusal. Windows paths
 // compare case-insensitively.
 func isSystemConfigDir(dir string) bool {
-	for _, sys := range systemConfigDirs {
+	for _, sys := range systemConfigDirs() {
 		if isUnder(sys, dir) {
 			return true
 		}
