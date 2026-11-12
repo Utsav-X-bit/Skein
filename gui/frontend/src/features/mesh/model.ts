@@ -64,11 +64,11 @@ const ActiveWindowMs = 10_000;
 
 /** Attach a straight link to the two card sides facing one another. */
 export function facingSides(dx: number, dy: number): [string, string] {
-  // Prefer the vertical handles when the axes are close. At a 45° fan the
-  // floating-point difference between dx and dy would otherwise give two
-  // symmetric peers different attachment sides.
-  if (Math.abs(dx) > Math.abs(dy) * 1.2) return dx > 0 ? ["right", "left"] : ["left", "right"];
-  return dy > 0 ? ["bottom", "top"] : ["top", "bottom"];
+  // Peers above or below the hub leave from its top/bottom, so a peer below
+  // still gets a visible diagonal instead of a short sideways stub behind
+  // the hub card. Sideways peers keep the left/right handles.
+  if (Math.abs(dy) >= Math.abs(dx) * 0.5) return dy > 0 ? ["bottom", "top"] : ["top", "bottom"];
+  return dx > 0 ? ["right", "left"] : ["left", "right"];
 }
 
 // computeRate turns two cumulative counter samples into per-second rates.

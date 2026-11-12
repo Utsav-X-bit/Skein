@@ -299,10 +299,10 @@ export function MeshCanvas({
           data: { flowing, color, label },
           style: {
             stroke: color,
-            strokeWidth: selected ? 2.8 : edge.evidence === "direct" ? 2 : 1.6,
+            strokeWidth: selected ? 2.8 : edge.evidence === "advertised" ? 2.2 : edge.evidence === "direct" ? 2 : 1.6,
             strokeDasharray:
-              edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "1 5" : undefined,
-            opacity: edge.evidence === "route" ? 0.5 : edge.evidence === "advertised" ? 0.9 : 1,
+              edge.evidence === "route" ? "2 4" : edge.evidence === "observed" ? "6 4" : edge.evidence === "advertised" ? "4 4" : undefined,
+            opacity: edge.evidence === "route" ? 0.5 : 1,
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
@@ -336,7 +336,7 @@ export function MeshCanvas({
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> direct</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> observed</span>
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--warning)]" /> advertised</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--warning)]" /> advertised</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" /> route</span>
           {!motion && <span>motion reduced · arrows only</span>}
         </div>

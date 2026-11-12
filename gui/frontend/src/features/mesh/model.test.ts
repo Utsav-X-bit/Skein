@@ -74,6 +74,9 @@ it("attaches straight links to facing card sides in every direction", () => {
   expect(facingSides(-40, 150)).toEqual(["bottom", "top"]);
   expect(facingSides(150, -150)).toEqual(["top", "bottom"]);
   expect(facingSides(-150, -150)).toEqual(["top", "bottom"]);
+  // Bottom peers still leave from the hub's bottom, not a sideways stub.
+  expect(facingSides(150, 100)).toEqual(["bottom", "top"]);
+  expect(facingSides(-150, 100)).toEqual(["bottom", "top"]);
 });
 
 describe("computeRate", () => {
