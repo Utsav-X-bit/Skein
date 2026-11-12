@@ -1,10 +1,8 @@
-import { BaseEdge, EdgeLabelRenderer, getStraightPath, type Edge, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, getStraightPath, type Edge, type EdgeProps } from "@xyflow/react";
 
 export type MeshEdgeData = {
   flowing: boolean;
   color: string;
-  /** Short label rendered at the edge midpoint (advertised peer links). */
-  label?: string;
 };
 export type MeshFlowEdge = Edge<MeshEdgeData, "mesh">;
 
@@ -24,7 +22,7 @@ export function MeshEdge({
   style,
   data,
 }: EdgeProps<MeshFlowEdge>) {
-  const [edgePath, labelX, labelY] = getStraightPath({
+  const [edgePath] = getStraightPath({
     sourceX,
     sourceY,
     targetX,
@@ -37,30 +35,6 @@ export function MeshEdge({
         <circle r={2.5} fill={data.color} pointerEvents="none">
           <animateMotion path={edgePath} dur="2s" repeatCount="indefinite" />
         </circle>
-      )}
-      {data?.label && (
-        <EdgeLabelRenderer>
-          <div
-            className="nodrag nopan"
-            style={{
-              position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px) translateY(-11px)`,
-              background: "color-mix(in oklch, var(--warning) 10%, var(--surface))",
-              border: "1px solid color-mix(in oklch, var(--warning) 45%, transparent)",
-              color: "var(--warning)",
-              borderRadius: 999,
-              padding: "3px 8px",
-              fontFamily: "var(--font-mono)",
-              fontSize: 9,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              whiteSpace: "nowrap",
-              pointerEvents: "none",
-            }}
-          >
-            {data.label}
-          </div>
-        </EdgeLabelRenderer>
       )}
     </>
   );

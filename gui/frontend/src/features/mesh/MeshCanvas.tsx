@@ -231,6 +231,12 @@ export function MeshCanvas({
   const layoutKey = JSON.stringify(layout);
   const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self), [layoutKey, self]);
   const rates = useMemo(() => linkRates(activities), [activities]);
+  // Only one-hop advertisements are drawn; the table keeps every path.
+  const visibleEdges = useMemo(
+    () => model.edges.filter((edge) => edge.evidence !== "advertised" || edge.hops === 1),
+    [model.edges],
+  );
+  const evidencePresent = useMemo(() => new Set(visibleEdges.map((edge) => edge.evidence)), [visibleEdges]);
 
   const nameOf = useMemo(
     () => (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id)),
@@ -264,9 +270,7 @@ export function MeshCanvas({
 
   const edges = useMemo(
     () =>
-      model.edges
-        .filter((edge) => edge.evidence !== "advertised" || edge.hops === 1)
-        .map((edge) => {
+      visibleEdges.map((edge) => {
         const owner = edge.from === self ? edge.to : edge.from;
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
         const flowing = shouldFlow(edge.evidence, rate, motion);
@@ -279,12 +283,6 @@ export function MeshCanvas({
               : edge.evidence === "advertised"
                 ? "var(--warning)"
                 : "var(--text-faint)";
-        const label =
-          edge.evidence === "advertised"
-            ? edge.hops === 1
-              ? "advertised"
-              : `via ${nameOf(edge.path?.[1] ?? edge.to)}`
-            : undefined;
         const from = positions.get(edge.from) ?? Center;
         const to = positions.get(edge.to) ?? Center;
         const [sourceSide, targetSide] = facingSides(to.x - from.x, to.y - from.y);
@@ -296,7 +294,7 @@ export function MeshCanvas({
           targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
-          data: { flowing, color, label },
+          data: { flowing, color },
           style: {
             stroke: color,
             strokeWidth: selected ? 2.8 : edge.evidence === "advertised" ? 2.2 : edge.evidence === "direct" ? 2 : 1.6,
@@ -307,7 +305,7 @@ export function MeshCanvas({
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
         }),
-    [model.edges, positions, self, peerRates, rates, motion, selectedLink, nameOf],
+    [visibleEdges, positions, self, peerRates, rates, motion, selectedLink],
   );
 
   useEffect(() => {
@@ -334,10 +332,19 @@ export function MeshCanvas({
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> direct</span>
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> observed</span>
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--warning)]" /> advertised</span>
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" /> route</span>
+          {[
+            { key: "direct", label: "direct", sample: <span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> },
+            { key: "observed", label: "observed", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> },
+            { key: "advertised", label: "advertised", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--warning)]" /> },
+            { key: "route", label: "route", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" /> },
+          ]
+            .filter((item) => evidencePresent.has(item.key as "direct" | "observed" | "advertised" | "route"))
+            .map((item) => (
+              <span key={item.key} className="inline-flex items-center gap-1">
+                {item.sample}
+                {item.label}
+              </span>
+            ))}
           {!motion && <span>motion reduced · arrows only</span>}
         </div>
       </div>
