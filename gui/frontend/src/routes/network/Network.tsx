@@ -183,9 +183,9 @@ export function Network() {
                         onKeyDown={(e) => rowKeyNav(e, () => setPeerId(l.destination), () => setPeerId(null))}
                         className="cursor-pointer hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)]"
                       >
-                        <td className="px-3 py-2 font-mono text-xs">
-                          {nameOf(l.from)} → {nameOf(l.destination)}
-                        </td>
+                        <td className="px-3 py-2">{nameOf(l.from)}</td>
+                        <td className="px-3 py-2">{nameOf(l.destination)}</td>
+                        <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{via}</td>
                         <td className="tabular px-3 py-2">{l.cost_ms.toFixed(1)} ms</td>
                       </tr>
                     );
