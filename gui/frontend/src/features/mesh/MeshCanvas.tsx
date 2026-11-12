@@ -17,6 +17,7 @@ import {
   type MeshNode,
   type Rate,
 } from "./model";
+import { desktopGeometry, positionsFor, type LayoutEntry } from "./positions";
 
 type Link = { from: string; to: string };
 
@@ -28,57 +29,8 @@ type NodeData = {
   onSelect: (id: string) => void;
 };
 
-type LayoutEntry = { id: string; direct: boolean; hops: number | null };
-
 const Center = { x: 360, y: 250 };
-const InnerRadius = 260;
-// The outer ring sits on the same angles as the inner ring. Its radius must
-// clear the 178px card, or every outer card overlaps the inner card behind it.
-const OuterRadius = 460;
 const HandlePositions = [Position.Top, Position.Right, Position.Bottom, Position.Left];
-
-// Positions depend only on the sorted node-id list plus direct/hop facts, so
-// a new model object every 2 s never moves a node.
-function positionsFor(layout: LayoutEntry[], self: string): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  positions.set(self, Center);
-  const inner = layout.filter((e) => e.id !== self && e.direct).sort((a, b) => a.id.localeCompare(b.id));
-  const outer = layout
-    .filter((e) => e.id !== self && !e.direct)
-    .sort((a, b) => (a.hops ?? Number.MAX_SAFE_INTEGER) - (b.hops ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id));
-  const place = (entries: LayoutEntry[], radius: number, start: number) => {
-    if (entries.length === 0) return;
-    // Small meshes read best as a fan above the hub: two peers sit diagonally
-    // left and right, so their mutual edge is a visible chord instead of a
-    // line hidden behind the centre card. Four or five peers use a wide
-    // ellipse: a circle would push the cards past the short canvas and force
-    // the view to shrink the text.
-    if (entries.length <= 3) {
-      const spread = Math.PI / 2;
-      const step = entries.length > 1 ? spread / (entries.length - 1) : 0;
-      const first = -Math.PI / 2 - spread / 2;
-      entries.forEach((entry, i) => {
-        const angle = entries.length === 1 ? -Math.PI / 2 : first + i * step;
-        positions.set(entry.id, {
-          x: Center.x + Math.cos(angle) * radius,
-          y: Center.y + Math.sin(angle) * radius,
-        });
-      });
-      return;
-    }
-    const step = (Math.PI * 2) / entries.length;
-    entries.forEach((entry, i) => {
-      const angle = start + i * step;
-      positions.set(entry.id, {
-        x: Center.x + Math.cos(angle) * radius * 1.3,
-        y: Center.y + Math.sin(angle) * radius * 0.75,
-      });
-    });
-  };
-  place(inner, InnerRadius, -Math.PI / 2);
-  place(outer, OuterRadius, -Math.PI / 2 + (inner.length > 0 ? Math.PI / inner.length : 0));
-  return positions;
-}
 
 // A rate exists only for consecutive seq numbers on one link with a proven
 // window; everything else stays unknown and stops motion.
@@ -231,7 +183,7 @@ export function MeshCanvas({
   }, [model.nodes, model.edges, model.paths, self]);
 
   const layoutKey = JSON.stringify(layout);
-  const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self), [layoutKey, self]);
+  const positions = useMemo(() => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self, desktopGeometry), [layoutKey, self]);
   const rates = useMemo(() => linkRates(activities), [activities]);
   const visibleEdges = useMemo(() => model.edges, [model.edges]);
   const evidencePresent = useMemo(() => new Set(visibleEdges.map((edge) => edge.evidence)), [visibleEdges]);
