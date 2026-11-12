@@ -1,11 +1,10 @@
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, EdgeLabelRenderer, getStraightPath, type Edge, type EdgeProps } from "@xyflow/react";
 
 export type MeshEdgeData = {
   flowing: boolean;
   color: string;
   /** Short label rendered at the edge midpoint (advertised peer links). */
   label?: string;
-  curvature?: number;
 };
 export type MeshFlowEdge = Edge<MeshEdgeData, "mesh">;
 
@@ -18,23 +17,18 @@ export function MeshEdge({
   id,
   sourceX,
   sourceY,
-  sourcePosition,
   targetX,
   targetY,
-  targetPosition,
   markerEnd,
   interactionWidth,
   style,
   data,
 }: EdgeProps<MeshFlowEdge>) {
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getStraightPath({
     sourceX,
     sourceY,
-    sourcePosition,
     targetX,
     targetY,
-    targetPosition,
-    curvature: data?.curvature ?? 0.2,
   });
   return (
     <>

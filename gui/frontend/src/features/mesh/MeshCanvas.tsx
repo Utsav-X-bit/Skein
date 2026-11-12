@@ -48,16 +48,28 @@ function positionsFor(layout: LayoutEntry[], self: string): Map<string, { x: num
     if (entries.length === 0) return;
     // Small meshes read best as a fan above the hub: two peers sit diagonally
     // left and right, so their mutual edge is a visible chord instead of a
-    // line hidden behind the centre card. Four or more fill the ring.
-    const fan = entries.length <= 3;
-    const spread = fan ? Math.PI / 2 : Math.PI * 2;
-    const step = entries.length > 1 ? spread / (entries.length - 1) : 0;
-    const first = fan ? -Math.PI / 2 - spread / 2 : start;
+    // line hidden behind the centre card. Four or five peers use a wide
+    // ellipse: a circle would push the cards past the short canvas and force
+    // the view to shrink the text.
+    if (entries.length <= 3) {
+      const spread = Math.PI / 2;
+      const step = entries.length > 1 ? spread / (entries.length - 1) : 0;
+      const first = -Math.PI / 2 - spread / 2;
+      entries.forEach((entry, i) => {
+        const angle = entries.length === 1 ? -Math.PI / 2 : first + i * step;
+        positions.set(entry.id, {
+          x: Center.x + Math.cos(angle) * radius,
+          y: Center.y + Math.sin(angle) * radius,
+        });
+      });
+      return;
+    }
+    const step = (Math.PI * 2) / entries.length;
     entries.forEach((entry, i) => {
-      const angle = entries.length === 1 ? -Math.PI / 2 : first + i * step;
+      const angle = start + i * step;
       positions.set(entry.id, {
-        x: Center.x + Math.cos(angle) * radius,
-        y: Center.y + Math.sin(angle) * radius,
+        x: Center.x + Math.cos(angle) * radius * 1.3,
+        y: Center.y + Math.sin(angle) * radius * 0.75,
       });
     });
   };
@@ -252,7 +264,9 @@ export function MeshCanvas({
 
   const edges = useMemo(
     () =>
-      model.edges.map((edge) => {
+      model.edges
+        .filter((edge) => edge.evidence !== "advertised" || edge.hops === 1)
+        .map((edge) => {
         const owner = edge.from === self ? edge.to : edge.from;
         const rate = edge.evidence === "direct" ? peerRates[owner] : rates.get(`${edge.from}>${edge.to}`) ?? rates.get(`${edge.to}>${edge.from}`);
         const flowing = shouldFlow(edge.evidence, rate, motion);
@@ -282,7 +296,7 @@ export function MeshCanvas({
           targetHandle: `target-${targetSide}`,
           type: "mesh",
           selected,
-          data: { flowing, color, label, curvature: edge.evidence === "advertised" ? 0.32 : 0.18 },
+          data: { flowing, color, label },
           style: {
             stroke: color,
             strokeWidth: selected ? 2.8 : edge.evidence === "direct" ? 2 : 1.6,
@@ -292,7 +306,7 @@ export function MeshCanvas({
           },
           markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
         } satisfies MeshFlowEdge;
-      }),
+        }),
     [model.edges, positions, self, peerRates, rates, motion, selectedLink, nameOf],
   );
 
