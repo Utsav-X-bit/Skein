@@ -1,10 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=skein-desktop
+Name=Skein
 Exec=skein-desktop
 Icon=skein-desktop
-Categories=Development;
+Categories=Network;
+Comment=Private mesh VPN for your own devices
 Terminal=false
-Keywords=wails
+Keywords=skein;vpn;mesh;network;
 Version=1.0
+GenericName=Mesh VPN
 StartupNotify=false
