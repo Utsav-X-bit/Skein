@@ -32,7 +32,9 @@ type LayoutEntry = { id: string; direct: boolean; hops: number | null };
 
 const Center = { x: 360, y: 250 };
 const InnerRadius = 260;
-const OuterRadius = 380;
+// The outer ring sits on the same angles as the inner ring. Its radius must
+// clear the 178px card, or every outer card overlaps the inner card behind it.
+const OuterRadius = 460;
 const HandlePositions = [Position.Top, Position.Right, Position.Bottom, Position.Left];
 
 // Positions depend only on the sorted node-id list plus direct/hop facts, so

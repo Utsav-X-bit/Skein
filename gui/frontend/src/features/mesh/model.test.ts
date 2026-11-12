@@ -184,6 +184,19 @@ describe("buildMesh", () => {
     expect(model.edges).toEqual([]);
   });
 
+  it("marks a relayed peer up when its direct session is down", () => {
+    const model = buildMesh(
+      "self",
+      [peer("relay"), peer("dest", { state: "down", direct: false })],
+      [route("dest", ["relay", "dest"])],
+      [],
+      [],
+      now,
+    );
+    const dest = model.nodes.find((n) => n.id === "dest");
+    expect(dest).toMatchObject({ state: "up", transport: "relay" });
+  });
+
   it("walks a route path from self", () => {
     const model = buildMesh("self", [], [route("b", ["a", "b"])], [], [], now);
     expect(model.edges).toEqual([

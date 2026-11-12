@@ -207,6 +207,14 @@ export function buildMesh(
       direct: r.next_hop === r.destination,
       ...(family ? { family } : {}),
     });
+    // A relayed destination whose direct session is down is still reachable
+    // through its next hop. Showing it as down would contradict the route the
+    // same snapshot carries; mark it up and name the relay as its transport.
+    const destNode = nodes.get(r.destination);
+    if (destNode?.kind === "peer" && destNode.state !== "up" && r.next_hop !== r.destination) {
+      destNode.state = "up";
+      destNode.transport = "relay";
+    }
     // The destination is always reachable from self: an empty path means the
     // route's next hop is the destination itself.
     const chain = [self, ...(path.length > 0 ? path : [r.destination])];
