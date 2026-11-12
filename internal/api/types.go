@@ -79,24 +79,27 @@ type Activity struct {
 
 // ConfigView is the redacted effective configuration.
 type ConfigView struct {
-	Name              string   `json:"name,omitempty"`
-	OverlayIPv4Prefix string   `json:"overlay_ipv4_prefix"`
-	OverlayIPv6Prefix string   `json:"overlay_ipv6_prefix"`
-	OverlayIPv4       string   `json:"overlay_ipv4"`
-	OverlayIPv6       string   `json:"overlay_ipv6,omitempty"`
-	ListenPort        uint16   `json:"listen_port"`
-	MTU               int      `json:"mtu"`
-	Interface         string   `json:"interface"`
-	APIListen         string   `json:"api_listen"`
-	APISocket         string   `json:"api_socket,omitempty"`
-	APIPipe           string   `json:"api_pipe,omitempty"`
-	MDNS              bool     `json:"mdns"`
-	STUN              bool     `json:"stun"`
-	STUNServer        string   `json:"stun_server"`
-	PublicAddr        string   `json:"public_addr,omitempty"`
-	ConfigPath        string   `json:"config_path,omitempty"`
-	Protocol          int      `json:"protocol"`
-	Peers             []string `json:"peers"`
+	Name              string `json:"name,omitempty"`
+	OverlayIPv4Prefix string `json:"overlay_ipv4_prefix"`
+	OverlayIPv6Prefix string `json:"overlay_ipv6_prefix"`
+	OverlayIPv4       string `json:"overlay_ipv4"`
+	OverlayIPv6       string `json:"overlay_ipv6,omitempty"`
+	ListenPort        uint16 `json:"listen_port"`
+	MTU               int    `json:"mtu"`
+	// EffectiveMTU is the live send limit after path-MTU negotiation; zero
+	// while the dataplane is down.
+	EffectiveMTU int      `json:"effective_mtu,omitempty"`
+	Interface    string   `json:"interface"`
+	APIListen    string   `json:"api_listen"`
+	APISocket    string   `json:"api_socket,omitempty"`
+	APIPipe      string   `json:"api_pipe,omitempty"`
+	MDNS         bool     `json:"mdns"`
+	STUN         bool     `json:"stun"`
+	STUNServer   string   `json:"stun_server"`
+	PublicAddr   string   `json:"public_addr,omitempty"`
+	ConfigPath   string   `json:"config_path,omitempty"`
+	Protocol     int      `json:"protocol"`
+	Peers        []string `json:"peers"`
 	// Departed is the ADR-002 leave flag (Step 7): true means this
 	// node left its network and will not rejoin until a fresh
 	// invite clears it.

@@ -92,6 +92,12 @@ export interface ConfigView {
     "overlay_ipv6"?: string;
     "listen_port": number;
     "mtu": number;
+
+    /**
+     * EffectiveMTU is the live send limit after path-MTU negotiation; zero
+     * while the dataplane is down.
+     */
+    "effective_mtu"?: number;
     "interface": string;
     "api_listen": string;
     "api_socket"?: string;

@@ -722,6 +722,9 @@ func (d *Daemon) Config() api.ConfigView {
 	if d.overlayV6.IsValid() {
 		view.OverlayIPv6 = d.overlayV6.String()
 	}
+	if e := d.engine(); e != nil {
+		view.EffectiveMTU = e.MTU()
+	}
 	if cfg.Node.PublicAddr.IsValid() {
 		view.PublicAddr = cfg.Node.PublicAddr.String()
 	}

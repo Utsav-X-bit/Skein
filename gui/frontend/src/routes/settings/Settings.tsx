@@ -282,6 +282,9 @@ export function Settings() {
                   inputMode="numeric"
                   onChange={(e) => edit({ mtu: e.target.value })}
                 />
+                <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                  Floor; the daemon raises the live MTU automatically when every direct path supports it.
+                </p>
               </div>
               <div className="flex items-end gap-3 pb-2">
                 <Switch
@@ -465,6 +468,7 @@ export function Settings() {
               {[
                 ["overlay IPv4", c.overlay_ipv4 || "—"],
                 ["overlay IPv6", c.overlay_ipv6 || "—"],
+                ["MTU", c.effective_mtu ? `${c.effective_mtu} live · ${c.mtu} floor` : `${c.mtu} floor`],
                 ["interface", c.interface || "—"],
                 ["STUN", c.stun ? c.stun_server || "on" : "off"],
                 ["config path", c.config_path || "—"],
