@@ -113,7 +113,8 @@ func Java_com_skein_app_SkeinVpnService_nativeGetVpnConfig(env *C.JNIEnv, thiz C
 	raw, err := android.GetVpnConfig()
 	if err != nil {
 		log.Printf("skein: android: getVpnConfig: %v", err)
-		return nil
+		var nullStr C.jstring // untyped nil is not a valid C.jstring
+		return nullStr
 	}
 	cstr := C.CString(string(raw))
 	defer C.free(unsafe.Pointer(cstr))
