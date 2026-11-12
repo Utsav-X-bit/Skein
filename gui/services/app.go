@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
+	"github.com/Utsav-X-bit/skein/internal/version"
 )
 
 // AppService reports GUI and daemon identity and owns the event stream.
@@ -40,7 +41,7 @@ func (s *AppService) Capabilities(ctx context.Context) (api.Capabilities, error)
 }
 
 // Version returns this GUI build's version.
-func (s *AppService) Version(context.Context) (string, error) { return version, nil }
+func (s *AppService) Version(context.Context) (string, error) { return version.Info(), nil }
 
 // Platform returns the OS the GUI is running on.
 func (s *AppService) Platform(context.Context) (string, error) { return runtime.GOOS, nil }

@@ -39,6 +39,10 @@ required them.
 
 ### Fixed
 
+- The desktop reported its version as the placeholder `dev` because nothing
+  stamped it. Both the desktop and daemon now derive the version and commit
+  from the Go build metadata, and production desktop builds embed the VCS
+  revision instead of disabling it.
 - Joining an already configured network now initiates contact with the
   inviter even when discovery previously registered it as a non-dialer.
 - Network invites reserve the inviter's overlay address as well as known
