@@ -5,6 +5,7 @@ package netcfg
 import (
 	"fmt"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -136,4 +137,20 @@ func deleteRouteArgs(prefix netip.Prefix, name string) [][]string {
 func setMTU(name string, mtu int) error {
 	_, err := runner("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(mtu))
 	return err
+}
+
+// IPv6Available reports whether this host can carry an IPv6 overlay address.
+// A disabled IPv6 stack is not an error: the overlay stays IPv4-only instead
+// of failing to bring the interface up.
+func IPv6Available() bool {
+	for _, path := range []string{
+		"/proc/sys/net/ipv6/conf/all/disable_ipv6",
+		"/proc/sys/net/ipv6/conf/default/disable_ipv6",
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil || strings.TrimSpace(string(raw)) != "0" {
+			return false
+		}
+	}
+	return true
 }

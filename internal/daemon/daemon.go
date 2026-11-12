@@ -99,6 +99,11 @@ type Daemon struct {
 	// built from a config file; nil for in-memory/test daemons with no
 	// config path, where persistLocked returns early anyway.
 	store *configstore.Store
+	// overlayV6 is the IPv6 overlay address in use. It is empty when the
+	// host cannot carry one (IPv6 disabled), even if the config names
+	// one: advertising an address the kernel rejects would make this
+	// node look reachable over IPv6 when it is not.
+	overlayV6 netip.Addr
 }
 
 // config returns a snapshot safe to read outside the daemon lock.
@@ -123,6 +128,15 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	if cfg.Node.Name == "" {
 		cfg.Node.Name = conf.DefaultNodeName()
 	}
+	// Configs written before IPv6 assignment was automatic get the same
+	// address on every start; a config with its own address is untouched.
+	// Never fail an existing install here: an unusable prefix just leaves
+	// the node IPv4-only, as it was before.
+	if cfg.Node.OverlayIPv4.IsValid() && netcfg.IPv6Available() {
+		if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
+			log.Printf("skein: warning: IPv6 overlay address not assigned: %v", err)
+		}
+	}
 	d := &Daemon{
 		cfg:      cfg,
 		id:       id,
@@ -136,6 +150,11 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		hub:      api.NewHub(),
 		logs:     &logRing{},
 		setMTU:   netcfg.SetMTU,
+	}
+	d.overlayV6 = cfg.Node.OverlayIPv6
+	if d.overlayV6.IsValid() && !netcfg.IPv6Available() {
+		log.Printf("skein: IPv6 is disabled on this host; the overlay will not use %s", d.overlayV6)
+		d.overlayV6 = netip.Addr{}
 	}
 	d.redact = newRedactor(cfg)
 	if st := loadPausedState(); st.Paused {
@@ -159,14 +178,14 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 		Name:       cfg.Node.Name,
 		PublicKey:  id.PublicKey,
 		OverlayV4:  cfg.Node.OverlayIPv4,
-		OverlayV6:  cfg.Node.OverlayIPv6,
+		OverlayV6:  d.overlayV6,
 		Candidates: localCandidates(cfg),
 	}, peers, routes, merger, engineAdapter{d})
 	if err != nil {
 		return nil, err
 	}
 
-	merger.SetLocalOverlay(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv6)
+	merger.SetLocalOverlay(cfg.Node.OverlayIPv4, d.overlayV6)
 	merger.SetLocalPrefixes(cfg.Node.OverlayIPv4Prefix, cfg.Node.OverlayIPv6Prefix)
 	merger.OnPeer = func(peerID uint64, publicKey []byte) error {
 		// Learned peers use the same rule as mDNS: the lower ID dials.
@@ -554,8 +573,8 @@ func (d *Daemon) Status() api.Status {
 		TxBytes:       snap.TxBytes,
 		Connection:    d.Connection(),
 	}
-	if cfg.Node.OverlayIPv6.IsValid() {
-		st.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
+	if d.overlayV6.IsValid() {
+		st.OverlayIPv6 = d.overlayV6.String()
 	}
 	st.Health = d.health(st.Connection)
 	return st
@@ -679,8 +698,8 @@ func (d *Daemon) Config() api.ConfigView {
 		NetworkSecret:     "redacted",
 		APIToken:          "redacted",
 	}
-	if cfg.Node.OverlayIPv6.IsValid() {
-		view.OverlayIPv6 = cfg.Node.OverlayIPv6.String()
+	if d.overlayV6.IsValid() {
+		view.OverlayIPv6 = d.overlayV6.String()
 	}
 	if cfg.Node.PublicAddr.IsValid() {
 		view.PublicAddr = cfg.Node.PublicAddr.String()

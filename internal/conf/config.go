@@ -3,6 +3,7 @@ package conf
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -220,6 +221,50 @@ func NextFreeOverlayHashed(prefix netip.Prefix, used []netip.Addr, seed uint64) 
 		return netip.Addr{}, fmt.Errorf("conf: %s has no free host address", prefix)
 	}
 	return free[seed%uint64(len(free))], nil
+}
+
+// OverlayIPv6For returns the IPv6 overlay address that pairs with v4: the same
+// host number in v6Prefix that v4 has in v4Prefix. IPv4 allocation already
+// guarantees a unique host number within the mesh, so the IPv6 address inherits
+// that uniqueness and the pair stays readable (10.144.144.3 pairs with
+// fd00:6d65:7368::3).
+func OverlayIPv6For(v6Prefix, v4Prefix netip.Prefix, v4 netip.Addr) (netip.Addr, error) {
+	if !v6Prefix.IsValid() || !v6Prefix.Addr().Is6() || v6Prefix.Addr().Is4In6() {
+		return netip.Addr{}, errors.New("conf: invalid overlay IPv6 prefix")
+	}
+	if !v4Prefix.IsValid() || !v4Prefix.Addr().Is4() || !v4Prefix.Contains(v4) {
+		return netip.Addr{}, errors.New("conf: overlay IPv4 address is outside its prefix")
+	}
+	base := v4Prefix.Masked().Addr().As4()
+	addr := v4.As4()
+	host := uint64(binary.BigEndian.Uint32(addr[:]) - binary.BigEndian.Uint32(base[:]))
+	if host == 0 {
+		return netip.Addr{}, errors.New("conf: overlay IPv4 address has no host number")
+	}
+	if hostBits := 128 - v6Prefix.Bits(); hostBits < 64 && host >= uint64(1)<<hostBits {
+		return netip.Addr{}, fmt.Errorf("conf: overlay IPv6 prefix %s has too few host bits for %s", v6Prefix, v4)
+	}
+	// The masked prefix has zeros in every host bit, so adding the host
+	// number cannot carry into the prefix.
+	out := v6Prefix.Masked().Addr().As16()
+	binary.BigEndian.PutUint64(out[8:], binary.BigEndian.Uint64(out[8:])+host)
+	return netip.AddrFrom16(out), nil
+}
+
+// AssignOverlayIPv6 fills cfg's IPv6 overlay address from its IPv4 address when
+// the config has none, and reports whether it changed anything. It is skipped
+// when the MTU cannot carry an IPv6 overlay (the validator rejects that
+// combination) and never replaces an operator's own address.
+func AssignOverlayIPv6(cfg *Config) (bool, error) {
+	if cfg.Node.OverlayIPv6.IsValid() || cfg.Node.MTU < 1280 {
+		return false, nil
+	}
+	addr, err := OverlayIPv6For(cfg.Node.OverlayIPv6Prefix, cfg.Node.OverlayIPv4Prefix, cfg.Node.OverlayIPv4)
+	if err != nil {
+		return false, err
+	}
+	cfg.Node.OverlayIPv6 = addr
+	return true, nil
 }
 
 // DefaultNodeName returns the hostname, trimmed to the name limit, so a node

@@ -141,3 +141,7 @@ func setMTU(name string, mtu int) error {
 	}
 	return nil
 }
+
+// IPv6Available reports whether this host can carry an IPv6 overlay address.
+// IPv6 is part of every supported Windows release.
+func IPv6Available() bool { return true }

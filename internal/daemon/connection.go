@@ -398,7 +398,7 @@ func (d *Daemon) startDataPlane() error {
 		LocalID:   d.id.ID,
 		Identity:  d.id,
 		OverlayV4: cfg.Node.OverlayIPv4,
-		OverlayV6: cfg.Node.OverlayIPv6,
+		OverlayV6: d.overlayV6,
 		PrefixV4:  cfg.Node.OverlayIPv4Prefix,
 		PrefixV6:  cfg.Node.OverlayIPv6Prefix,
 		MTU:       cfg.Node.MTU,
@@ -421,7 +421,7 @@ func (d *Daemon) startDataPlane() error {
 	}
 	d.eng = eng
 
-	addresses, routes := overlayPrefixes(cfg)
+	addresses, routes := overlayPrefixes(cfg, d.overlayV6)
 	if warnings, err := netcfg.Conflicts(routes); err == nil {
 		for _, w := range warnings {
 			log.Printf("skein: warning: %s", w)
@@ -466,7 +466,7 @@ func (d *Daemon) teardownDataPlane() {
 	// logged that warning). A remove failure stays a warning; the
 	// devices are closed regardless.
 	cfg := d.config()
-	addresses, routes := overlayPrefixes(cfg)
+	addresses, routes := overlayPrefixes(cfg, d.overlayV6)
 	if err := netcfg.Remove(cfg.Node.Interface, addresses, routes); err != nil {
 		log.Printf("skein: warning: removing network configuration: %v", err)
 	}
@@ -485,11 +485,11 @@ func (d *Daemon) teardownDataPlane() {
 }
 
 // overlayPrefixes lists the overlay addresses and routes for the config.
-func overlayPrefixes(cfg conf.Config) (addresses, routes []netip.Prefix) {
+func overlayPrefixes(cfg conf.Config, overlayV6 netip.Addr) (addresses, routes []netip.Prefix) {
 	addresses = []netip.Prefix{netip.PrefixFrom(cfg.Node.OverlayIPv4, cfg.Node.OverlayIPv4Prefix.Bits())}
 	routes = []netip.Prefix{cfg.Node.OverlayIPv4Prefix}
-	if cfg.Node.OverlayIPv6.IsValid() {
-		addresses = append(addresses, netip.PrefixFrom(cfg.Node.OverlayIPv6, cfg.Node.OverlayIPv6Prefix.Bits()))
+	if overlayV6.IsValid() {
+		addresses = append(addresses, netip.PrefixFrom(overlayV6, cfg.Node.OverlayIPv6Prefix.Bits()))
 		routes = append(routes, cfg.Node.OverlayIPv6Prefix)
 	}
 	return

@@ -445,6 +445,7 @@ name                = %q
 overlay_ipv4_prefix = "10.144.144.0/24"
 overlay_ipv6_prefix = "fd00:6d65:7368::/64"
 overlay_ipv4        = "10.144.144.1"
+overlay_ipv6        = "fd00:6d65:7368::1"
 listen_port         = 11010
 network_secret      = %q
 mtu                 = 1280
@@ -777,6 +778,9 @@ func cmdJoin(configPath, inviteText string, stdout io.Writer) error {
 			return err
 		}
 		cfg.Node.OverlayIPv4 = addr
+	}
+	if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
+		return err
 	}
 	// Step 8: a dev join uses the kernel control transport, not the
 	// legacy listen+token block (see devControlTransport).

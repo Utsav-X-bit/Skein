@@ -229,6 +229,9 @@ func TestInitPrintsAJoinString(t *testing.T) {
 	if inv.ID == 0 {
 		t.Fatal("join string has no identity")
 	}
+	if !cfg.Node.OverlayIPv6.IsValid() || !cfg.Node.OverlayIPv6Prefix.Contains(cfg.Node.OverlayIPv6) {
+		t.Fatalf("overlay IPv6 = %s, want an address inside %s", cfg.Node.OverlayIPv6, cfg.Node.OverlayIPv6Prefix)
+	}
 }
 
 func TestJoinBootstrapsASecondNode(t *testing.T) {
@@ -272,6 +275,12 @@ func TestJoinBootstrapsASecondNode(t *testing.T) {
 	if cfgB.Node.OverlayIPv4 == netip.MustParseAddr("10.144.144.0") || cfgB.Node.OverlayIPv4 == netip.MustParseAddr("10.144.144.255") {
 		t.Fatalf("joined overlay %s is not a host address", cfgB.Node.OverlayIPv4)
 	}
+	if !cfgB.Node.OverlayIPv6.IsValid() || !cfgB.Node.OverlayIPv6Prefix.Contains(cfgB.Node.OverlayIPv6) {
+		t.Fatalf("joined overlay IPv6 = %s, want an address inside %s", cfgB.Node.OverlayIPv6, cfgB.Node.OverlayIPv6Prefix)
+	}
+	if cfgA.Node.OverlayIPv6 == cfgB.Node.OverlayIPv6 {
+		t.Fatalf("overlay IPv6 collision: %s", cfgB.Node.OverlayIPv6)
+	}
 	if _, err := os.Stat(filepath.Join(dirB, "identity.key")); err != nil {
 		t.Fatalf("identity not created: %v", err)
 	}
@@ -295,6 +304,9 @@ func TestJoinBootstrapsASecondNode(t *testing.T) {
 	}
 	if again.Node.OverlayIPv4 != cfgB.Node.OverlayIPv4 {
 		t.Fatalf("overlay changed on re-join: %s -> %s", cfgB.Node.OverlayIPv4, again.Node.OverlayIPv4)
+	}
+	if again.Node.OverlayIPv6 != cfgB.Node.OverlayIPv6 {
+		t.Fatalf("overlay IPv6 changed on re-join: %s -> %s", cfgB.Node.OverlayIPv6, again.Node.OverlayIPv6)
 	}
 }
 

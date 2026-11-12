@@ -402,3 +402,54 @@ func TestNextFreeOverlayRejectsIPv6(t *testing.T) {
 		t.Fatal("IPv6 overlay prefix was accepted by the IPv4 allocator")
 	}
 }
+
+func TestOverlayIPv6ForPairsTheHostNumber(t *testing.T) {
+	v6 := netip.MustParsePrefix("fd00:6d65:7368::/64")
+	v4p := netip.MustParsePrefix("10.144.144.0/24")
+	cases := map[string]string{
+		"10.144.144.1":   "fd00:6d65:7368::1",
+		"10.144.144.7":   "fd00:6d65:7368::7",
+		"10.144.144.254": "fd00:6d65:7368::fe",
+	}
+	for in, want := range cases {
+		got, err := OverlayIPv6For(v6, v4p, netip.MustParseAddr(in))
+		if err != nil {
+			t.Fatalf("OverlayIPv6For(%s): %v", in, err)
+		}
+		if got != netip.MustParseAddr(want) {
+			t.Fatalf("OverlayIPv6For(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestAssignOverlayIPv6FillsOnlyAnEmptyAddress(t *testing.T) {
+	cfg := Default()
+	cfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.3")
+	changed, err := AssignOverlayIPv6(&cfg)
+	if err != nil || !changed {
+		t.Fatalf("AssignOverlayIPv6 = %v, %v; want a change", changed, err)
+	}
+	if want := netip.MustParseAddr("fd00:6d65:7368::3"); cfg.Node.OverlayIPv6 != want {
+		t.Fatalf("overlay IPv6 = %s, want %s", cfg.Node.OverlayIPv6, want)
+	}
+
+	own := netip.MustParseAddr("fd00:6d65:7368::99")
+	cfg.Node.OverlayIPv6 = own
+	changed, err = AssignOverlayIPv6(&cfg)
+	if err != nil || changed {
+		t.Fatalf("AssignOverlayIPv6 over an existing address = %v, %v; want no change", changed, err)
+	}
+	if cfg.Node.OverlayIPv6 != own {
+		t.Fatalf("overlay IPv6 = %s, want the operator's %s", cfg.Node.OverlayIPv6, own)
+	}
+}
+
+func TestAssignOverlayIPv6SkipsAnMTUBelow1280(t *testing.T) {
+	cfg := Default()
+	cfg.Node.OverlayIPv4 = netip.MustParseAddr("10.144.144.3")
+	cfg.Node.MTU = 1200
+	changed, err := AssignOverlayIPv6(&cfg)
+	if err != nil || changed || cfg.Node.OverlayIPv6.IsValid() {
+		t.Fatalf("AssignOverlayIPv6 at MTU 1200 = %v, %v, %s; want no assignment", changed, err, cfg.Node.OverlayIPv6)
+	}
+}

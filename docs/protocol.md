@@ -273,7 +273,7 @@ TOML loaded by `skeind`:
 overlay_ipv4_prefix = "10.144.144.0/24"
 overlay_ipv6_prefix = "fd00:6d65:7368::/64"
 overlay_ipv4        = "10.144.144.2"
-overlay_ipv6        = "fd00:6d65:7368::2"   # optional
+overlay_ipv6        = "fd00:6d65:7368::2"   # optional; create/join assigns it
 listen_port         = 11010
 network_secret      = "<base64url, exactly 32 bytes>"
 mtu                 = 1280

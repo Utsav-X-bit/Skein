@@ -609,6 +609,9 @@ func (b *Bootstrap) buildInit(req bootstrapRequest) (conf.Config, identity.Ident
 		return conf.Config{}, identity.Identity{}, err
 	}
 	cfg.Node.OverlayIPv4 = addr
+	if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
 	secret := make([]byte, identity.KeySize)
 	if _, err := rand.Read(secret); err != nil {
 		return conf.Config{}, identity.Identity{}, fmt.Errorf("bootstrap init: random secret: %w", err)
@@ -661,6 +664,9 @@ func (b *Bootstrap) buildJoin(req bootstrapRequest) (conf.Config, identity.Ident
 		return conf.Config{}, identity.Identity{}, err
 	}
 	cfg.Node.OverlayIPv4 = addr
+	if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
 	cfg.Peers = append(cfg.Peers, conf.Peer{ID: inv.ID, PublicKey: inv.PublicKey, Addrs: inv.Addrs, Dialer: true})
 	b.controlConfig(&cfg)
 	if err := conf.Validate(cfg); err != nil {
@@ -698,6 +704,9 @@ func (b *Bootstrap) buildImport(req bootstrapRequest) (conf.Config, identity.Ide
 			return conf.Config{}, identity.Identity{}, err
 		}
 		cfg.Node.OverlayIPv4 = addr
+	}
+	if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
 	}
 	b.controlConfig(&cfg)
 	if err := conf.Validate(cfg); err != nil {

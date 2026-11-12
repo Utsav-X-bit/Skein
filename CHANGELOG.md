@@ -8,6 +8,12 @@ required them.
 
 ### Added
 
+- Create and join now assign the node's IPv6 overlay address (the same host
+  number as its IPv4 address, e.g. `10.144.144.3` pairs with
+  `fd00:6d65:7368::3`). Existing configs without the field get the same
+  address when the daemon starts, and a config that already sets its own
+  address is left alone. An MTU below 1280 or a host with IPv6 disabled keeps
+  the node IPv4-only instead of failing to bring the interface up.
 - Automatic path-MTU negotiation: after a direct connection, the daemon
   measures the largest unfragmented frame to every direct peer and raises the
   overlay MTU (up to 1346) when all of them support it. The configured MTU is
@@ -39,6 +45,10 @@ required them.
 
 ### Fixed
 
+- Service failures are explained in plain language instead of showing the
+  helper's JSON envelope and internal state names. A missing service unit now
+  points at setup, and the onboarding offers "Back to setup" rather than a
+  retry that cannot succeed.
 - The desktop reported its version as the placeholder `dev` because nothing
   stamped it. Both the desktop and daemon now derive the version and commit
   from the Go build metadata, and production desktop builds embed the VCS
