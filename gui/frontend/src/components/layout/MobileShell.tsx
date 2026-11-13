@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -37,6 +37,15 @@ export function MobileShell() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [setupGate, setSetupGate] = useState<SetupGate>("auto");
+  const mainRef = useRef<HTMLElement>(null);
+
+  // The tab/sub-page content shares one scrolling <main>, so its
+  // scroll position survives a route change — a sub-page opened
+  // from deep inside Settings arrived scrolled down, hiding its
+  // title. Every navigation starts at the top.
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [location.pathname]);
 
   const svc = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status(), refetchInterval: 5_000 });
   const serviceMissing = svc.data?.state === "missing";
@@ -182,7 +191,7 @@ export function MobileShell() {
           <ChevronLeft size={16} /> Back to Settings
         </button>
       )}
-      <main className="min-h-0 flex-1 overflow-auto px-4 pb-[calc(var(--nav-h)+16px)] pt-4">
+      <main ref={mainRef} className="min-h-0 flex-1 overflow-auto px-4 pb-[calc(var(--nav-h)+16px)] pt-4">
         <Outlet />
       </main>
       <BottomNav />
