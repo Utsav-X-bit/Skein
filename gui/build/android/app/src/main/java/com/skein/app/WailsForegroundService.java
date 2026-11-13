@@ -17,8 +17,8 @@ import androidx.core.app.NotificationCompat;
  * is to keep the app's process alive (with the required ongoing notification) so
  * the developer's Go goroutines keep running while the app is backgrounded,
  * which Android would otherwise be free to kill. Start it from
- * {@link WailsBridge#startForegroundService(String)} and stop it with
- * {@link WailsBridge#stopForegroundService()}.
+ * {@link com.wails.app.WailsBridge#startForegroundService(String)} and stop it with
+ * {@link com.wails.app.WailsBridge#stopForegroundService()}.
  */
 public class WailsForegroundService extends android.app.Service {
     public static final String ACTION_START = "com.skein.app.FGS_START";

@@ -1,5 +1,7 @@
 package com.skein.app;
 
+import com.wails.app.WailsBridge;
+
 import android.util.Log;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;

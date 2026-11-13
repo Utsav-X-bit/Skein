@@ -1,5 +1,7 @@
 package com.skein.app;
 
+import com.wails.app.WailsBridge;
+
 import android.net.Uri;
 import android.util.Log;
 import android.webkit.WebResourceResponse;

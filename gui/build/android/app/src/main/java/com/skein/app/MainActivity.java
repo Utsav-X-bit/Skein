@@ -1,5 +1,7 @@
 package com.skein.app;
 
+import com.wails.app.WailsBridge;
+
 import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
 import android.content.Context;

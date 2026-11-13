@@ -1,4 +1,18 @@
-package com.skein.app;
+package com.wails.app;
+
+// NOTE: this class MUST live in package com.wails.app, not
+// com.skein.app. The Wails 3 runtime hardcodes its JNI exports as
+// Java_com_wails_app_WailsBridge_* (see
+// pkg/application/application_android.go in the wails v3 module), so
+// the JVM only finds nativeInit etc. when the class is in
+// com.wails.app. With this class in com.skein.app the app crashed on
+// launch with "No implementation found for void
+// com.skein.app.WailsBridge.nativeInit". The Skein-specific classes
+// this file uses (MainActivity, WailsForegroundService, BuildConfig)
+// are imported from com.skein.app below.
+import com.skein.app.BuildConfig;
+import com.skein.app.MainActivity;
+import com.skein.app.WailsForegroundService;
 
 import android.app.Activity;
 import android.app.Notification;
