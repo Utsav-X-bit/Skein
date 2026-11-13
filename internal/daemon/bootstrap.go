@@ -537,7 +537,7 @@ func (b *Bootstrap) build(ctx context.Context, verb string, req bootstrapRequest
 	}
 }
 
-func (b *Bootstrap) controlConfig(cfg *conf.Config) {
+func (b *Bootstrap) controlConfig(cfg *conf.Config) error {
 	// The service control plane, and nothing else: the legacy dev-TCP
 	// listener and its bearer token are never enabled by a bootstrap.
 	cfg.API.Token = nil
@@ -554,12 +554,21 @@ func (b *Bootstrap) controlConfig(cfg *conf.Config) {
 	// is ever actually opened there; the stored value only satisfies
 	// validation. On desktop one of Socket/Pipe is always set (see
 	// bootstrapTransport), so this branch never triggers there.
+	// A listen address also requires a 32-byte bearer token for
+	// validation, so mint a random one here; like the listen address
+	// it is never used on Android (the host clears it on start).
 	if cfg.API.Socket == "" && cfg.API.Pipe == "" {
 		cfg.API.Listen = conf.DefaultAPIBind
+		tok := make([]byte, bootstrap.TokenSize)
+		if _, err := rand.Read(tok); err != nil {
+			return fmt.Errorf("bootstrap: random api token: %w", err)
+		}
+		cfg.API.Token = tok
 	} else {
 		cfg.API.Listen = ""
 	}
 	cfg.Path = b.opts.ConfigPath
+	return nil
 }
 
 // existingIdentity loads an identity.key already on disk. That file is
@@ -643,7 +652,9 @@ func (b *Bootstrap) buildInit(req bootstrapRequest) (conf.Config, identity.Ident
 			return conf.Config{}, identity.Identity{}, err
 		}
 	}
-	b.controlConfig(&cfg)
+	if err := b.controlConfig(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
 	if err := conf.Validate(cfg); err != nil {
 		return conf.Config{}, identity.Identity{}, err
 	}
@@ -683,7 +694,9 @@ func (b *Bootstrap) buildJoin(req bootstrapRequest) (conf.Config, identity.Ident
 		return conf.Config{}, identity.Identity{}, err
 	}
 	cfg.Peers = append(cfg.Peers, conf.Peer{ID: inv.ID, PublicKey: inv.PublicKey, Addrs: inv.Addrs, Dialer: true})
-	b.controlConfig(&cfg)
+	if err := b.controlConfig(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
 	if err := conf.Validate(cfg); err != nil {
 		return conf.Config{}, identity.Identity{}, err
 	}
@@ -723,7 +736,9 @@ func (b *Bootstrap) buildImport(req bootstrapRequest) (conf.Config, identity.Ide
 	if _, err := conf.AssignOverlayIPv6(&cfg); err != nil {
 		return conf.Config{}, identity.Identity{}, err
 	}
-	b.controlConfig(&cfg)
+	if err := b.controlConfig(&cfg); err != nil {
+		return conf.Config{}, identity.Identity{}, err
+	}
 	if err := conf.Validate(cfg); err != nil {
 		return conf.Config{}, identity.Identity{}, err
 	}
