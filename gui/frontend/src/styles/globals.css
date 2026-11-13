@@ -1,6 +1,17 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 @import "tailwindcss";
+/* tokens.css holds the design tokens (colors, radii, spacing scale,
+   shell metrics --nav-h/--connect-h, safe-area --sat/--sab, motion
+   durations). It MUST be imported here: main.tsx loads this file,
+   not base.css, so without this import every var(--nav-h) /
+   var(--connect-h) / var(--sat) reference in the app is undefined
+   and silently falls back — the bottom nav loses its height, the
+   primary buttons lose their 56px height, and safe-area padding
+   computes to zero (the onboarding header merged with the status
+   bar). The :root colors below duplicate tokens.css's values, so
+   importing it changes no visible color. */
+@import "./tokens.css";
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant hc (&:is(.hc *));
