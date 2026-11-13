@@ -85,8 +85,13 @@ public class SkeinVpnService extends VpnService {
      */
     public static boolean protectSocket(int fd) {
         SkeinVpnService svc = instance;
-        if (svc == null) return false;
-        return svc.protect(fd);
+        if (svc == null) {
+            Log.w(TAG, "protectSocket fd=" + fd + ": no service instance yet");
+            return false;
+        }
+        boolean ok = svc.protect(fd);
+        Log.i(TAG, "protectSocket fd=" + fd + ": " + ok);
+        return ok;
     }
 
     // JNI: implemented in Go (gui/jni_android.go, in libwails.so,
