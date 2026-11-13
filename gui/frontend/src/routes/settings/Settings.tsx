@@ -229,7 +229,7 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
       <div>
         <h1 className="text-2xl font-medium tracking-tight">Settings</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          Node settings, service lifecycle and the effective configuration. Secrets stay in the root-owned config and are never shown here.
+          Node settings, service lifecycle and the effective configuration. Secrets stay in the {mobile ? "app's private config" : "root-owned config"} and are never shown here.
         </p>
       </div>
 
@@ -266,6 +266,11 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
                   onChange={(e) => edit({ name: e.target.value })}
                   placeholder="studio"
                 />
+                {draft.name.trim().toLowerCase() === "localhost" && (
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                    This is the device hostname, not a chosen name — it shows as “This device” elsewhere. Set a name here to change it.
+                  </p>
+                )}
               </div>
               <div>
                 <Label htmlFor="node-port">listen port</Label>

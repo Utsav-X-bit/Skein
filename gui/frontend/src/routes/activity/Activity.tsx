@@ -14,7 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Metric } from "@/components/ui/metric";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { formatBytes, shortID } from "@/lib/utils";
+import { displayPeerName, formatBytes, shortID } from "@/lib/utils";
+import { useIsMobile } from "@/lib/isMobile";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
 import { bucketActivities, formatAge } from "@/features/mesh/model";
 import { ThroughputStrip } from "@/features/mesh/ThroughputStrip";
@@ -66,6 +67,12 @@ export function Activity() {
   const [params, setParams] = useSearchParams();
   const [confirmClear, setConfirmClear] = useState(false);
   const [exportPath, setExportPath] = useState<string | null>(null);
+  // Stored history is unavailable on Android: the history service
+  // resolves its config directory from $HOME/$XDG_CONFIG_HOME,
+  // which the app sandbox does not provide, so every call fails.
+  // The recording section is replaced by a note there instead of
+  // showing the raw binding error.
+  const mobile = useIsMobile();
 
   const peerFilter = params.get("peer") ?? "";
   const directParam = params.get("direct");
@@ -149,7 +156,7 @@ export function Activity() {
     () => [...new Set(buckets.map((b) => b.transport).filter((t) => t !== ""))].sort(),
     [buckets],
   );
-  const names = useMemo(() => new Map(mesh.peers.map((p) => [p.id, p.name || p.id])), [mesh.peers]);
+  const names = useMemo(() => new Map(mesh.peers.map((p) => [p.id, displayPeerName(p)])), [mesh.peers]);
 
   const needle = peerFilter.trim().toLowerCase();
   const rows = useMemo(() => {
@@ -189,17 +196,22 @@ export function Activity() {
         <div className="mono-label">activity</div>
         <h1 className="mt-1 text-2xl font-medium tracking-tight">Activity</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Live link samples and lifecycle events from the daemon, plus optional history measured by this app on this device.
-          Live evidence expires; recorded history keeps its gaps instead of drawing over them.
+          Live link samples and lifecycle events from the daemon, plus optional recorded history from this app.
         </p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Recording</CardTitle>
-          <Badge tone={enabled ? "accent" : "neutral"}>{enabled ? "on" : "off"}</Badge>
+          <Badge tone={mobile ? "neutral" : enabled ? "accent" : "neutral"}>{mobile ? "unavailable" : enabled ? "on" : "off"}</Badge>
         </CardHeader>
         <CardContent className="space-y-4">
+          {mobile ? (
+            <p className="text-sm text-[var(--text-muted)]">
+              Recording isn't available on Android — the app has no config directory to store history in. Live throughput, links and events on this page still work.
+            </p>
+          ) : (
+            <>
           <div className="flex items-start justify-between gap-6">
             <div className="min-w-0">
               <p className="text-sm text-[var(--text)]">Record aggregate throughput and peer counts on this device.</p>
@@ -246,10 +258,12 @@ export function Activity() {
               Exported to <span className="break-all font-mono text-[var(--text)]">{exportPath}</span>
             </p>
           )}
+            </>
+          )}
         </CardContent>
       </Card>
 
-      {storedQ.isError && (
+      {!mobile && storedQ.isError && (
         <p className="text-xs text-[var(--danger)]">Recorded samples unavailable: {errText(storedQ.error)}</p>
       )}
 
@@ -342,7 +356,7 @@ export function Activity() {
                               <Badge tone={bucket.direct ? "success" : "relay"}>{bucket.direct ? "direct" : "relayed"}</Badge>
                             </span>
                           </td>
-                          <td className="px-3 py-2 font-mono text-xs">{(bucket.path ?? []).length > 0 ? bucket.path.map(shortID).join(" → ") : "—"}</td>
+                          <td className="px-3 py-2 font-mono text-xs">{(bucket.path ?? []).length > 0 ? bucket.path.map(label).join(" → ") : "—"}</td>
                           <td className="px-3 py-2 tabular">{formatBytes(bucket.rx)}</td>
                           <td className="px-3 py-2 tabular">{formatBytes(bucket.tx)}</td>
                           <td className="px-3 py-2 tabular">{bucket.rttMs > 0 ? `${bucket.rttMs.toFixed(1)} ms` : "—"}</td>

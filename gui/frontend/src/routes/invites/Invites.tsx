@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { Copy, Plus, RefreshCw, Share2, ShieldAlert, ShieldQuestion } from "lucide-react";
+import { Copy, Plus, RefreshCw, Share2, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { InviteService, errText, type Invite } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -28,8 +28,8 @@ function InvitePanel({ kind }: { kind: "peer" | "network" }) {
     <div className="space-y-4">
       <p className="text-sm leading-relaxed text-[var(--text-muted)]">
         {kind === "peer"
-          ? "A peer introduction tells an existing member how to reach this node. It carries no network secret and does not grant membership: the member still decides whether to add this node."
-          : "A network join string carries the network secret. Anyone who obtains it can join this network, so share it only with a device you trust, over a channel you trust. It is a snapshot of the addresses in use at the moment it was generated."}
+          ? "Tells an existing member how to reach this node. It carries no network secret and grants no membership — the member still decides whether to add this node."
+          : "Carries the network secret. Anyone who obtains it can join, so share it only with a device you trust, over a channel you trust. It is a snapshot of the addresses in use when it was generated."}
       </p>
 
       <div className="flex flex-wrap gap-2">
@@ -87,7 +87,7 @@ function InvitePanel({ kind }: { kind: "peer" | "network" }) {
           </div>
           <p className="text-xs leading-relaxed text-[var(--text-faint)]">
             {kind === "network"
-              ? "Copying puts the secret on the clipboard, where other applications and clipboard history may read it; a screenshot or a shoulder-surf shows it too. Skein cannot prevent that, so reveal and copy it deliberately and dismiss it afterwards."
+              ? "Copying puts the secret on the clipboard, where other apps and clipboard history may read it. Reveal and copy it deliberately, and dismiss it afterwards."
               : "This introduction contains no secret. It is still a snapshot of how to reach this node, so send it only to the device you are introducing."}
           </p>
 
@@ -147,14 +147,13 @@ export function Invites() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><ShieldQuestion size={16} className="text-[var(--text-muted)]" /> What this release does not do</CardTitle>
-          <Badge tone="neutral">deferred by the owner</Badge>
+          <CardTitle>Good to know</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-xs leading-relaxed text-[var(--text-muted)]">
           <p>Invitations have <strong className="text-[var(--text)]">no enforced expiry</strong>: a join string stays valid until the network secret is rotated.</p>
-          <p>There is <strong className="text-[var(--text)]">no active-invitation inventory</strong>: Skein cannot list the invitations outstanding, because it never stores them.</p>
-          <p>There is <strong className="text-[var(--text)]">no use attribution</strong>: Skein does not report who joined with which invitation, and does not infer it from a later peer event.</p>
-          <p>Rotating the network secret is the only network-wide revocation. It is not per-peer revocation, and a peer that has already joined is not removed by it — it must rejoin with the new join string.</p>
+          <p>There is <strong className="text-[var(--text)]">no active-invitation inventory</strong>: Skein never stores invitations, so it cannot list the ones outstanding.</p>
+          <p>There is <strong className="text-[var(--text)]">no use attribution</strong>: Skein does not report who joined with which invitation.</p>
+          <p>Rotating the network secret is the only network-wide revocation. It doesn't remove a peer that already joined — that peer must rejoin with the new join string.</p>
         </CardContent>
       </Card>
 
@@ -165,7 +164,7 @@ export function Invites() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm leading-relaxed text-[var(--text-muted)]">
-            Removing a peer from this device is local-only and does not revoke anything. The only revocation is rotating the network secret: every device must rejoin with the new join string. Rotation lives on Security, with its confirmation and the one-time new join string.
+            Removing a peer here is local-only and revokes nothing. The only revocation is rotating the network secret — every device must then rejoin with the new join string. Rotation lives on Security.
           </p>
           <Button variant="secondary" asChild>
             <Link to="/security"><RefreshCw size={16} /> Open rotation on Security</Link>
