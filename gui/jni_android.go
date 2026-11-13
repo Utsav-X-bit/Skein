@@ -47,9 +47,27 @@ static jstring skeinNewJstring(JNIEnv *env, const char *c) {
 static JavaVM* skeinJvm = NULL;
 static jobject skeinActivity = NULL;
 static jclass skeinActivityClass = NULL;
+// Cached SkeinVpnService class (global ref). FindClass does NOT
+// work from a Go goroutine attached via AttachCurrentThread — the
+// attached thread has no app class loader — so the class is cached
+// here from a Java thread (nativeStartDaemon) and skeinProtectSocket
+// uses the cached ref instead of FindClass.
+static jclass skeinVpnServiceClass = NULL;
 
 static void skeinStoreJvm(JNIEnv *env) {
 	if (skeinJvm == NULL) (*env)->GetJavaVM(env, &skeinJvm);
+}
+
+// Cache the SkeinVpnService class for skeinProtectSocket. Must be
+// called from a Java thread (a native method entry), where FindClass
+// resolves app classes; a no-op once cached.
+static void skeinStoreVpnServiceClass(JNIEnv *env) {
+	if (skeinVpnServiceClass != NULL) return;
+	jclass cls = (*env)->FindClass(env, "com/skein/app/SkeinVpnService");
+	if (cls != NULL) {
+		skeinVpnServiceClass = (*env)->NewGlobalRef(env, cls);
+		(*env)->DeleteLocalRef(env, cls);
+	}
 }
 
 static void skeinStoreActivity(JNIEnv *env, jobject activity) {
@@ -141,21 +159,16 @@ static int skeinProtectSocket(int fd) {
 	int detach = 0;
 	JNIEnv* env = skeinGetEnv(&detach);
 	if (env == NULL) return -1;
+	if (skeinVpnServiceClass == NULL) return -1;
 	int rc = -1;
-	jclass cls = (*env)->FindClass(env, "com/skein/app/SkeinVpnService");
-	if (cls != NULL) {
-		jmethodID mid = (*env)->GetStaticMethodID(env, cls, "protectSocket", "(I)Z");
-		if (mid != NULL) {
-			jboolean v = (*env)->CallStaticBooleanMethod(env, cls, mid, (jint)fd);
-			if ((*env)->ExceptionCheck(env)) {
-				skeinClearException(env, "protectSocket");
-			} else {
-				rc = v ? 1 : 0;
-			}
-		} else {
+	jmethodID mid = (*env)->GetStaticMethodID(env, skeinVpnServiceClass, "protectSocket", "(I)Z");
+	if (mid != NULL) {
+		jboolean v = (*env)->CallStaticBooleanMethod(env, skeinVpnServiceClass, mid, (jint)fd);
+		if ((*env)->ExceptionCheck(env)) {
 			skeinClearException(env, "protectSocket");
+		} else {
+			rc = v ? 1 : 0;
 		}
-		(*env)->DeleteLocalRef(env, cls);
 	} else {
 		skeinClearException(env, "protectSocket");
 	}
@@ -239,6 +252,7 @@ func Java_com_skein_app_SkeinVpnService_nativeSetTunFd(env *C.JNIEnv, thiz C.job
 //export Java_com_skein_app_SkeinVpnService_nativeStartDaemon
 func Java_com_skein_app_SkeinVpnService_nativeStartDaemon(env *C.JNIEnv, thiz C.jobject, filesDir C.jstring) C.jint {
 	C.skeinStoreJvm(env)
+	C.skeinStoreVpnServiceClass(env)
 	cstr := C.skeinJstringChars(env, filesDir)
 	if cstr == nil {
 		log.Printf("skein: android: startDaemon: missing files dir")
