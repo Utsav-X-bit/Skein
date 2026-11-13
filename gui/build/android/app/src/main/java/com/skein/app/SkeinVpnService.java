@@ -39,14 +39,17 @@ import org.json.JSONObject;
  *
  * <p>Routing: only the overlay prefixes are added as routes, so
  * underlay traffic (the daemon's UDP to peers' public addresses)
- * never enters the TUN and cannot loop back into it — no
- * {@link VpnService#protect} call is needed. {@code allowBypass()}
+ * is not routed into the TUN by the route table — but the daemon's
+ * socket is still bound to the VPN network, so its packets are
+ * captured unless the socket is protected. The Go daemon protects
+ * its underlay UDP socket via {@link #protectSocket} (registered
+ * from the GUI at startup) as soon as it is created; without that
+ * the peer is never reached and never observed. {@code allowBypass()}
  * is set so other apps may bypass the VPN via
  * {@code ConnectivityManager.bindProcessToNetwork}; it does not
- * protect the daemon's own sockets (that is {@code protect()}, which
- * is unnecessary here precisely because of the overlay-only routes).
+ * protect the daemon's own sockets (that is {@code protect()}).
  * If a full-tunnel (0.0.0.0/0) route is ever added, the underlay
- * socket MUST be protected first.
+ * socket MUST be protected first — it already is.
  *
  * <p>FD ownership: {@code establish()} returns a
  * {@link ParcelFileDescriptor}; {@code detachFd()} transfers
@@ -66,6 +69,25 @@ public class SkeinVpnService extends VpnService {
     private ParcelFileDescriptor tunFd;
     private Thread connectThread;
     private volatile boolean connected;
+
+    // The running service instance, for protectSocket: Go's underlay
+    // UDP socket must be protected from the VPN, and Go calls this
+    // static method with the socket's FD (see gui/jni_android.go).
+    private static SkeinVpnService instance;
+
+    /**
+     * Protect a socket FD from the VPN so its traffic bypasses the
+     * TUN. The daemon's underlay UDP socket needs this: without it
+     * the socket's packets to a peer's LAN/public address are routed
+     * into the TUN instead of out on the real network, so the peer
+     * is never reached (and never observed). Returns false when no
+     * service is running.
+     */
+    public static boolean protectSocket(int fd) {
+        SkeinVpnService svc = instance;
+        if (svc == null) return false;
+        return svc.protect(fd);
+    }
 
     // JNI: implemented in Go (gui/jni_android.go, in libwails.so,
     // already loaded by WailsBridge). Status: 0 ok, negative error.
@@ -99,6 +121,7 @@ public class SkeinVpnService extends VpnService {
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         createNotificationChannel();
     }
 
@@ -138,6 +161,7 @@ public class SkeinVpnService extends VpnService {
     @Override
     public void onDestroy() {
         closeTun();
+        if (instance == this) instance = null;
         super.onDestroy();
     }
 

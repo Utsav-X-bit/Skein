@@ -31,6 +31,14 @@ type received struct {
 	err       error
 }
 
+// ProtectSocket, when set (Android only), exempts a socket FD from
+// the VPN so its traffic bypasses the TUN. The GUI registers the
+// JNI implementation at startup; on other platforms it stays nil
+// and ListenUDP binds normally. A socket that is not protected has
+// its packets routed into the TUN, so a peer on the LAN or the
+// public internet is never reached.
+var ProtectSocket func(fd int) bool
+
 // ListenUDP binds the underlay socket. It prefers one dual-stack socket and
 // falls back to paired IPv4/IPv6 sockets on the same port.
 func ListenUDP(port uint16) (*UDP, error) {

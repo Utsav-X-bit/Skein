@@ -133,6 +133,36 @@ static int skeinCallActivityBool(const char *method) {
 	skeinReleaseEnv(detach);
 	return rc;
 }
+// Call SkeinVpnService.protectSocket(fd): protect the daemon's
+// underlay socket from the VPN so its packets bypass the TUN.
+// Returns 1 when protected, 0 when no service is running (or the
+// service declined), -1 when the call could not be made.
+static int skeinProtectSocket(int fd) {
+	int detach = 0;
+	JNIEnv* env = skeinGetEnv(&detach);
+	if (env == NULL) return -1;
+	int rc = -1;
+	jclass cls = (*env)->FindClass(env, "com/skein/app/SkeinVpnService");
+	if (cls != NULL) {
+		jmethodID mid = (*env)->GetStaticMethodID(env, cls, "protectSocket", "(I)Z");
+		if (mid != NULL) {
+			jboolean v = (*env)->CallStaticBooleanMethod(env, cls, mid, (jint)fd);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, "protectSocket");
+			} else {
+				rc = v ? 1 : 0;
+			}
+		} else {
+			skeinClearException(env, "protectSocket");
+		}
+		(*env)->DeleteLocalRef(env, cls);
+	} else {
+		skeinClearException(env, "protectSocket");
+	}
+	skeinReleaseEnv(detach);
+	return rc;
+}
+
 // Method names for the MainActivity calls below.
 // NOTE: these MUST be functions returning a string literal, not
 // variables. A `static const char *kMethod...` variable in the cgo
@@ -185,6 +215,16 @@ func vpnPermissionGranted() (bool, bool) {
 func openVpnSettings() int { return int(C.skeinCallActivityVoid(C.skeinMethodOpenVpnSettings())) }
 func startVpnService() int { return int(C.skeinCallActivityVoid(C.skeinMethodStartVpn())) }
 func stopVpnService() int  { return int(C.skeinCallActivityVoid(C.skeinMethodStopVpn())) }
+
+// protectSocketFD asks the running SkeinVpnService to protect the
+// given socket FD from the VPN (VpnService.protect). It reports
+// whether the socket is protected; false means no service is running
+// yet (the daemon starts before the service) or the call failed, in
+// which case the socket is left unprotected and the dial may loop
+// into the TUN.
+func protectSocketFD(fd int) bool {
+	return int(C.skeinProtectSocket(C.int(fd))) == 1
+}
 
 //export Java_com_skein_app_SkeinVpnService_nativeSetTunFd
 func Java_com_skein_app_SkeinVpnService_nativeSetTunFd(env *C.JNIEnv, thiz C.jobject, fd C.jint) C.jint {

@@ -17,6 +17,7 @@ import (
 	"log"
 
 	"github.com/Utsav-X-bit/skein/gui/services"
+	"github.com/Utsav-X-bit/skein/internal/link"
 )
 
 // androidVpnBridge implements services' vpnBridge via JNI calls into
@@ -58,4 +59,8 @@ func (androidVpnBridge) StopVpn() {
 
 func init() {
 	services.SetVpnBridge(androidVpnBridge{})
+	// The daemon's underlay UDP socket must bypass the VPN (see
+	// internal/link/listen_android.go); without this its packets to
+	// a peer are routed into the TUN and the peer is never reached.
+	link.ProtectSocket = protectSocketFD
 }
