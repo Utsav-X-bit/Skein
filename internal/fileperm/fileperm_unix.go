@@ -66,9 +66,16 @@ func preserveOwner(path, ref string) error {
 
 // root gives path to root and closes it to everyone else. Directories stay
 // executable by their owner only: 0750 root:root, files 0600.
+// On Android the app runs as an unprivileged UID with no root to chown
+// to (chown to uid 0 fails EPERM); the files already live in the app's
+// private dir owned by its own UID, so skip the chown there and only
+// tighten the mode. The same skip applies to any non-root caller: only
+// a root process can give a file to root, and the GUI never calls Root.
 func root(path string) error {
-	if err := os.Chown(path, 0, 0); err != nil {
-		return err
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, 0, 0); err != nil {
+			return err
+		}
 	}
 	mode := os.FileMode(0o600)
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
