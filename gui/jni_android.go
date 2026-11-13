@@ -135,11 +135,17 @@ static int skeinCallActivityBool(const char *method) {
 }
 // Method names for the MainActivity calls below (C constants, so
 // the Go side never allocates a C string per call).
-static const char *kMethodRequestVpn = "requestVpnPermission";
-static const char *kMethodVpnGranted = "vpnPermissionGranted";
-static const char *kMethodOpenVpnSettings = "openVpnSettings";
-static const char *kMethodStartVpn = "startVpnService";
-static const char *kMethodStopVpn = "stopVpnService";
+// NOTE: these must NOT be `static` — in a c-shared build the Go code
+// references them as C.kMethod* from another translation unit, and a
+// `static` (internal-linkage) variable is invisible to the dynamic
+// linker at load time, which crashes the app on launch with
+// "dlopen failed: cannot locate symbol kMethodOpenVpnSettings".
+// Non-static gives them external linkage so they resolve.
+const char *kMethodRequestVpn = "requestVpnPermission";
+const char *kMethodVpnGranted = "vpnPermissionGranted";
+const char *kMethodOpenVpnSettings = "openVpnSettings";
+const char *kMethodStartVpn = "startVpnService";
+const char *kMethodStopVpn = "stopVpnService";
 */
 import "C"
 
