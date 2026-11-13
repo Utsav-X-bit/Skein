@@ -10,7 +10,7 @@ import { VpnPermissionSheet } from "./VpnPermissionSheet";
 const explainerKey = "skein-vpn-explainer-shown";
 
 /**
- * ConnectButton is the sticky Home primary button (design brief
+ * ConnectButton is the Home primary button (design brief
  * §3.1, §5.2). It owns the whole Connect state machine — Connect /
  * Disconnect / Resume / Reconnect — and never shares the screen with
  * a second primary button. The first Connect shows the explainer

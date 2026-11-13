@@ -15,12 +15,12 @@ import { StateScreen } from "@/components/layout/StateScreen";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { ConfigService, VpnService } from "@/lib/api";
-import { shortID } from "@/lib/utils";
+import { displayNodeName, displayPeerName, displayPeerNameById } from "@/lib/utils";
 
 /**
  * MobileOverview is the mobile Home tab (design brief §3, §5.2):
  * status sentence, compact map with peer/link sheets, throughput +
- * event strips, Routes sheet, and the one sticky Connect button.
+ * event strips, Routes sheet, and the Connect button in normal flow.
  * The VPN-denied state is a full screen reached from ConnectButton.
  */
 export function MobileOverview() {
@@ -57,8 +57,8 @@ export function MobileOverview() {
 
   const selectedPeerName = useMemo(() => {
     if (!selectedPeer) return "";
-    if (selectedPeer === self) return mesh.status?.name || "This device";
-    return mesh.peers.find((p) => p.id === selectedPeer)?.name || shortID(selectedPeer);
+    if (selectedPeer === self) return displayNodeName(mesh.status?.name);
+    return displayPeerName(mesh.peers.find((p) => p.id === selectedPeer));
   }, [selectedPeer, self, mesh.status?.name, mesh.peers]);
 
   const statusSentence = useMemo(() => {
@@ -143,14 +143,15 @@ export function MobileOverview() {
         </div>
       </div>
 
-      <div className="sticky bottom-[calc(var(--nav-h)+12px)] z-20">
-        <ConnectButton
-          connectionState={connectionState}
-          overlayPrefix={overlayCidr}
-          onVpnDenied={() => setVpnDenied(true)}
-          autoStart={autoStart}
-        />
-      </div>
+      {/* The Connect button sits in normal flow below the strips, in
+          its own space — a sticky/floating button here overlapped the
+          Throughput card while the page scrolled. */}
+      <ConnectButton
+        connectionState={connectionState}
+        overlayPrefix={overlayCidr}
+        onVpnDenied={() => setVpnDenied(true)}
+        autoStart={autoStart}
+      />
 
       <MobileSheet open={selectedPeer !== null} onClose={() => setSelectedPeer(null)} title={selectedPeerName} initialDetent="half">
         <div className="space-y-4">
@@ -174,7 +175,7 @@ export function MobileOverview() {
       <MobileSheet
         open={selectedLink !== null}
         onClose={() => setSelectedLink(null)}
-        title={selectedLink ? `${selectedLink.from === self ? "This device" : shortID(selectedLink.from)} → ${selectedLink.to === self ? "This device" : shortID(selectedLink.to)}` : "Link"}
+        title={selectedLink ? `${selectedLink.from === self ? "This device" : displayPeerNameById(selectedLink.from, mesh.peers)} → ${selectedLink.to === self ? "This device" : displayPeerNameById(selectedLink.to, mesh.peers)}` : "Link"}
         initialDetent="peek"
       >
         <div className="space-y-4">
@@ -188,7 +189,7 @@ export function MobileOverview() {
         paths={mesh.model.paths}
         selected={routesPeer}
         onSelect={(dest) => setRoutesPeer(dest)}
-        nameOf={(id) => (id === self ? "This device" : mesh.peers.find((p) => p.id === id)?.name || shortID(id))}
+        nameOf={(id) => (id === self ? "This device" : displayPeerNameById(id, mesh.peers))}
       />
 
       <Dialog open={confirmLeave} onOpenChange={setConfirmLeave}>

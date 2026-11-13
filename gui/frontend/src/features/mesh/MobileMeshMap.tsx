@@ -2,12 +2,12 @@ import { useMemo, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import type { Peer } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { shortID } from "@/lib/utils";
+import { displayPeerNameById } from "@/lib/utils";
 import { useUI } from "@/lib/store";
 import { useMotionAllowed } from "@/features/mesh/hooks";
-import { MeshTable } from "@/features/mesh/MeshTable";
 import { mobileGeometry, positionsFor, type LayoutEntry } from "@/features/mesh/positions";
 import type { MeshModel, Rate } from "@/features/mesh/model";
+import { MobileMeshList } from "@/features/mesh/MobileMeshList";
 
 type Link = { from: string; to: string };
 
@@ -98,7 +98,7 @@ export function MobileMeshMap({
     [layoutKey, self],
   );
 
-  const nameOf = (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id));
+  const nameOf = (id: string) => (id === self ? "This device" : displayPeerNameById(id, peers));
   const peerById = useMemo(() => new Map(peers.map((p) => [p.id, p])), [peers]);
   const evidencePresent = useMemo(() => new Set(model.edges.map((e) => e.evidence)), [model.edges]);
 
@@ -123,9 +123,9 @@ export function MobileMeshMap({
     const ups = model.nodes.filter((n) => n.kind !== "self").length;
     const parts = model.nodes
       .filter((n) => n.kind !== "self")
-      .map((n) => `${n.label}, ${n.state}${n.rttMs !== undefined ? `, ${Math.round(n.rttMs)} milliseconds` : ""}`);
+      .map((n) => `${nameOf(n.id)}, ${n.state}${n.rttMs !== undefined ? `, ${Math.round(n.rttMs)} milliseconds` : ""}`);
     return `Mesh map, ${ups} peer${ups === 1 ? "" : "s"}. ${parts.join(". ")}`;
-  }, [model.nodes]);
+  }, [model.nodes, peers, self]);
 
   return (
     <div className="space-y-3">
@@ -158,17 +158,16 @@ export function MobileMeshMap({
 
       <div className="mesh-canvas relative w-full overflow-hidden rounded-lg border border-[var(--border)]">
         {mode === "table" ? (
-          <div className="max-h-[480px] overflow-auto p-2">
-            <MeshTable
+          <div className="max-h-[480px] overflow-auto">
+            <MobileMeshList
               model={model}
               peers={peers}
               peerRates={peerRates}
+              self={self}
               selectedPeer={selectedPeer}
               selectedLink={selectedLink}
               onSelectPeer={onSelectPeer}
               onSelectLink={onSelectLink}
-              onEscape={onEscape}
-              self={self}
             />
           </div>
         ) : (
@@ -272,12 +271,13 @@ export function MobileMeshMap({
                 const selected = selectedPeer === node.id;
                 const peer = isSelf ? undefined : peerById.get(node.id);
                 const direct = model.paths.find((p) => p.destination === node.id)?.direct;
+                const label = nameOf(node.id);
                 return (
                   <g
                     key={node.id}
                     role="button"
                     tabIndex={0}
-                    aria-label={`${node.label}${isSelf ? ", this device" : ""}, ${node.state}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
+                    aria-label={`${label}${isSelf ? ", this device" : ""}, ${node.state}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelectPeer(node.id);
@@ -307,10 +307,10 @@ export function MobileMeshMap({
                       fill={node.state === "up" || isSelf ? "var(--success)" : node.state === "degraded" ? "var(--relay)" : "var(--text-faint)"}
                     />
                     <text x={pos.x - w / 2 + 24} y={pos.y - h / 2 + 18} fontSize={12} fontWeight={600} fill="var(--text)">
-                      {node.label.length > 14 ? `${node.label.slice(0, 13)}…` : node.label}
+                      {label.length > 14 ? `${label.slice(0, 13)}…` : label}
                     </text>
                     <text x={pos.x - w / 2 + 10} y={pos.y - h / 2 + 34} fontSize={10} fill="var(--text-faint)" fontFamily="monospace">
-                      {node.overlay ? (node.overlay.length > 18 ? shortID(node.id) : node.overlay) : shortID(node.id)}
+                      {node.overlay ? (node.overlay.length > 13 ? `${node.overlay.slice(0, 12)}…` : node.overlay) : "no overlay yet"}
                     </text>
                     <text x={pos.x - w / 2 + 10} y={pos.y - h / 2 + 47} fontSize={10} fill="var(--text-muted)">
                       {isSelf ? "up · this device" : `${node.state} · ${direct === undefined ? peer?.transport ?? "unknown" : direct ? "direct" : "relayed"}`}
