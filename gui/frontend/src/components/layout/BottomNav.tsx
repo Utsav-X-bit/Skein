@@ -60,7 +60,7 @@ export function BottomNav() {
             aria-label={label}
             className={({ isActive }) =>
               cn(
-                "relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 text-[11px] font-semibold",
+                "relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 text-[11px] font-semibold transition-colors active:bg-[var(--surface-raised)]",
                 isActive ? "text-[var(--accent)]" : "text-[var(--text-muted)]",
               )
             }

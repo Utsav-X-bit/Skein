@@ -126,21 +126,29 @@ export function MobileOnboarding({ onBegin, onExit }: { onBegin?: () => void; on
   const step = mode === "welcome" ? 1 : mode === "done" ? 3 : 2;
 
   return (
-    <div className="mx-auto w-full max-w-md space-y-5">
-      <div className="flex items-center justify-between">
-        <StepDots step={step} total={3} />
-        {mode !== "welcome" && mode !== "done" && (
-          <Button variant="ghost" size="sm" onClick={back}>
-            <ArrowLeft size={15} /> Back
+    <div className="mx-auto w-full max-w-md space-y-6">
+      {/* Top app bar (Material small top app bar, 56dp): navigation
+          icon on the left, step indicator on the right. The
+          container already adds the status-bar inset above this
+          row, so the bar reads as a deliberate header instead of
+          pills floating under the status bar. Back is a full 48dp
+          touch target. */}
+      <div className="flex min-h-14 items-center justify-between gap-3">
+        {mode !== "welcome" && mode !== "done" ? (
+          <Button variant="ghost" size="sm" className="h-12 min-w-12 px-3" onClick={back} aria-label="Back to welcome">
+            <ArrowLeft size={18} /> Back
           </Button>
+        ) : (
+          <span aria-hidden="true" className="w-12" />
         )}
+        <StepDots step={step} total={3} />
       </div>
 
       {mode === "welcome" && (
         <>
-          <div className="space-y-2">
-            <LogoMark size={40} />
-            <h1 className="text-2xl font-medium tracking-tight">Welcome to Skein</h1>
+          <div className="space-y-3">
+            <LogoMark size={44} />
+            <h1 className="text-balance text-2xl font-medium tracking-tight">Welcome to Skein</h1>
             <p className="text-sm leading-relaxed text-[var(--text-muted)]">
               A private mesh VPN for your devices. Create a network, join one with an invite, or import a configuration you already have.
             </p>
@@ -211,7 +219,7 @@ export function MobileOnboarding({ onBegin, onExit }: { onBegin?: () => void; on
                 id="m-invite"
                 value={invite}
                 onChange={(e) => setInvite(e.target.value)}
-                placeholder="skein1:…"
+                placeholder="skein:2:…"
                 autoCapitalize="off"
                 autoCorrect="off"
                 className="h-12 font-mono text-xs"

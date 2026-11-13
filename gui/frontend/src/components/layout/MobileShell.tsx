@@ -66,11 +66,26 @@ export function MobileShell() {
   }, [setupGate, serviceMissing, svc.isSuccess]);
 
   if (svc.isLoading) {
-    return <div className="h-full bg-[var(--bg)] p-6"><div className="h-64 animate-pulse rounded-lg bg-[var(--surface-raised)]" /></div>;
+    return (
+      <div
+        className="h-full bg-[var(--bg)] p-6"
+        style={{ paddingTop: "calc(24px + var(--sat))", paddingBottom: "calc(24px + var(--sab))" }}
+      >
+        <div className="h-64 animate-pulse rounded-lg bg-[var(--surface-raised)]" />
+      </div>
+    );
   }
   if (setupOwnsWindow(setupGate, serviceMissing, location.pathname)) {
+    // Onboarding has no app bar of its own, so this container owns
+    // the window insets: the top padding clears the Android status
+    // bar (edge-to-edge WebView starts at y=0) and the bottom
+    // padding clears the gesture bar. Without the insets the step
+    // pills and Back button sit on top of the status bar.
     return (
-      <div className="h-full overflow-auto bg-[var(--bg)] p-6 text-[var(--text)]">
+      <div
+        className="h-full overflow-auto bg-[var(--bg)] px-6 text-[var(--text)]"
+        style={{ paddingTop: "calc(24px + var(--sat))", paddingBottom: "calc(24px + var(--sab))" }}
+      >
         <MobileOnboarding onBegin={() => setSetupGate("open")} onExit={() => setSetupGate("closed")} />
       </div>
     );

@@ -63,7 +63,17 @@ func (s *SetupService) Init(ctx context.Context, req InitRequest) (app.Bootstrap
 	if req.STUNServer != "" {
 		fields["stun_server"] = req.STUNServer
 	}
-	return bootstrapCall(ctx, "init", token, fields)
+	res, err := bootstrapCall(ctx, "init", token, fields)
+	if err != nil {
+		// A failed attempt must not leave the bootstrap server
+		// running with its token spent: on Android the next mint
+		// would be refused ("a bootstrap is already in progress")
+		// and the user would be stuck until the token expires.
+		// Tear it down so a retry starts clean. Best-effort: on
+		// desktop there is no in-process server to cancel.
+		_ = cancelBootstrapImpl(ctx)
+	}
+	return res, err
 }
 
 // Join configures this node from a network join string, via bootstrap.
@@ -72,7 +82,14 @@ func (s *SetupService) Join(ctx context.Context, invite string) (app.BootstrapRe
 	if err != nil {
 		return app.BootstrapResult{}, err
 	}
-	return bootstrapCall(ctx, "join", token, map[string]any{"invite": invite})
+	res, err := bootstrapCall(ctx, "join", token, map[string]any{"invite": invite})
+	if err != nil {
+		// See Init: a failed join (e.g. a truncated invite) must
+		// release the bootstrap server so the user can retry
+		// immediately with a corrected invite.
+		_ = cancelBootstrapImpl(ctx)
+	}
+	return res, err
 }
 
 // Rejoin restores membership in the current network. It never bootstraps or
@@ -119,6 +136,7 @@ func (s *SetupService) EnsureBootstrap(ctx context.Context, verb string) error {
 func (s *SetupService) CancelBootstrap(ctx context.Context) error {
 	return cancelBootstrapImpl(ctx)
 }
+
 type NetworkResetResult struct {
 	Backup        string `json:"backup"`
 	FirewallError string `json:"firewall_error,omitempty"`
@@ -151,5 +169,11 @@ func (s *SetupService) Import(ctx context.Context, path string) (app.BootstrapRe
 	if err != nil {
 		return app.BootstrapResult{}, err
 	}
-	return bootstrapCall(ctx, "import", token, map[string]any{"source": path})
+	res, err := bootstrapCall(ctx, "import", token, map[string]any{"source": path})
+	if err != nil {
+		// See Init: a failed import must release the bootstrap
+		// server so the user can retry immediately.
+		_ = cancelBootstrapImpl(ctx)
+	}
+	return res, err
 }

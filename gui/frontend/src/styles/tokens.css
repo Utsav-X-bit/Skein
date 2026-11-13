@@ -52,6 +52,12 @@
 
   /* Mobile shell metrics (design brief §1.2) */
   --nav-h: calc(64px + env(safe-area-inset-bottom, 0px));
+  /* Window insets for edge-to-edge Android: status bar (top) and
+     gesture bar (bottom). Use these wherever a screen has no app
+     bar of its own — onboarding especially — so content never
+     merges with the status bar or the gesture bar. */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
   --sheet-radius: var(--radius-xl);
   --tap-min: 48px;
   --connect-h: 56px;

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -66,10 +67,20 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var e api.APIError
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&e)
+		_ = json.Unmarshal(raw, &e)
 		if e.Message == "" {
-			e.Message = resp.Status
+			// Not every daemon error is the JSON envelope: the
+			// bootstrap endpoints answer with http.Error plain
+			// text ("network invite is truncated"), and the
+			// bootstrap-mode catch-all does the same. Surface the
+			// daemon's own words instead of the bare HTTP status,
+			// so the UI can say WHY a join failed.
+			e.Message = strings.TrimSpace(string(raw))
+			if e.Message == "" {
+				e.Message = resp.Status
+			}
 		}
 		// Step 8: keep the HTTP status on the error so callers can
 		// classify 401/403/423 distinctly (see errors.go) instead of

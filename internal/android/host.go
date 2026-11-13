@@ -206,6 +206,16 @@ func stopBootstrapLocked() error {
 		_ = srv.Close()
 	}
 	inproc.Reset()
+	// Delete the token state too. A failed attempt (bad invite, bad
+	// port) is rejected BEFORE the token is marked used, so the
+	// state file still holds a valid, unused token — and Mint
+	// refuses a fresh token while one is valid ("a bootstrap is
+	// already in progress"). Without this delete, cancelling a
+	// failed attempt would leave the user stuck until the token
+	// expires, and switching verbs would fail the same way. On
+	// success the state is already gone (commit deletes it), so
+	// this is a no-op there; a missing file is not an error.
+	_ = bootstrap.DeleteState(app.BootstrapStatePath())
 	return bsrv.Close()
 }
 

@@ -1,4 +1,4 @@
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
 import { MobileShell } from "@/components/layout/MobileShell";
@@ -30,10 +30,15 @@ export function App() {
             <Route path="invites" element={<MobileInvites />} />
             <Route path="settings" element={<MobileSettings />} />
             <Route path="about" element={<About />} />
-            {/* Desktop-only pages have no mobile tab; never leave a blank screen. */}
-            <Route path="network" element={<Navigate to="/" replace />} />
-            <Route path="security" element={<Navigate to="/" replace />} />
-            <Route path="logs" element={<Navigate to="/" replace />} />
+            {/* Feature parity with desktop: Routes, Security (rotate
+                the network secret) and Diagnostics (bundle, probe,
+                ping) are the same desktop components — their tables
+                scroll horizontally and their grids stack, so they
+                render in the mobile shell. Reached from Settings →
+                Diagnostics & security. */}
+            <Route path="network" element={<Network />} />
+            <Route path="security" element={<Security />} />
+            <Route path="logs" element={<Logs />} />
           </Route>
         </Routes>
       ) : (
@@ -51,12 +56,20 @@ export function App() {
           </Route>
         </Routes>
       )}
-      {/* Mobile: bottom-center, lifted above the bottom nav; desktop: bottom-right as before. */}
+      {/* Mobile: bottom-center, lifted above the bottom nav AND the
+          gesture bar. The lift uses sonner's documented `offset` /
+          `mobileOffset` props (they set the --offset-bottom /
+          --mobile-offset-bottom variables the toaster's own CSS
+          reads). The previous `style={{ bottom }}` did not move the
+          toast: on a phone the max-width:600px media query pins it
+          to --mobile-offset-bottom, and the toast crowded the
+          gesture bar. */}
       <Toaster
         theme="dark"
         position={isMobile ? "bottom-center" : "bottom-right"}
         closeButton
-        style={isMobile ? { bottom: "calc(var(--nav-h) + 12px)" } : undefined}
+        offset={isMobile ? { bottom: "calc(var(--nav-h) + 16px)" } : undefined}
+        mobileOffset={isMobile ? { bottom: "calc(var(--nav-h) + 16px)" } : undefined}
       />
     </HashRouter>
   );
