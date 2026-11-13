@@ -51,6 +51,13 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default .HOST_ARCH}}'
+          # NOTE: PRODUCTION must be forwarded here. Without it,
+          # compile:go:shared sees .PRODUCTION as empty and builds with
+          # `-tags android,debug`, which selects assets_default.go (an
+          # EMPTY embed.FS) instead of assets_production.go — so the
+          # frontend is never embedded and the WebView shows
+          # ERR_CONNECTION_REFUSED for https://wails.localhost/.
+          PRODUCTION: '{{.PRODUCTION | default "false"}}'
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
     env:
@@ -118,9 +125,14 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: arm64
+          # Forward PRODUCTION (see the note in the `build` task): without
+          # it the Go build drops the `production` tag and embeds an empty
+          # asset FS, so the WebView cannot load the frontend.
+          PRODUCTION: '{{.PRODUCTION | default "false"}}'
       - task: compile:go:shared
         vars:
           ARCH: amd64
+          PRODUCTION: '{{.PRODUCTION | default "false"}}'
 
   package:
     summary: Packages a production build of the application into a signed release APK
