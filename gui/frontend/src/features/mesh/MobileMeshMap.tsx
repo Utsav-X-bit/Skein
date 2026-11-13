@@ -42,6 +42,14 @@ function edgeDash(evidence: string): string | undefined {
   }
 }
 
+/** Legend swatches, keyed by the evidence they describe. */
+const legendSamples = {
+  direct: <span className="inline-block h-0.5 w-5 bg-[var(--accent)]" />,
+  observed: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" />,
+  advertised: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--warning)]" />,
+  route: <span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" />,
+} as const;
+
 /**
  * MobileMeshMap is the compact home map (design brief §3): this node
  * centred, peers on the ellipse from the shared positionsFor layout,
@@ -101,6 +109,13 @@ export function MobileMeshMap({
   const nameOf = (id: string) => (id === self ? "This device" : displayPeerNameById(id, peers));
   const peerById = useMemo(() => new Map(peers.map((p) => [p.id, p])), [peers]);
   const evidencePresent = useMemo(() => new Set(model.edges.map((e) => e.evidence)), [model.edges]);
+  // The legend only renders when it has something to say: with no
+  // edges and motion allowed it would be an empty pill.
+  const legendItems = useMemo(
+    () =>
+      (["direct", "observed", "advertised", "route"] as const).filter((key) => evidencePresent.has(key)),
+    [evidencePresent],
+  );
 
   // Active links for flow dots: a self-link with live traffic in the
   // last sampling window, capped at 3 dots on screen.
@@ -138,22 +153,17 @@ export function MobileMeshMap({
             List
           </Button>
         </div>
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
-          {[
-            { key: "direct", label: "direct", sample: <span className="inline-block h-0.5 w-5 bg-[var(--accent)]" /> },
-            { key: "observed", label: "observed", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--info)]" /> },
-            { key: "advertised", label: "advertised", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dashed border-[var(--warning)]" /> },
-            { key: "route", label: "route", sample: <span className="inline-block h-0.5 w-5 border-t-2 border-dotted border-[var(--text-faint)]" /> },
-          ]
-            .filter((item) => evidencePresent.has(item.key as "direct" | "observed" | "advertised" | "route"))
-            .map((item) => (
-              <span key={item.key} className="inline-flex items-center gap-1">
-                {item.sample}
-                {item.label}
+        {(legendItems.length > 0 || !motion) && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/80 px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
+            {legendItems.map((key) => (
+              <span key={key} className="inline-flex items-center gap-1">
+                {legendSamples[key]}
+                {key}
               </span>
             ))}
-          {!motion && <span>motion reduced · arrows only</span>}
-        </div>
+            {!motion && <span>motion reduced · arrows only</span>}
+          </div>
+        )}
       </div>
 
       <div className="mesh-canvas relative w-full overflow-hidden rounded-lg border border-[var(--border)]">
