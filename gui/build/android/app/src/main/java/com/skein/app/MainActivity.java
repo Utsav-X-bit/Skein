@@ -65,6 +65,13 @@ public class MainActivity extends AppCompatActivity {
     // System VPN consent dialog (VpnService.prepare()).
     private static final int VPN_REQUEST_CODE = 7005;
 
+    // Set when startVpnService() is asked to start the VPN before the
+    // system permission is granted: the permission dialog is shown
+    // instead, and onActivityResult starts the service once the user
+    // grants it. Without this, starting the service with no permission
+    // makes establish() return null and the daemon stops at once.
+    private boolean pendingStartVpn = false;
+
     // The live activity, for the Go side's static VPN entry points
     // (requestVpnPermission and friends are instance methods called
     // from Go through the cached JNI activity reference).
@@ -350,10 +357,21 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    /** Start the SkeinVpnService (daemon start + TUN + connect). */
+    /**
+     * Start the SkeinVpnService (daemon start + TUN + connect). If the
+     * system VPN permission is not granted yet, show the permission
+     * dialog instead: establish() returns null without it, so starting
+     * the service now would only make the daemon stop at once. The
+     * service is started from onActivityResult once the user grants it.
+     */
     public void startVpnService() {
         runOnUiThread(() -> {
             try {
+                if (SkeinVpnService.prepareIntent(this) != null) {
+                    pendingStartVpn = true;
+                    requestVpnPermission();
+                    return;
+                }
                 ContextCompat.startForegroundService(this, SkeinVpnService.connectIntent(this));
             } catch (Exception e) {
                 Log.e(TAG, "startVpnService failed", e);
@@ -624,6 +642,14 @@ public class MainActivity extends AppCompatActivity {
                 nativeVpnPermissionResult(resultCode == RESULT_OK);
             } catch (UnsatisfiedLinkError e) {
                 Log.w(TAG, "nativeVpnPermissionResult unavailable", e);
+            }
+            // A start that waited on this dialog goes ahead now that
+            // permission is granted; a denial just clears the flag.
+            if (pendingStartVpn) {
+                pendingStartVpn = false;
+                if (resultCode == RESULT_OK) {
+                    startVpnService();
+                }
             }
             return;
         }
