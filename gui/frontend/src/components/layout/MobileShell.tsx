@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { ChevronLeft } from "lucide-react";
+import { displayNodeName } from "@/lib/utils";
 import { MobileAppBar } from "./MobileAppBar";
 import { BottomNav } from "./BottomNav";
 import { StateScreen } from "./StateScreen";
@@ -99,7 +101,7 @@ export function MobileShell() {
   // The app bar shows the node name (no network name exists in the
   // API) and the live connection dot.
   const appBar = (
-    <MobileAppBar networkName={config.data?.name || "Skein"} connected={status.data?.connection?.state === "connected"} />
+    <MobileAppBar networkName={config.data?.name ? displayNodeName(config.data.name) : "Skein"} connected={status.data?.connection?.state === "connected"} />
   );
 
   if (departed) {
@@ -162,9 +164,24 @@ export function MobileShell() {
     );
   }
 
+  // Sub-pages (Routes, Security, Diagnostics, About) are reached
+  // from Settings and have no back affordance of their own — the
+  // bottom nav only goes to the five tabs, and Android Back exits
+  // the app. A back row above the content returns to Settings.
+  const isSubPage = ["/network", "/security", "/logs", "/about"].includes(location.pathname);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-[var(--bg)] text-[var(--text)]">
       {appBar}
+      {isSubPage && (
+        <button
+          type="button"
+          onClick={() => navigate("/settings")}
+          className="flex shrink-0 items-center gap-0.5 px-4 pb-1 pt-3 text-sm text-[var(--text-muted)]"
+        >
+          <ChevronLeft size={16} /> Back to Settings
+        </button>
+      )}
       <main className="min-h-0 flex-1 overflow-auto px-4 pb-[calc(var(--nav-h)+16px)] pt-4">
         <Outlet />
       </main>

@@ -12,6 +12,7 @@ import { Input, Label } from "@/components/ui/input";
 import { formatAge } from "@/features/mesh/model";
 import { useLive } from "@/features/mesh/useDaemonEvents";
 import { cn, shortID } from "@/lib/utils";
+import { useIsMobile } from "@/lib/isMobile";
 import { LogLevels, LogWindowStep, filterLogs, logKey, logLine, mergeLogs, type LogLevel } from "./model";
 
 const levelTone: Record<string, string> = {
@@ -28,6 +29,10 @@ const levelTone: Record<string, string> = {
 export function Logs() {
   const [params] = useSearchParams();
   const qParam = params.get("q") ?? "";
+  // On a phone the three-column log row leaves ~half the width for
+  // the message, so addresses break mid-token. Rows stack instead:
+  // time + level on one line, message full-width below.
+  const mobile = useIsMobile();
   const [q, setQ] = useState(qParam);
   const [level, setLevel] = useState<LogLevel>("all");
   const [paused, setPaused] = useState(false);
@@ -256,11 +261,23 @@ export function Logs() {
                     aria-selected={index === activeIndex}
                     onMouseDown={() => setSelected(logKey(row))}
                     onDoubleClick={() => void copyLine(row)}
-                    className={cn("flex gap-3 border-b border-[var(--border)] px-4 py-1.5 last:border-b-0", index === activeIndex && "bg-[var(--surface-raised)]")}
+                    className={cn("border-b border-[var(--border)] px-4 py-1.5 last:border-b-0", mobile ? "space-y-0.5" : "flex gap-3", index === activeIndex && "bg-[var(--surface-raised)]")}
                   >
-                    <span className="tabular shrink-0 text-[var(--text-faint)]">{new Date(row.time_ms).toLocaleTimeString()}</span>
-                    <span className={cn("w-16 shrink-0 uppercase", levelTone[row.level] ?? "text-[var(--text-faint)]")}>{row.level}</span>
-                    <span className="min-w-0 flex-1 break-words text-[var(--text-muted)]">{row.message}</span>
+                    {mobile ? (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span className="tabular shrink-0 text-[var(--text-faint)]">{new Date(row.time_ms).toLocaleTimeString()}</span>
+                          <span className={cn("uppercase", levelTone[row.level] ?? "text-[var(--text-faint)]")}>{row.level}</span>
+                        </div>
+                        <div className="break-words text-[var(--text-muted)]">{row.message}</div>
+                      </>
+                    ) : (
+                      <>
+                        <span className="tabular shrink-0 text-[var(--text-faint)]">{new Date(row.time_ms).toLocaleTimeString()}</span>
+                        <span className={cn("w-16 shrink-0 uppercase", levelTone[row.level] ?? "text-[var(--text-faint)]")}>{row.level}</span>
+                        <span className="min-w-0 flex-1 break-words text-[var(--text-muted)]">{row.message}</span>
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
@@ -278,7 +295,7 @@ export function Logs() {
                   Load older lines
                 </Button>
               )}
-              <span className="font-mono">↑↓ select · ↵ copy</span>
+              <span className="font-mono">{mobile ? "tap a line to select · double-tap to copy" : "↑↓ select · ↵ copy"}</span>
             </span>
           </div>
         </CardContent>
