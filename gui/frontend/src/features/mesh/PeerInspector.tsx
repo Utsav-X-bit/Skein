@@ -6,7 +6,8 @@ import { NetworkService, PeerService, errKind, errText, type Peer, type Status }
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { formatBytes, formatDuration, shortID } from "@/lib/utils";
+import { formatBytes, formatDuration } from "@/lib/utils";
+import { displayNodeName, displayPeerNameById } from "@/lib/utils";
 import { useLive } from "./useDaemonEvents";
 import { PeerHealth } from "./PeerHealth";
 import { useWideLayout } from "./hooks";
@@ -119,7 +120,7 @@ export function PeerInspectorBody({
   const routes = peerId ? model.paths.filter((p) => p.destination === peerId || p.path.includes(peerId)) : [];
   const selected = peerId ? model.paths.find((p) => p.destination === peerId) : undefined;
   const presence = presenceOf(peer, peerId ? lastTrafficAt[peerId] : undefined, Date.now(), selected !== undefined && !selected.direct);
-  const nameOf = (id: string) => (id === status?.id ? "this device" : peers.find((p) => p.id === id)?.name || shortID(id));
+  const nameOf = (id: string) => (id === status?.id ? "this device" : displayPeerNameById(id, peers));
   const liveProbe = useLive((s) => (peerId ? s.probes[peerId] : undefined));
 
   const ping = useMutation({
@@ -322,9 +323,7 @@ export function PeerInspector({
   const [confirmLeave, setConfirmLeave] = useState(false);
   const leave = useLeaveNetworkMutation();
   const isSelf = peerId !== null && peerId === status?.id;
-  const peer = peerId ? peers.find((p) => p.id === peerId) ?? null : null;
-  const node = peerId ? model.nodes.find((n) => n.id === peerId) ?? null : null;
-  const title = isSelf ? status?.name || "This device" : peer?.name || node?.label || (peerId ? shortID(peerId) : "");
+  const title = isSelf ? displayNodeName(status?.name) : peerId ? displayPeerNameById(peerId, peers) : "";
 
   if (!peerId) return null;
 

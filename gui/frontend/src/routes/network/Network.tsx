@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { shortID } from "@/lib/utils";
+import { displayPeerNameById, shortID } from "@/lib/utils";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
 import { routeSummary } from "@/features/mesh/model";
 import { rowKeyNav, usePeerParam } from "@/features/mesh/hooks";
@@ -46,7 +46,7 @@ export function Network() {
 
   const self = mesh.status.id;
   const status = mesh.status;
-  const nameOf = (id: string) => mesh.peers.find((p) => p.id === id)?.name || shortID(id);
+  const nameOf = (id: string) => displayPeerNameById(id, mesh.peers);
   const toggle = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
   const arrow = (key: SortKey) => (sort.key === key ? (sort.dir === 1 ? "↑" : "↓") : "");
@@ -107,7 +107,7 @@ export function Network() {
                         >
                           <td className="px-3 py-2">
                             <div className="truncate">{nameOf(p.destination)}</div>
-                            <div className="font-mono text-[10px] text-[var(--text-faint)]">{shortID(p.destination)}</div>
+                            <div className="font-mono text-[10px] text-[var(--text-faint)]">{nameOf(p.destination) !== shortID(p.destination) ? shortID(p.destination) : "—"}</div>
                           </td>
                           <td className="px-3 py-2 text-xs">
                             <div>{nameOf(p.nextHop)}</div>

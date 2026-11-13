@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { Peer } from "@/lib/api";
-import { shortID } from "@/lib/utils";
+import { displayPeerNameById } from "@/lib/utils";
 import { rowKeyNav } from "./hooks";
 import { formatBytesPerSec, routeSummary, type MeshModel, type Rate } from "./model";
 
@@ -36,7 +36,7 @@ export function MeshTable({
     return { direct, observed, advertised, routed };
   }, [model.edges, self]);
 
-  const nameOf = (id: string) => (id === self ? "This device" : peers.find((p) => p.id === id)?.name || shortID(id));
+  const nameOf = (id: string) => (id === self ? "This device" : displayPeerNameById(id, peers));
 
   return (
     <div className="space-y-4">
@@ -75,7 +75,7 @@ export function MeshTable({
                   onKeyDown={(e) => rowKeyNav(e, () => onSelectPeer(node.id), onEscape)}
                   className={`cursor-pointer hover:bg-[var(--surface-raised)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] ${selectedPeer === node.id ? "bg-[var(--accent-soft)]" : ""}`}
                 >
-                  <td className="max-w-[180px] truncate px-3 py-2">{node.label}</td>
+                  <td className="max-w-[180px] truncate px-3 py-2">{node.kind === "self" ? node.label : nameOf(node.id)}</td>
                   <td className="px-3 py-2 font-mono text-xs">{node.overlay ?? "—"}</td>
                   <td className="px-3 py-2">{node.kind === "self" ? "up" : node.state}</td>
                   <td className="px-3 py-2 text-xs text-[var(--text-muted)]">{evidence}</td>

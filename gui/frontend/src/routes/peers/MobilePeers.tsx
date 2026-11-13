@@ -12,7 +12,7 @@ import { PeerHealth } from "@/features/mesh/PeerHealth";
 import { PeerInspectorBody, useLeaveNetworkMutation } from "@/features/mesh/PeerInspector";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { formatBytesPerSec, presenceOf, routeSummary, type Presence, type Rate } from "@/features/mesh/model";
-import { shortID } from "@/lib/utils";
+import { displayNodeName, displayPeerName, displayPeerNameById } from "@/lib/utils";
 
 const presenceRank: Record<Presence, number> = { active: 0, idle: 1, routed: 2, offline: 3, unknown: 4 };
 
@@ -33,7 +33,7 @@ export function MobilePeers() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const now = Date.now();
-    const nameOf = (id: string) => mesh.peers.find((p) => p.id === id)?.name || shortID(id);
+    const nameOf = (id: string) => displayPeerNameById(id, mesh.peers);
     return mesh.peers
       .filter((p) => !needle || `${p.name ?? ""} ${p.id} ${p.overlay_ipv4 ?? ""} ${p.path ?? ""}`.toLowerCase().includes(needle))
       .map((peer) => {
@@ -56,14 +56,14 @@ export function MobilePeers() {
   const self = status.id;
   const up = mesh.peers.filter((p) => p.state === "up").length;
 
-  const selectedName = peerId === self ? status.name || "This device" : mesh.peers.find((p) => p.id === peerId)?.name || (peerId ? shortID(peerId) : "");
+  const selectedName = peerId === self ? displayNodeName(status.name) : peerId ? displayPeerNameById(peerId, mesh.peers) : "";
 
   return (
     <div className="space-y-4 pb-24">
       <div>
         <h1 className="text-2xl font-medium tracking-tight">Peers</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          {up} of {mesh.peers.length} up · {status.name || "this device"} · {status.overlay_ipv4 ?? ""}
+          {up} of {mesh.peers.length} up · {displayNodeName(status.name)} · {status.overlay_ipv4 ?? ""}
         </p>
       </div>
 
@@ -85,7 +85,7 @@ export function MobilePeers() {
         className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface-raised)] p-3 text-left"
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="font-medium">{status.name || "This device"}</span>
+          <span className="font-medium">{displayNodeName(status.name)}</span>
           <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[var(--accent)]">this device</span>
         </div>
         <div className="mt-1 font-mono text-xs text-[var(--text-muted)]">{status.overlay_ipv4 ?? ""}</div>
@@ -119,11 +119,11 @@ export function MobilePeers() {
                 style={offline ? { opacity: 0.6 } : undefined}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="min-w-0 truncate font-medium">{peer.name || shortID(peer.id)}</span>
+                  <span className="min-w-0 truncate font-medium">{displayPeerName(peer)}</span>
                   <PeerHealth peer={peer} presence={presence} />
                 </div>
                 <div className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">
-                  {peer.overlay_ipv4 || peer.overlay_ipv6 || shortID(peer.id)}
+                  {peer.overlay_ipv4 || peer.overlay_ipv6 || "no overlay address yet"}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-[var(--text-muted)]">
                   <span className="tabular">{peer.rtt_ms > 0 ? `${Math.round(peer.rtt_ms)} ms` : "—"}</span>

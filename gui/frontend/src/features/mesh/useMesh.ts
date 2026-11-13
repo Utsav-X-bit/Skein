@@ -21,6 +21,7 @@ import {
 } from "./model";
 import { useLive } from "./useDaemonEvents";
 import { useSessionHistoryStore } from "./useSessionHistory";
+import { displayNodeName } from "@/lib/utils";
 
 export const MeshKeys = {
   status: ["status"],
@@ -235,7 +236,7 @@ export function useMesh(): MeshData {
       ...base,
       nodes: base.nodes.map((node) =>
         node.id === self
-          ? { ...node, overlay: overlay ?? node.overlay, label: status.name || node.label }
+          ? { ...node, overlay: overlay ?? node.overlay, label: displayNodeName(status.name) }
           : node,
       ),
     };

@@ -10,6 +10,36 @@ export function shortID(id?: string) {
   return id.length > 12 ? id.slice(0, 8) : id;
 }
 
+/**
+ * A daemon-reported node name is only a display name when it says
+ * something. Android (and a fresh Linux install) report the OS
+ * hostname, which defaults to "localhost" — that is not a name, it is
+ * the absence of one, so every display site maps it to a fallback
+ * instead of showing it.
+ */
+export function isUsableName(name: string | undefined | null): name is string {
+  if (!name) return false;
+  const value = name.trim();
+  return value !== "" && value.toLowerCase() !== "localhost";
+}
+
+/** Display name for this device: the configured name, or "This device". */
+export function displayNodeName(name: string | undefined | null): string {
+  return isUsableName(name) ? name.trim() : "This device";
+}
+
+/** Display name for a peer: its configured name, or its short id. */
+export function displayPeerName(peer: { id: string; name?: string | null } | undefined | null): string {
+  if (!peer) return "—";
+  return isUsableName(peer.name) ? peer.name.trim() : shortID(peer.id);
+}
+
+/** Display name for a peer known only by id. */
+export function displayPeerNameById(id: string, peers: Array<{ id: string; name?: string | null }>): string {
+  const peer = peers.find((p) => p.id === id);
+  return peer ? displayPeerName(peer) : shortID(id);
+}
+
 export function formatBytes(bytes?: number) {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
