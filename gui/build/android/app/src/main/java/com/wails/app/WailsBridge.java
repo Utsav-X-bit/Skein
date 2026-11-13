@@ -1439,14 +1439,15 @@ public class WailsBridge {
         });
     }
 
-    /** Forward a picked file path to Go (package-private, used by MainActivity). */
-    void filePickerResult(int callbackID, String path) {
+    /** Forward a picked file path to Go. Public because MainActivity (in
+     * com.skein.app) calls it and this class lives in com.wails.app. */
+    public void filePickerResult(int callbackID, String path) {
         // The picker completes on a background thread that may outlive shutdown()
         if (initialized) nativeFilePickerResult(callbackID, path);
     }
 
-    /** Signal the end of a file picking session (package-private). */
-    void filePickerDone(int callbackID) {
+    /** Signal the end of a file picking session. Public for the same reason. */
+    public void filePickerDone(int callbackID) {
         if (initialized) nativeFilePickerDone(callbackID);
     }
 
