@@ -133,19 +133,23 @@ static int skeinCallActivityBool(const char *method) {
 	skeinReleaseEnv(detach);
 	return rc;
 }
-// Method names for the MainActivity calls below (C constants, so
-// the Go side never allocates a C string per call).
-// NOTE: these must NOT be `static` — in a c-shared build the Go code
-// references them as C.kMethod* from another translation unit, and a
-// `static` (internal-linkage) variable is invisible to the dynamic
-// linker at load time, which crashes the app on launch with
-// "dlopen failed: cannot locate symbol kMethodOpenVpnSettings".
-// Non-static gives them external linkage so they resolve.
-const char *kMethodRequestVpn = "requestVpnPermission";
-const char *kMethodVpnGranted = "vpnPermissionGranted";
-const char *kMethodOpenVpnSettings = "openVpnSettings";
-const char *kMethodStartVpn = "startVpnService";
-const char *kMethodStopVpn = "stopVpnService";
+// Method names for the MainActivity calls below.
+// NOTE: these MUST be functions returning a string literal, not
+// variables. A `static const char *kMethod...` variable in the cgo
+// preamble crashes the app on launch: the Go code references it as
+// C.kMethod* from another translation unit, and the dynamic linker
+// cannot resolve a static (internal-linkage) data symbol at load
+// time ("dlopen failed: cannot locate symbol kMethodOpenVpnSettings").
+// Dropping `static` does not work either — the preamble is compiled
+// into several object files, so a non-static variable becomes a
+// duplicate symbol at link time. A static *function* is safe: each
+// translation unit gets its own copy and the call resolves at static
+// link time, exactly like skeinCallActivityVoid above.
+static const char *skeinMethodRequestVpn(void) { return "requestVpnPermission"; }
+static const char *skeinMethodVpnGranted(void) { return "vpnPermissionGranted"; }
+static const char *skeinMethodOpenVpnSettings(void) { return "openVpnSettings"; }
+static const char *skeinMethodStartVpn(void) { return "startVpnService"; }
+static const char *skeinMethodStopVpn(void) { return "stopVpnService"; }
 */
 import "C"
 
@@ -162,13 +166,13 @@ import (
 // requestVpnPermission asks the Java side to launch the system VPN
 // consent dialog (VpnService.prepare()). The outcome arrives
 // asynchronously via nativeVpnPermissionResult below.
-func requestVpnPermission() int { return int(C.skeinCallActivityVoid(C.kMethodRequestVpn)) }
+func requestVpnPermission() int { return int(C.skeinCallActivityVoid(C.skeinMethodRequestVpn())) }
 
 // vpnPermissionGranted asks Android live whether Skein is already
 // authorised (VpnService.prepare() returns null). It returns
 // (granted, ok): ok is false when the bridge is not ready.
 func vpnPermissionGranted() (bool, bool) {
-	switch rc := int(C.skeinCallActivityBool(C.kMethodVpnGranted)); rc {
+	switch rc := int(C.skeinCallActivityBool(C.skeinMethodVpnGranted())); rc {
 	case 1:
 		return true, true
 	case 0:
@@ -178,9 +182,9 @@ func vpnPermissionGranted() (bool, bool) {
 	}
 }
 
-func openVpnSettings() int { return int(C.skeinCallActivityVoid(C.kMethodOpenVpnSettings)) }
-func startVpnService() int { return int(C.skeinCallActivityVoid(C.kMethodStartVpn)) }
-func stopVpnService() int  { return int(C.skeinCallActivityVoid(C.kMethodStopVpn)) }
+func openVpnSettings() int { return int(C.skeinCallActivityVoid(C.skeinMethodOpenVpnSettings())) }
+func startVpnService() int { return int(C.skeinCallActivityVoid(C.skeinMethodStartVpn())) }
+func stopVpnService() int  { return int(C.skeinCallActivityVoid(C.skeinMethodStopVpn())) }
 
 //export Java_com_skein_app_SkeinVpnService_nativeSetTunFd
 func Java_com_skein_app_SkeinVpnService_nativeSetTunFd(env *C.JNIEnv, thiz C.jobject, fd C.jint) C.jint {
