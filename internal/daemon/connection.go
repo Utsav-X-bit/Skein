@@ -97,10 +97,11 @@ type conn struct {
 	reason    string
 	lastErr   string
 	since     time.Time
+	ready     chan struct{} // closed when the first generation can accept Connect
 	engCancel context.CancelFunc
 	ctlCancel context.CancelFunc
 	pauseCh   chan struct{} // closed by Pause to stop the dataplane
-	resumeCh  chan struct{} // closed by Resume to start it
+	resumeCh  chan struct{} // signalled by Resume to start the dataplane
 	downCh    chan struct{} // closed after teardown, for Pause to wait on
 }
 
@@ -108,6 +109,10 @@ func (c *conn) setGeneration(engCancel, ctlCancel context.CancelFunc, pauseCh, r
 	c.mu.Lock()
 	c.engCancel, c.ctlCancel = engCancel, ctlCancel
 	c.pauseCh, c.resumeCh, c.downCh = pauseCh, resumeCh, downCh
+	if c.ready != nil {
+		close(c.ready)
+		c.ready = nil
+	}
 	c.mu.Unlock()
 }
 
@@ -139,6 +144,21 @@ func (c *conn) isPaused() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state == ConnPaused
+}
+
+func (c *conn) waitReady(ctx context.Context) error {
+	c.mu.Lock()
+	ready := c.ready
+	c.mu.Unlock()
+	if ready == nil {
+		return nil
+	}
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Connection implements api.GUI.
@@ -178,6 +198,9 @@ func (d *Daemon) Capabilities() api.Capabilities {
 // and routes are removed (firewall rules stay), sessions drop, and the flag
 // is persisted so a service restart stays paused.
 func (d *Daemon) Disconnect(ctx context.Context) (api.Connection, error) {
+	if err := d.conn.waitReady(ctx); err != nil {
+		return d.Connection(), err
+	}
 	d.conn.mu.Lock()
 	switch d.conn.state {
 	case ConnPaused, ConnError:
@@ -223,6 +246,9 @@ func (d *Daemon) Connect(ctx context.Context) (api.Connection, error) {
 	if d.departed() {
 		return d.Connection(), &api.StatusError{Status: http.StatusConflict, Code: api.ErrCodeConflict, Message: "node has left its network; rejoin with a fresh invite first", Remediation: "call POST /api/v1/system/join with a fresh invite (confirm:true)"}
 	}
+	if err := d.conn.waitReady(ctx); err != nil {
+		return d.Connection(), err
+	}
 	d.conn.mu.Lock()
 	switch d.conn.state {
 	case ConnConnected, ConnConnecting:
@@ -233,7 +259,12 @@ func (d *Daemon) Connect(ctx context.Context) (api.Connection, error) {
 	d.conn.state = ConnConnecting
 	resumeCh := d.conn.resumeCh
 	d.conn.mu.Unlock()
-	close(resumeCh)
+	// A completed pause can expose the previous generation briefly. A buffered
+	// signal is reusable; closing it could panic on an immediate reconnect.
+	select {
+	case resumeCh <- struct{}{}:
+	default:
+	}
 
 	// The loop does the restart; poll for the settled state.
 	deadline := time.Now().Add(30 * time.Second)
@@ -247,10 +278,14 @@ func (d *Daemon) Connect(ctx context.Context) (api.Connection, error) {
 			}
 			return st, nil
 		}
+		select {
+		case <-ctx.Done():
+			return st, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
 		if time.Now().After(deadline) {
 			return st, &api.StatusError{Status: http.StatusGatewayTimeout, Code: api.ErrCodeInternal, Message: "connection did not settle"}
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -278,6 +313,24 @@ func waitForRetry(ctx context.Context, resumeCh chan struct{}) bool {
 	}
 }
 
+// waitDataPlane consumes the engine result exactly once, then cancels both
+// loops. A terminal engine error must reach teardown and the retry state.
+func waitDataPlane(ctx context.Context, pause <-chan struct{}, done <-chan error, stopEngine, stopControl context.CancelFunc) error {
+	var err error
+	select {
+	case <-ctx.Done():
+	case <-pause:
+	case err = <-done:
+		done = nil
+	}
+	stopEngine()
+	stopControl()
+	if done != nil {
+		err = <-done
+	}
+	return err
+}
+
 // connLoop owns the dataplane lifecycle across pause/resume cycles until ctx
 // is cancelled.
 func (d *Daemon) connLoop(ctx context.Context) error {
@@ -285,7 +338,7 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		engCtx, engCancel := context.WithCancel(ctx)
 		ctlCtx, ctlCancel := context.WithCancel(ctx)
 		pauseCh := make(chan struct{})
-		resumeCh := make(chan struct{})
+		resumeCh := make(chan struct{}, 1)
 		downCh := make(chan struct{})
 		d.conn.setGeneration(engCancel, ctlCancel, pauseCh, resumeCh, downCh)
 
@@ -343,14 +396,7 @@ func (d *Daemon) connLoop(ctx context.Context) error {
 		errCh := make(chan error, 1)
 		go func() { errCh <- d.eng.Run(engCtx) }()
 
-		select {
-		case <-ctx.Done():
-		case <-pauseCh:
-		case <-errCh:
-		}
-		engCancel()
-		ctlCancel()
-		engErr := <-errCh
+		engErr := waitDataPlane(ctx, pauseCh, errCh, engCancel, ctlCancel)
 		d.teardownDataPlane()
 		close(downCh)
 		if ctx.Err() != nil {

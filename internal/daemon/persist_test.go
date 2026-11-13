@@ -149,7 +149,9 @@ func TestDaemonHoldsConfigLockForLifetime(t *testing.T) {
 		}
 	}
 
-	d1.persistPeers()
+	if err := d1.persistPeers(); err != nil {
+		t.Fatal(err)
+	}
 	loaded, err := conf.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("persisted config does not load: %v", err)

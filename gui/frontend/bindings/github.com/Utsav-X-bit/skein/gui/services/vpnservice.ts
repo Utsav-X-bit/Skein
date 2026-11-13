@@ -77,3 +77,21 @@ export function Status(): $CancellablePromise<$models.VpnPermission> {
 export function Stop(): $CancellablePromise<void> {
     return $Call.ByID(4012246991);
 }
+
+/**
+ * HighPerformanceWifi reports whether the app holds a high-performance Wi-Fi
+ * lock while the tunnel is up. It is off by default: the lock keeps the radio
+ * awake, which removes Android's power-save delay on inbound packets but costs
+ * battery. Desktop builds report false — there is no such lock to hold.
+ */
+export function HighPerformanceWifi(): $CancellablePromise<boolean> {
+    return $Call.ByID(354418890);
+}
+
+/**
+ * SetHighPerformanceWifi stores the preference and applies it to a running
+ * tunnel immediately, so the user does not have to reconnect.
+ */
+export function SetHighPerformanceWifi(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(316878584, enabled);
+}

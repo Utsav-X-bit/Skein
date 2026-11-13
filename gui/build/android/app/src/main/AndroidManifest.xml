@@ -19,6 +19,14 @@
          daemon and the TUN stay alive while the app is backgrounded. -->
     <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- mDNS discovery: without this and a held MulticastLock, Android's
+         WiFi multicast filter drops incoming multicast/broadcast, so peers
+         never appear on the LAN. Held only while the VPN is up. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Optional high-performance Wi-Fi lock (Settings → Connection): the
+         radio stays awake so inbound packets are not delayed by power save.
+         Off by default; the lock is only acquired while the VPN is up. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <queries>
         <intent>
@@ -30,7 +38,7 @@
     </queries>
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -42,7 +50,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|locale|layoutDirection"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -67,12 +75,15 @@
 
         <!-- Skein mesh VPN. foregroundServiceType="vpn" is NOT a valid
              value (AAPT rejects it); the Android 14+ pattern is
-             specialUse + PROPERTY_SPECIAL_USE_FGS_SUBTYPE=vpn. The
-             service is bound only by the system (BIND_VPN_SERVICE). -->
+             specialUse + PROPERTY_SPECIAL_USE_FGS_SUBTYPE=vpn.
+             exported must be true: the system binds and starts a VPN
+             service (always-on VPN, the VPN settings toggle), and
+             android:permission=BIND_VPN_SERVICE is what keeps every other
+             app out. With exported=false, always-on VPN silently fails. -->
         <service
             android:name=".SkeinVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="specialUse">
             <intent-filter>
                 <action android:name="android.net.VpnService" />

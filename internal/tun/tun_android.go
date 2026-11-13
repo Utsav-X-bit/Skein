@@ -15,71 +15,27 @@ import (
 // Android does not allow an app to open /dev/net/tun, so tun.Open
 // (wgtun.CreateTUN) is never called on Android. Reads and writes are
 // raw IP packets on the FD: unlike the Linux device, there is no
-// virtio-net header (transportOffset is 0 on this path — this file
-// implements Device directly instead of wrapping wgtun.Device).
+// virtio-net header (see fdDevice in fddevice.go).
 
-// androidDevice is a tun.Device over a VpnService file descriptor.
-// The device owns the FD: Close closes it.
-type androidDevice struct {
-	fd   int
-	mtu  int
-	name string
-
-	readMu  sync.Mutex
-	writeMu sync.Mutex
-	closeMu sync.Mutex
-	closed  bool
-}
-
-func (d *androidDevice) Read(out []byte) (int, error) {
-	d.readMu.Lock()
-	defer d.readMu.Unlock()
-	n, err := syscall.Read(d.fd, out)
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-func (d *androidDevice) Write(pkt []byte) (int, error) {
-	d.writeMu.Lock()
-	defer d.writeMu.Unlock()
-	// A TUN write is normally all-or-nothing, but loop anyway so a
-	// short write can never silently drop the tail of a packet.
-	written := 0
-	for written < len(pkt) {
-		n, err := syscall.Write(d.fd, pkt[written:])
-		if err != nil {
-			return 0, err
-		}
-		if n == 0 {
-			return 0, errors.New("tun: short write on android TUN fd")
-		}
-		written += n
-	}
-	return written, nil
-}
-
-// Name reports the interface name the VpnService built the TUN as.
-// The kernel interface is named by the system; "skein0" is the name
-// the daemon logs and the GUI shows.
-func (d *androidDevice) Name() string { return d.name }
-
-// Close releases the FD. It is safe to call more than once.
-func (d *androidDevice) Close() error {
-	d.closeMu.Lock()
-	defer d.closeMu.Unlock()
-	if d.closed {
-		return nil
-	}
-	d.closed = true
-	return syscall.Close(d.fd)
-}
+// androidTunName is the name the daemon logs and the GUI shows. The kernel
+// interface name is chosen by the system; nothing on Android looks it up.
+const androidTunName = "skein0"
 
 // pendingFd is the handoff for the VpnService FD: the JNI bridge calls
 // SetAndroidFd when establish() returns, and the daemon's OpenAndroid
 // consumes it when the dataplane starts. Buffered (1) so the Java
 // service thread never blocks handing the FD over.
+//
+// Lifecycle, in full:
+//   - hand over: SetAndroidFd queues the FD and closes any FD still queued
+//     from an earlier establish(), so the newest TUN always wins;
+//   - adopt: OpenAndroid (bounded by androidFdWait) takes it and hands it to
+//     a Device, which owns and closes it;
+//   - discard: DiscardAndroidFd closes a queued FD that no attempt adopted.
+//
+// A queued FD is not a leak but it *is* live kernel state — the VpnService TUN
+// and its routes stay up while it exists — so a teardown discards it instead of
+// letting the next connect inherit a TUN built for a dead session.
 var (
 	pendingFdMu sync.Mutex
 	pendingFd   = make(chan int, 1)
@@ -107,16 +63,29 @@ func SetAndroidFd(fd int) error {
 	return nil
 }
 
+// DiscardAndroidFd closes a TUN FD that was handed over but never adopted by a
+// connection attempt, and reports whether there was one. Until a Device takes
+// it, that FD is the only thing keeping the VpnService TUN and its routes
+// alive, so a session teardown must discard it: otherwise the next connect
+// adopts a TUN built for a dead session, and in the meantime the overlay routes
+// point at an interface nobody reads. internal/android's host teardown is the
+// caller.
+func DiscardAndroidFd() bool {
+	pendingFdMu.Lock()
+	defer pendingFdMu.Unlock()
+	select {
+	case stale := <-pendingFd:
+		_ = syscall.Close(stale)
+		return true
+	default:
+		return false
+	}
+}
+
 // OpenAndroidFd wraps an already-owned FD as a Device. The Device
 // owns the FD: Close closes it.
 func OpenAndroidFd(fd, mtu int) (Device, error) {
-	if fd < 0 {
-		return nil, fmt.Errorf("tun: android file descriptor must be non-negative, got %d", fd)
-	}
-	if mtu <= 0 {
-		return nil, fmt.Errorf("tun: mtu must be positive, got %d", mtu)
-	}
-	return &androidDevice{fd: fd, mtu: mtu, name: "skein0"}, nil
+	return newFdDevice(fd, mtu, androidTunName)
 }
 
 // androidFdWait bounds how long OpenAndroid waits for the VpnService

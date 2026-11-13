@@ -94,7 +94,12 @@ func (s *NetworkService) Ping(ctx context.Context, ip string) (PingResult, error
 	if runtime.GOOS == "windows" {
 		flag = "-n"
 	}
-	cmd := newPingCommand(ctx, "ping", flag, "4", addr.String())
+	name := "ping"
+	if runtime.GOOS == "android" {
+		// Android's embedded Go runtime may have no PATH.
+		name = "/system/bin/ping"
+	}
+	cmd := newPingCommand(ctx, name, flag, "4", addr.String())
 	var out cappedBuffer
 	out.max = pingOutputLimit
 	cmd.Stdout = &out

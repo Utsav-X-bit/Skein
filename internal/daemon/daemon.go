@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -173,6 +172,7 @@ func New(cfg conf.Config, id identity.Identity) (*Daemon, error) {
 	} else {
 		d.conn = &conn{state: ConnConnecting, since: time.Now()}
 	}
+	d.conn.ready = make(chan struct{})
 
 	for _, p := range cfg.Peers {
 		if err := d.registerPeer(p.ID, p.PublicKey, p.Addrs, p.Dialer, p.Name); err != nil {
@@ -338,16 +338,18 @@ func (d *Daemon) peerLearned(id uint64, publicKey []byte) {
 		return
 	}
 	d.emit(api.Event{Type: "peer_joined", PeerID: fmt.Sprintf("%016x", id)})
-	d.persistPeers()
+	if err := d.persistPeers(); err != nil {
+		log.Printf("skein: warning: learned peer not saved: %v", err)
+	}
 	d.emitPeerChanged()
 }
 
 // persistPeers rewrites the configuration so learned peers survive a restart.
 // The daemon owns the peer list; stop it before editing peers by hand.
-func (d *Daemon) persistPeers() {
+func (d *Daemon) persistPeers() error {
 	d.persistMu.Lock()
 	defer d.persistMu.Unlock()
-	d.persistLocked(d.config())
+	return d.persistLocked(d.config())
 }
 
 // persistLocked rewrites cfg with the current peer list. The caller holds
@@ -355,28 +357,26 @@ func (d *Daemon) persistPeers() {
 // config writer — never a direct temp + rename here again. A daemon built
 // by New holds the lifetime lock, so this is the fast path; a daemon
 // built by hand (tests) without a store takes a brief lock instead.
-func (d *Daemon) persistLocked(base conf.Config) {
-	if base.Path == "" {
-		return
-	}
+func (d *Daemon) persistLocked(base conf.Config) error {
 	cfg := configWithPeers(base, d.peers.List())
-	store := d.store
-	if store == nil {
-		var err error
-		store, err = configstore.Open(base.Path)
-		if err != nil {
-			log.Printf("skein: warning: cannot persist peers: %v", err)
-			return
+	if base.Path != "" {
+		store := d.store
+		if store == nil {
+			var err error
+			store, err = configstore.Open(base.Path)
+			if err != nil {
+				return fmt.Errorf("daemon: persist config: %w", err)
+			}
+			defer store.Close()
 		}
-		defer store.Close()
-	}
-	if err := store.Write(cfg); err != nil {
-		log.Printf("skein: warning: cannot persist peers: %v", err)
-		return
+		if err := store.Write(cfg); err != nil {
+			return fmt.Errorf("daemon: persist config: %w", err)
+		}
 	}
 	d.cfgMu.Lock()
 	d.cfg = cfg
 	d.cfgMu.Unlock()
+	return nil
 }
 
 func (d *Daemon) sessionEstablished(peerID uint64) {
@@ -455,7 +455,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			BaseContext:       func(net.Listener) context.Context { return apiCtx },
 		}
 		go d.serveDevTCP(apiCtx, d.http)
-	} else if cfg.API.Listen != "" {
+	} else if cfg.API.Listen != "" && runtime.GOOS != "android" {
 		log.Printf("skein: warning: api.listen ignored: kernel control transport is configured; control API is socket/pipe only")
 	}
 	go d.refreshWAN(ctx)
@@ -464,14 +464,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return d.connLoop(ctx)
 }
 
-// devTCPEnabled reports whether the dev-only TCP control listener may
-// start for cfg. Step 5: dev TCP exists only for dev configs (listen
-// set, no socket/pipe). Any config with a kernel transport — in
-// particular every system/service config — gets the kernel plane
-// only; api.listen on such a config is ignored here and refused at
-// the app layer for system configs.
+// devTCPEnabled reports whether the dev-only TCP control listener may start.
+// Android always uses in-process control, regardless of the persisted API
+// fields. Desktop service configs use their socket/pipe instead of TCP.
 func devTCPEnabled(cfg conf.Config) bool {
-	return cfg.API.Listen != "" && cfg.API.Socket == "" && cfg.API.Pipe == ""
+	return runtime.GOOS != "android" && cfg.API.Listen != "" && cfg.API.Socket == "" && cfg.API.Pipe == ""
 }
 
 // serveDevTCP is the dev-only loopback TCP control listener. It is
@@ -763,28 +760,18 @@ func (d *Daemon) AddPeer(invite string) error {
 	for _, addr := range inv.Addrs {
 		d.peers.AddCandidate(inv.ID, addr, peer.SourceConfig)
 	}
+	if err := d.persistPeers(); err != nil {
+		return err
+	}
 	d.emit(api.Event{Type: "peer_added", PeerID: fmt.Sprintf("%016x", inv.ID)})
-	d.persistPeers()
 	d.emitPeerChanged()
 	return nil
 }
 
 // SetName implements api.PeerWriter.
 func (d *Daemon) SetName(name string) error {
-	name = strings.TrimSpace(name)
-	if err := conf.ValidateName(name); err != nil {
-		return err
-	}
-	d.persistMu.Lock()
-	d.cfgMu.Lock()
-	d.cfg.Node.Name = name
-	cfg := d.cfg
-	d.cfgMu.Unlock()
-	d.ctl.SetLocalName(name)
-	d.persistLocked(cfg)
-	d.persistMu.Unlock()
-	d.emit(api.Event{Type: "name_changed"})
-	return nil
+	_, err := d.PatchConfig(context.Background(), api.ConfigPatch{Name: &name})
+	return err
 }
 
 // Step 12 (ADR-002): Daemon.RemovePeer is deleted with the DELETE
@@ -875,7 +862,9 @@ func (d *Daemon) pruneStalePeers(ctx context.Context) {
 			}
 			if removed {
 				// One rewrite per pass, not one per removed peer.
-				d.persistPeers()
+				if err := d.persistPeers(); err != nil {
+					log.Printf("skein: warning: peer pruning not saved: %v", err)
+				}
 				d.emitPeerChanged()
 				d.emitRouteChanged()
 			}

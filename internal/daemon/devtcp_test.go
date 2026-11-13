@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
@@ -29,8 +30,9 @@ func TestDevTCPEnabled(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := conf.Default()
 			cfg.API.Socket, cfg.API.Pipe, cfg.API.Listen = tc.socket, tc.pipe, tc.listen
-			if got := devTCPEnabled(cfg); got != tc.want {
-				t.Fatalf("devTCPEnabled(socket=%q pipe=%q listen=%q) = %v, want %v", tc.socket, tc.pipe, tc.listen, got, tc.want)
+			want := tc.want && runtime.GOOS != "android"
+			if got := devTCPEnabled(cfg); got != want {
+				t.Fatalf("devTCPEnabled(socket=%q pipe=%q listen=%q) = %v, want %v", tc.socket, tc.pipe, tc.listen, got, want)
 			}
 		})
 	}

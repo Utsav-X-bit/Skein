@@ -296,3 +296,36 @@ func TestSessionTimestampsFollowTheLink(t *testing.T) {
 		t.Fatalf("upsert dropped session timestamps: %+v", p)
 	}
 }
+
+func TestSetRTTReportsMedianNotOutlier(t *testing.T) {
+	tbl := NewTable()
+	ident, _ := identity.Generate()
+	if err := tbl.Upsert(testPeer(t, ident)); err != nil {
+		t.Fatal(err)
+	}
+	for _, rtt := range []time.Duration{5 * time.Millisecond, 6 * time.Millisecond, 120 * time.Millisecond, 4 * time.Millisecond} {
+		tbl.SetRTT(ident.ID, rtt)
+	}
+	p, _ := tbl.Get(ident.ID)
+	// Sorted series 4, 5, 6, 120: the middle pair averages to 5.5 ms, so the
+	// one 120 ms outlier never becomes the displayed latency.
+	if p.RTT != 5500*time.Microsecond {
+		t.Fatalf("RTT = %v, want 5.5ms", p.RTT)
+	}
+}
+
+func TestSetActiveStartsAFreshSeries(t *testing.T) {
+	tbl := NewTable()
+	ident, _ := identity.Generate()
+	if err := tbl.Upsert(testPeer(t, ident)); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		tbl.SetRTT(ident.ID, 200*time.Millisecond)
+	}
+	tbl.SetActive(ident.ID, netip.MustParseAddrPort("192.0.2.9:11010"), 8*time.Millisecond, "udp", time.Now())
+	p, _ := tbl.Get(ident.ID)
+	if p.RTT != 8*time.Millisecond {
+		t.Fatalf("RTT = %v, want the new path's 8ms", p.RTT)
+	}
+}

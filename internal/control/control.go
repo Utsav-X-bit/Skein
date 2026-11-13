@@ -345,6 +345,23 @@ func (c *Controller) Tick() {
 			}
 			c.mu.Unlock()
 		}
+		// A TCP fallback is opened for networks that block UDP and then kept
+		// for good, so a peer that recovers a working UDP path would stay on
+		// the stream forever. Re-prove the candidates periodically: a probe
+		// travels over UDP and an answer proves that path again, which lets
+		// the link drop back to datagrams.
+		if p.State == peer.StateUp && p.Transport == "tcp" && len(p.Candidates) > 0 {
+			c.mu.Lock()
+			due := c.eng.HasSession(p.ID) &&
+				(c.pathProbeAt[p.ID].IsZero() || now.Sub(c.pathProbeAt[p.ID]) >= PathProbeInterval)
+			if due {
+				c.pathProbeAt[p.ID] = now
+			}
+			c.mu.Unlock()
+			if due {
+				go c.probePath(p.ID)
+			}
+		}
 		// Configured dialers connect without waiting for overlay traffic.
 		if p.Dialer {
 			_ = c.eng.EnsureSession(p.ID)

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/grandcat/zeroconf"
 
 	"github.com/Utsav-X-bit/skein/internal/identity"
+	"github.com/Utsav-X-bit/skein/internal/path"
 )
 
 // ServiceName is the mDNS service used for LAN discovery.
@@ -46,7 +48,35 @@ func StartMDNS(ctx context.Context, inv identity.Invite, fingerprint string, por
 		return nil, err
 	}
 	instance := fmt.Sprintf("skein-%016x", inv.ID)
-	server, err := zeroconf.Register(instance, ServiceName, "local.", int(port), txt, nil)
+	var server *zeroconf.Server
+	var ifaces []net.Interface
+	if path.LocalInterfaces != nil {
+		ifaces, err = path.LocalInterfaces()
+		if err != nil {
+			return nil, fmt.Errorf("discovery: native interfaces: %w", err)
+		}
+		var multicast []net.Interface
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagMulticast != 0 && iface.Flags&net.FlagLoopback == 0 {
+				multicast = append(multicast, iface)
+			}
+		}
+		ifaces = multicast
+		ips := make([]string, 0, len(inv.Addrs))
+		for _, endpoint := range inv.Addrs {
+			if addr := endpoint.Addr(); path.Eligible(addr) && !addr.IsLinkLocalUnicast() {
+				ips = append(ips, addr.String())
+			}
+		}
+		if len(ifaces) == 0 || len(ips) == 0 {
+			return nil, errors.New("discovery: no native multicast interface or address is available")
+		}
+		// RegisterProxy accepts explicit addresses and indices; Register would
+		// query iface.Addrs through netlink, which Android denies to apps.
+		server, err = zeroconf.RegisterProxy(instance, ServiceName, "local.", int(port), instance+".local.", ips, txt, ifaces)
+	} else {
+		server, err = zeroconf.Register(instance, ServiceName, "local.", int(port), txt, nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("discovery: register mDNS: %w", err)
 	}
@@ -54,7 +84,11 @@ func StartMDNS(ctx context.Context, inv identity.Invite, fingerprint string, por
 	browseCtx, cancel := context.WithCancel(ctx)
 	m := &MDNS{server: server, cancel: cancel, done: make(chan struct{})}
 
-	resolver, err := zeroconf.NewResolver(nil)
+	var options []zeroconf.ClientOption
+	if len(ifaces) != 0 {
+		options = append(options, zeroconf.SelectIfaces(ifaces))
+	}
+	resolver, err := zeroconf.NewResolver(options...)
 	if err != nil {
 		server.Shutdown()
 		cancel()

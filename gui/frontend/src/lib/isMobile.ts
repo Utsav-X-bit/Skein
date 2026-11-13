@@ -16,6 +16,9 @@ export function isMobileEnvironment(): boolean {
 export function useIsMobile(): boolean {
   const [mobile, setMobile] = useState(() => isMobileEnvironment());
   useEffect(() => {
+    document.documentElement.toggleAttribute("data-mobile", mobile);
+  }, [mobile]);
+  useEffect(() => {
     const onChange = () => setMobile(isMobileEnvironment());
     window.addEventListener("resize", onChange);
     return () => window.removeEventListener("resize", onChange);

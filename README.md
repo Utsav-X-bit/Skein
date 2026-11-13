@@ -6,19 +6,37 @@
 
 **A private mesh for your own devices.**
 
-Skein connects a small group of Linux and Windows machines over an encrypted IPv4/IPv6 overlay. Use their overlay addresses to reach services across your own computers, servers, and home networks.
+Skein connects a small group of Linux, Windows, and Android devices over an encrypted IPv4/IPv6 overlay. Use their overlay addresses to reach services across your own computers, phones, servers, and home networks.
 
 - **End-to-end encryption:** Noise IKpsk2 sessions between peers; relay nodes forward encrypted traffic without decrypting it.
 - **Dual-stack networking:** IPv4 and IPv6 overlay addresses, with forwarding through other mesh members when needed.
 - **Peer discovery:** local mDNS discovery, STUN address discovery, and UDP hole punching.
-- **Desktop and terminal controls:** a desktop dashboard, CLI, and live terminal dashboard backed by the same system service.
+- **Desktop, mobile, and terminal controls:** a desktop dashboard, Android app, CLI, and live terminal dashboard. Android runs the daemon inside its VPN app; desktop clients use a system service.
 - **No hosted account required:** create a network and share a join string with your other devices.
 
-> **Development status:** Skein is intended for small, trusted meshes of roughly 2–5 devices. Prebuilt releases are not published yet. The installation steps below build from source and install the required dependencies automatically; they do not require you to configure Go, Wails, or Wintun by hand.
+> **Development status:** Skein is intended for small, trusted meshes of roughly 2–5 devices. An **Android ARM64 beta APK** is available in [GitHub Releases](https://github.com/Utsav-X-bit/Skein/releases). It is a testing prerelease, signed with a debug certificate—not a stable or Play Store release. Linux and Windows currently build from source using the installers below.
 
-[Linux installation](#linux) · [Windows installation](#windows) · [Connect your devices](#connect-your-devices) · [Troubleshooting](#troubleshooting) · [Development](#development)
+[Android installation](#android) · [Linux installation](#linux) · [Windows installation](#windows) · [Connect your devices](#connect-your-devices) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## Installation
+
+<a id="android"></a>
+
+**Android — beta APK**
+
+1. Download the **ARM64 APK** from [GitHub Releases](https://github.com/Utsav-X-bit/Skein/releases). Release assets also include its SHA-256 checksum.
+2. Open the APK on your phone. If prompted, allow **Install unknown apps** for the browser or file manager opening it; do not disable Play Protect or other system protections.
+3. Open **Skein** and create a network, or join an existing one using a fresh network join string.
+4. Tap **Connect** and approve Android's VPN permission dialog. A persistent notification indicates that the VPN service is running.
+
+No root access, separate daemon installation, or Go toolchain is needed on the phone. The app includes Home, Peers, Activity, Invites, Settings, and diagnostics.
+
+The beta was physically tested on a Samsung SM-M566B running Android 16, including IPv4/IPv6 mesh traffic, reconnects, device renaming, and network reset. Other Android versions and vendors have not been physically verified. This download is ARM64 only.
+
+The release package is `com.skein.app`. QA builds using `com.skein.app.qa` are separate applications, not in-place upgrades of the release app. Future signing-certificate changes may require reinstalling rather than updating this debug-signed beta.
+
+Linux and Windows installation follows below; Android source-build instructions are under [Development](#development).
+
 
 ### Get the source
 
@@ -26,7 +44,7 @@ Skein connects a small group of Linux and Windows machines over an encrypted IPv
 2. Extract the ZIP completely. Do not run the installer from inside the archive.
 3. Open a terminal in the extracted folder containing `go.mod`, `gui/`, and `scripts/`, then follow your operating system's instructions below.
 
-An internet connection is needed to download dependencies. Installation needs administrator approval, but **build and launch the desktop as your normal user**, not as root or Administrator.
+An internet connection is needed to download build dependencies. Linux and Windows installation needs administrator approval, but **build and launch the desktop as your normal user**, not as root or Administrator.
 
 ### Linux
 
@@ -164,24 +182,24 @@ Install Skein on **each** device first. Leave the default listen port and MTU un
 
 1. Open Skein and select **Create a network**.
 2. Enter a name for this device and select **Create network**.
-3. Approve the administrator authentication prompt—polkit on Linux or UAC on Windows.
+3. On Linux or Windows, approve the administrator authentication prompt—polkit or UAC. Android needs no administrator approval; approve its VPN prompt when connecting.
 4. Copy the **network join string** shown after setup.
 
 ### 2. Join from another device
 
 1. Open Skein on the other device and select **Join a network**.
 2. Paste the network join string and select **Join network**.
-3. Approve the authentication prompt. The desktop connects to the newly configured service.
+3. On Linux or Windows, approve the authentication prompt. On Android, tap **Connect** after joining and approve the system VPN prompt if requested.
 
-For each additional device, open **Invitations → Join a device** on an already connected device and generate a **fresh network join string**. Join strings contain a snapshot of known addresses; do not reuse an old snapshot for multiple new nodes.
+For each additional device, open **Invites → Join a device** on an already connected device and generate a **fresh network join string**. Join strings contain a snapshot of known addresses; do not reuse an old snapshot for multiple new nodes.
 
 > **Keep network join strings private.** They contain the network secret and allow another device to join. Share them through a trusted channel, not a public issue, screenshot, or log. A **peer invite** is not the same as a **network join string**.
 
 ### 3. Check the connection
 
-The desktop shows peers, their overlay addresses, and routes. Use a peer's overlay address to connect to a service running on it. The remote service and that machine's firewall must also permit the connection.
+The app shows peers, their overlay addresses, and routes. Use a peer's overlay address to connect to a service running on it. The remote service and that machine's firewall must also permit the connection.
 
-For terminal diagnostics:
+For terminal diagnostics on Linux or Windows (Android provides diagnostics in the app):
 
 **Linux**
 
@@ -209,10 +227,15 @@ Windows installations do not require adding Skein to `PATH`; the commands above 
 - mDNS helps discover devices on the same LAN. It does not cross routers by itself.
 - STUN and hole punching help discover reachable addresses; they cannot guarantee connectivity through every NAT or firewall. A mesh member must be reachable to relay traffic when a direct path is unavailable.
 - Skein tries advertised IPv4 and IPv6 endpoints for direct connections and can route through another connected peer. The selected route is based on measured cost; neither IPv6 nor a direct route is guaranteed to win.
-- The configured MTU is a floor. Once a direct connection is up, the daemon measures the largest frame the path accepts without IP fragmentation and raises the overlay MTU when every directly connected peer supports it, so TCP builds larger segments. It never lowers the MTU while connected, and an unmeasurable path leaves the configured value in place.
-- Do not expose the local control socket or pipe to the internet. Service installations use a Unix socket on Linux and a named pipe on Windows.
+- On Linux and Windows, the configured MTU is a floor: path measurements may raise the live MTU when every directly connected peer supports it. Android keeps the configured MTU fixed for each VPN connection; reconnect after changing it. An IPv6 overlay requires MTU 1280 or higher.
+- Do not expose the local control socket or pipe to the internet. Service installations use a Unix socket on Linux and a named pipe on Windows; Android uses an in-process control API with no TCP listener.
 
 ## Updating
+
+**Android:** download the newer APK from [GitHub Releases](https://github.com/Utsav-X-bit/Skein/releases) and install it over the existing app. An update signed with the same certificate preserves the network and identity; do not uninstall first. A signing-certificate mismatch prevents an in-place update. Disconnect before updating, then reopen Skein and reconnect.
+
+**Linux and Windows:**
+
 
 1. Quit the desktop completely using its tray menu; closing the window may leave it running.
 2. Get the updated source and rerun the same installer command for your operating system.
@@ -222,7 +245,9 @@ The installers stop an existing service before replacing its binaries, preserve 
 
 ## Uninstall
 
-Quit Skein Desktop from its tray menu, then run:
+On Android, disconnect the VPN and uninstall Skein through Android's app settings. Uninstalling deletes that app's local configuration and identity; joining again requires a fresh network join string.
+
+On Linux or Windows, quit Skein Desktop from its tray menu, then run:
 
 ```bash
 skein uninstall
@@ -257,6 +282,9 @@ shown. A new installation is not targeted by the pending cleanup.
 | Setup says bootstrap is already in progress | Wait 10 minutes from the last create/join attempt, then retry once. Uninstalling is not necessary to expire a pending token. |
 | Service is installed but no peers connect | Check the join string, UDP reachability, firewall rules, and whether at least one peer is reachable. STUN alone does not bypass all NATs. |
 | The desktop cannot reach the daemon | Check the service status and logs below. Use binaries from the same build; older Windows builds may require an elevated first setup. |
+| Android will not connect | Approve the Android VPN prompt. Only one VPN app can be active at a time; disconnect another VPN before retrying. Inspect Skein's in-app diagnostics. |
+| Android says the package conflicts with an existing app | Check the package and signing certificate. `com.skein.app.qa` is a separate QA app; a different signing certificate cannot update `com.skein.app` in place. |
+| Android VPN stops in the background | Check battery/background restrictions for Skein and keep its foreground-service notification enabled. Behavior varies by Android vendor. |
 
 **Linux service diagnostics**
 
@@ -274,6 +302,8 @@ Get-Service skein
 The service may not exist yet on a fresh install before the first create/join operation.
 
 System configuration is stored at `/etc/skein/skein.toml` on Linux and `%ProgramData%\Skein\skein.toml` on Windows, with `identity.key` beside it. These are privileged files managed by the daemon, not files the desktop should edit directly.
+
+Android configuration and identity live in the app's private storage and are managed by its embedded daemon. Do not clear the app's storage unless you intend to discard its network membership.
 
 ## Development
 
@@ -298,6 +328,15 @@ cd gui
 wails3 dev
 ```
 
+To build the Android ARM64 APK on Linux, install the Android SDK, an Android NDK, and JDK 21 in addition to Go, Node.js/npm, and Wails. The build script uses `ANDROID_HOME` (default `~/Android/Sdk`) and `ANDROID_NDK_HOME`, or selects an installed NDK when the latter is unset. From the repository root:
+
+```bash
+bash ./scripts/build-android.sh
+```
+
+Output: `gui/bin/skein-desktop.apk`. The build uses a debug signing certificate unless `ANDROID_KEYSTORE_FILE`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` configure a release key. Keep private keys and passwords outside the repository.
+
+
 The bootstrap/IPC integration tests perform real ownership and access checks. Run them in a disposable privileged Linux VM/container—not as root against a live installation, and never by relaxing that installation's file permissions.
 
 Building a binary is not the same as installing the system service; use an installer for a machine-wide installation. Do not ship builds using the `skeindev` tag—it enables development-only overrides.
@@ -307,6 +346,7 @@ Building a binary is not the same as installing the system service; use an insta
 - [Wire protocol](docs/protocol.md)
 - [Desktop/control API](docs/gui-api.md)
 - [Measurements and test procedures](docs/measurements.md)
+- [Android investigation and device verification](specs/android-investigation.md)
 - [Report a bug or request a feature](https://github.com/Utsav-X-bit/Skein/issues)
 
 For bug reports, include the Skein version, operating system, installation method, reproduction steps, and relevant **redacted** logs. Never attach join strings, network secrets, or `identity.key`.

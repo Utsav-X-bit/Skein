@@ -25,11 +25,16 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
-export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/30.0.16248370}"
+# Only pin the NDK when that exact version is installed: the Taskfile falls
+# back to the newest NDK under $ANDROID_HOME/ndk, but an exported
+# ANDROID_NDK_HOME pointing at a missing directory fails the build.
+if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_HOME/ndk/30.0.16248370" ]; then
+  export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+fi
 export PATH="$HOME/go/bin:$PATH"
 
 echo "ANDROID_HOME=$ANDROID_HOME"
-echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-<newest installed NDK>}"
 wails3 doctor 2>&1 | tail -5 || true
 
 cd "$REPO_ROOT/gui"

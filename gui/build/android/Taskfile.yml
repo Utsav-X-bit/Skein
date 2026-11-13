@@ -51,12 +51,8 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: '{{.ARCH | default .HOST_ARCH}}'
-          # NOTE: PRODUCTION must be forwarded here. Without it,
-          # compile:go:shared sees .PRODUCTION as empty and builds with
-          # `-tags android,debug`, which selects assets_default.go (an
-          # EMPTY embed.FS) instead of assets_production.go — so the
-          # frontend is never embedded and the WebView shows
-          # ERR_CONNECTION_REFUSED for https://wails.localhost/.
+          # Preserve release/debug compiler options; Android embeds frontend
+          # assets in both modes (assets_production.go).
           PRODUCTION: '{{.PRODUCTION | default "false"}}'
     vars:
       BUILD_FLAGS: '{{if eq .PRODUCTION "true"}}-tags production,android -trimpath -buildvcs=false -ldflags="-w -s"{{else}}-tags android,debug -buildvcs=false -gcflags=all="-l"{{end}}'
@@ -125,9 +121,7 @@ tasks:
       - task: compile:go:shared
         vars:
           ARCH: arm64
-          # Forward PRODUCTION (see the note in the `build` task): without
-          # it the Go build drops the `production` tag and embeds an empty
-          # asset FS, so the WebView cannot load the frontend.
+          # Preserve the selected compiler mode for both architectures.
           PRODUCTION: '{{.PRODUCTION | default "false"}}'
       - task: compile:go:shared
         vars:
@@ -362,8 +356,7 @@ tasks:
           ARCH: '{{.ARCH | default .HOST_ARCH}}'
     cmds:
       - task: ensure-emulator
-      - '"{{.ADB}}" uninstall {{.APP_ID}} 2>/dev/null || true'
-      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+      - '"{{.ADB}}" install -r "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.skein.app.MainActivity'
 
   run:
@@ -373,8 +366,7 @@ tasks:
       - task: build
     cmds:
       - task: assemble:apk
-      - '"{{.ADB}}" uninstall {{.APP_ID}} 2>/dev/null || true'
-      - '"{{.ADB}}" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
+      - '"{{.ADB}}" install -r "{{.BIN_DIR}}/{{.APP_NAME}}.apk"'
       - '"{{.ADB}}" shell am start -n {{.APP_ID}}/com.skein.app.MainActivity'
 
   device:list:
@@ -406,8 +398,7 @@ tasks:
         fi
 
         echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}.apk to device $DEVICE..."
-        "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
-        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        "{{.ADB}}" -s "$DEVICE" install -r "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.skein.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'
@@ -436,8 +427,7 @@ tasks:
         fi
 
         echo "Deploying {{.BIN_DIR}}/{{.APP_NAME}}.apk to device $DEVICE..."
-        "{{.ADB}}" -s "$DEVICE" uninstall {{.APP_ID}} 2>/dev/null || true
-        "{{.ADB}}" -s "$DEVICE" install "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
+        "{{.ADB}}" -s "$DEVICE" install -r "{{.BIN_DIR}}/{{.APP_NAME}}.apk"
         "{{.ADB}}" -s "$DEVICE" shell am start -n {{.APP_ID}}/com.skein.app.MainActivity
     preconditions:
       - sh: '[ -x "{{.ADB}}" ] || command -v adb'

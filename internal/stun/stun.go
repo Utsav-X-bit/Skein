@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/netip"
 	"time"
+
+	"github.com/Utsav-X-bit/skein/internal/link"
 )
 
 const (
@@ -29,7 +31,11 @@ func PublicIP(ctx context.Context, server, network string) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("stun: resolve %s: %w", server, err)
 	}
-	conn, err := net.DialUDP(network, nil, addr)
+	// The binding request leaves through the same route table as the rest of the
+	// underlay, so on Android it must be protected from the VPN like the daemon's
+	// own sockets (nil Control elsewhere, where nothing changes).
+	dialer := net.Dialer{Control: link.UnderlayControl()}
+	conn, err := dialer.DialContext(ctx, network, addr.String())
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("stun: dial %s: %w", server, err)
 	}

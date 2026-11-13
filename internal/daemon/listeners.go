@@ -14,7 +14,7 @@ import (
 
 // Service defaults for the control transport: the socket is 0660 root:skein,
 // and per-user grants live in /etc/skein/access (written by the helper).
-const controlSocketGroup = "skein"
+var controlSocketGroup = "skein"
 
 // StartControlListeners is the single control listener (Step 2, ADR-001
 // §5): it serves the API on the configured service control transport —

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/app"
+	"github.com/Utsav-X-bit/skein/internal/service"
 )
 
 // SetupService runs first-setup and reset. Step 8: Init/Join/Import no
@@ -150,13 +152,35 @@ func (s *SetupService) ResetWithPurge(ctx context.Context, purge, keepIdentity b
 	if err != nil {
 		return NetworkResetResult{}, err
 	}
+	// The reset can finish without its response reaching this call: on Android
+	// the in-process control transport is torn down with the daemon. A hung
+	// call would freeze every later request (the shell could not even poll
+	// its service state back to setup), so the whole reset is bounded.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	var res api.ResetResult
 	if err := c.do(ctx, "POST", "/api/v1/system/reset", api.ResetOptions{Purge: purge, KeepIdentity: keepIdentity, Confirm: true}, &res); err != nil {
+		if ctx.Err() != nil {
+			if st, statErr := readServiceStatus(); statErr == nil && st.State == service.StateMissing {
+				return NetworkResetResult{Backup: ""}, nil
+			}
+		}
 		return NetworkResetResult{}, err
 	}
 	out := NetworkResetResult{Backup: res.Backup, FirewallError: res.FirewallError}
-	if err := (&ServiceService{}).Stop(ctx); err != nil {
-		out.StopError = fmt.Sprintf("The network was reset, but the service did not stop: %v", err)
+	// The configuration is already gone, so this device has no network left
+	// and the shell moves to setup on its next status poll. Stopping the VPN
+	// crosses into Java on Android and can outlive this call, so the result
+	// is not held hostage by it: the UI needs the hand-off now.
+	stopped := make(chan error, 1)
+	go func() { stopped <- (&ServiceService{}).Stop(ctx) }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			out.StopError = fmt.Sprintf("The network was reset, but the service did not stop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		out.StopError = "The network was reset; the VPN service is still shutting down."
 	}
 	return out, nil
 }

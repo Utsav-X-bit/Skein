@@ -135,7 +135,7 @@ export function PeerInspectorBody({
   if (!peerId) return null;
 
   const overlay = peer?.overlay_ipv4 || peer?.overlay_ipv6 || (isSelf ? status?.overlay_ipv4 : undefined);
-  const probeResult = probe.data ?? liveProbe;
+  const probeResult = liveProbe ?? probe.data;
   // The badge describes the selected route, not the remote machine's power.
   const routeBadge = selected
     ? selected.direct

@@ -162,6 +162,19 @@ func Default() Config {
 // DefaultSTUNServer is a widely reachable public STUN service.
 const DefaultSTUNServer = "stun.l.google.com:19302"
 
+// ValidateSTUNServer accepts a DNS name or IP followed by a numeric UDP port.
+func ValidateSTUNServer(server string) error {
+	host, port, err := net.SplitHostPort(server)
+	if err != nil || host == "" || strings.ContainsAny(host, " \t\r\n\x00") {
+		return errors.New("stun_server must be host:port")
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || n == 0 {
+		return errors.New("stun_server port must be 1-65535")
+	}
+	return nil
+}
+
 // NextFreeOverlay returns the lowest usable host address in prefix that is not
 // already taken.
 func NextFreeOverlay(prefix netip.Prefix, used []netip.Addr) (netip.Addr, error) {
@@ -334,7 +347,7 @@ func Render(cfg Config) ([]byte, error) {
 	if !cfg.Discovery.STUN {
 		b.WriteString("stun = false\n")
 	}
-	if cfg.Discovery.STUN && cfg.Discovery.STUNServer != "" && cfg.Discovery.STUNServer != DefaultSTUNServer {
+	if cfg.Discovery.STUNServer != "" && cfg.Discovery.STUNServer != DefaultSTUNServer {
 		fmt.Fprintf(&b, "stun_server = %q\n", cfg.Discovery.STUNServer)
 	}
 	for _, p := range cfg.Peers {
@@ -701,8 +714,8 @@ func Validate(cfg Config) error {
 		return errors.New("at least one peer is required when discovery.mdns is disabled")
 	}
 	if cfg.Discovery.STUN {
-		if _, _, err := net.SplitHostPort(cfg.Discovery.STUNServer); err != nil {
-			return fmt.Errorf("discovery.stun_server must be host:port: %w", err)
+		if err := ValidateSTUNServer(cfg.Discovery.STUNServer); err != nil {
+			return fmt.Errorf("discovery.%w", err)
 		}
 	}
 	seen := make(map[uint64]struct{}, len(cfg.Peers))

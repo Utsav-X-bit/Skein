@@ -11,6 +11,7 @@ import { CopyField } from "@/components/ui/copy-field";
 import { Input, Label } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LogoMark } from "@/components/brand/LogoMark";
+import { isValidMtu, isValidPort, mtuRangeMessage, portRangeMessage } from "@/lib/limits";
 
 type Mode = "welcome" | "create" | "join" | "import" | "done";
 type Pending = "create" | "join" | "import" | "start" | null;
@@ -171,8 +172,8 @@ export function Onboarding({ compact = false, onBegin, onExit }: { compact?: boo
     else if (failed === "start") start.mutate();
   };
 
-  const portValid = Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535;
-  const mtuValid = Number.isInteger(Number(mtu)) && Number(mtu) >= 576 && Number(mtu) <= 65535;
+  const portValid = isValidPort(port);
+  const mtuValid = isValidMtu(mtu);
   const createReady = name.trim().length > 0 && portValid && mtuValid;
 
   const shell = compact ? "space-y-4" : "mx-auto flex min-h-full max-w-3xl flex-col justify-center py-8";
@@ -284,7 +285,7 @@ export function Onboarding({ compact = false, onBegin, onExit }: { compact?: boo
               </div>
             </div>
             {(!portValid || !mtuValid) && (
-              <p className="text-xs text-[var(--warning)]">Port must be 1–65535 and MTU 576–65535.</p>
+              <p className="text-xs text-[var(--warning)]">{portRangeMessage} {mtuRangeMessage}</p>
             )}
             <div className="flex items-center gap-3">
               <Switch id="create-mdns" aria-label="local discovery (mDNS)" checked={mdns} onCheckedChange={setMdns} />

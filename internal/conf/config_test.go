@@ -276,6 +276,8 @@ func TestNodeNameValidation(t *testing.T) {
 
 func TestRenderRoundTrips(t *testing.T) {
 	cfg := baseConfig(t)
+	cfg.Discovery.STUN = false
+	cfg.Discovery.STUNServer = "stun.example.org:3478"
 	text, err := Render(cfg)
 	if err != nil {
 		t.Fatalf("Render: %v", err)
@@ -295,6 +297,9 @@ func TestRenderRoundTrips(t *testing.T) {
 	}
 	if len(got.Peers[0].Addrs) != 1 || got.Peers[0].Addrs[0] != cfg.Peers[0].Addrs[0] {
 		t.Fatalf("peer addrs = %v", got.Peers[0].Addrs)
+	}
+	if got.Discovery.STUN || got.Discovery.STUNServer != cfg.Discovery.STUNServer {
+		t.Fatalf("disabled STUN lost its configured server: %+v", got.Discovery)
 	}
 }
 

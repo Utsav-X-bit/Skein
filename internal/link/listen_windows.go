@@ -31,3 +31,14 @@ func udpListenConfig() net.ListenConfig {
 		},
 	}
 }
+
+// tcpListenConfig and tcpDialer keep the Windows defaults: the exclusive-bind
+// rule above is a UDP concern, and nothing routes the daemon's traffic into its
+// own TUN on Windows.
+func tcpListenConfig() net.ListenConfig { return net.ListenConfig{} }
+func tcpDialer() net.Dialer            { return net.Dialer{} }
+
+// UnderlayControl is nil on Windows: nothing routes the daemon's own traffic
+// into its TUN, so a nil Control leaves net.ListenConfig and net.Dialer exactly
+// as they were.
+func UnderlayControl() func(network, address string, c syscall.RawConn) error { return nil }

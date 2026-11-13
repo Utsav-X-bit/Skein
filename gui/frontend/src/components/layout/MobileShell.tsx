@@ -86,7 +86,7 @@ export function MobileShell() {
       </div>
     );
   }
-  if (setupOwnsWindow(setupGate, serviceMissing, location.pathname)) {
+  if (setupOwnsWindow(setupGate, serviceMissing, location.pathname, serviceMissing && config.isError)) {
     // Onboarding has no app bar of its own, so this container owns
     // the window insets: the top padding clears the Android status
     // bar (edge-to-edge WebView starts at y=0) and the bottom
@@ -104,13 +104,29 @@ export function MobileShell() {
 
   const departed = config.data?.departed === true;
   const serviceState = svc.data?.state ?? "unknown";
-  const serviceDown = serviceState !== "running" && serviceState !== "missing";
-  const offline = status.isError && isOffline(status.error);
-  const paused = status.data?.connection?.state === "paused";
-  // The app bar shows the node name (no network name exists in the
-  // API) and the live connection dot.
+  // Android: the daemon *is* the VPN service, so "stopped" is the
+  // ordinary disconnected state and Home owns it — its Connect button
+  // runs the VPN permission flow and its status sentence says
+  // "Disconnected". Treating "stopped" as a down engine replaced the
+  // whole shell with a "Skein isn't running" screen after every
+  // Disconnect, and made onboarding's "Connect now" (which lands on
+  // Home with autoStart) unreachable. Only a real error, or a state
+  // that cannot be read at all, means the engine is down.
+  const engineDown = serviceState !== "running" && serviceState !== "stopped" && serviceState !== "missing";
+  // The service claims to be running but its control socket is not
+  // answering: that is a down engine, not a disconnected mesh.
+  const offline = serviceState === "running" && status.isError && isOffline(status.error);
+  // Same rule as the dot: a cached "paused" over a stopped service is
+  // a stale screen, and its Resume button would fail.
+  const paused = serviceState === "running" && status.data?.connection?.state === "paused";
+  // The dot is green only when the service is up AND the daemon says
+  // connected: a stopped VPN keeps the last snapshot in the query
+  // cache, and a green dot over a dead mesh is the worst kind of stale.
   const appBar = (
-    <MobileAppBar networkName={config.data?.name ? displayNodeName(config.data.name) : "Skein"} connected={status.data?.connection?.state === "connected"} />
+    <MobileAppBar
+      networkName={config.data?.name ? displayNodeName(config.data.name) : "Skein"}
+      connected={serviceState === "running" && status.data?.connection?.state === "connected"}
+    />
   );
 
   if (departed) {
@@ -131,7 +147,7 @@ export function MobileShell() {
     );
   }
 
-  if (serviceDown || offline) {
+  if (engineDown || offline) {
     return (
       <div className="flex h-full flex-col bg-[var(--bg)] text-[var(--text)]">
         {appBar}
@@ -139,9 +155,11 @@ export function MobileShell() {
           <StateScreen
             title="Skein isn't running"
             message={
-              serviceState === "error" && svc.data?.last_error
-                ? `The VPN service is in an error state: ${svc.data.last_error}`
-                : "The VPN service is stopped. The mesh, peers and activity are unavailable until it starts."
+              offline
+                ? "The service reports itself as running, but its control socket is not answering. Start it again to recover."
+                : serviceState === "error" && svc.data?.last_error
+                  ? `The VPN service is in an error state: ${svc.data.last_error}`
+                  : "The VPN engine inside the app stopped or failed to start. Your mesh settings are safe."
             }
             primaryLabel="Start Skein"
             onPrimary={() => start.mutate()}
@@ -186,7 +204,7 @@ export function MobileShell() {
         <button
           type="button"
           onClick={() => navigate("/settings")}
-          className="flex shrink-0 items-center gap-0.5 px-4 pb-1 pt-3 text-sm text-[var(--text-muted)]"
+          className="flex min-h-12 shrink-0 items-center gap-0.5 px-4 pb-1 pt-2 text-sm text-[var(--text-muted)] active:text-[var(--text)]"
         >
           <ChevronLeft size={16} /> Back to Settings
         </button>

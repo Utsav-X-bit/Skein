@@ -6,6 +6,7 @@ import { ConnectionService, ServiceService, VpnService, errText } from "@/lib/ap
 import { Button } from "@/components/ui/button";
 import { useVpnPermission } from "./useVpnPermission";
 import { VpnPermissionSheet } from "./VpnPermissionSheet";
+import { connectLabel, connectMode } from "./connectState";
 
 const explainerKey = "skein-vpn-explainer-shown";
 
@@ -36,7 +37,6 @@ export function ConnectButton({
 }) {
   const qc = useQueryClient();
   const vpn = useVpnPermission();
-  const vpnActive = vpn.vpnActive;
   const [explainerOpen, setExplainerOpen] = useState(false);
   const [awaitingGrant, setAwaitingGrant] = useState(false);
   const [doneFlash, setDoneFlash] = useState(false);
@@ -46,6 +46,10 @@ export function ConnectButton({
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["service"] });
     void qc.invalidateQueries({ queryKey: ["status"] });
+    // A grant or a revocation can happen in system Settings while the
+    // app is backgrounded, so re-read it after every lifecycle change
+    // instead of trusting the value from mount.
+    void vpn.refresh();
   };
 
   const start = useMutation({
@@ -114,8 +118,13 @@ export function ConnectButton({
     try {
       await VpnService.RequestPermission();
       setAwaitingGrant(true);
-    } catch (e) {
-      toast.error(errText(e));
+    } catch {
+      // No permission bridge — the mobile shell is also reachable in a
+      // narrow touch browser window, where this call reports that VPN
+      // permission only exists on Android. Start the service directly
+      // (Android's own start path requests the permission if needed)
+      // instead of dead-ending on a raw error.
+      start.mutate();
     }
   };
 
@@ -153,27 +162,15 @@ export function ConnectButton({
     void requestPermission();
   };
 
-  const connected = connectionState === "connected";
-  const paused = connectionState === "paused";
-  const errored = connectionState === "error";
-
-  let label = "Connect";
-  let action = connect;
-  let variant: "default" | "secondary" = "default";
-  if (connected && vpnActive) {
-    label = "Disconnect";
-    action = () => stop.mutate();
-    variant = "secondary";
-  } else if (paused && vpnActive) {
-    label = "Resume";
-    action = () => resume.mutate();
-  } else if (errored && vpnActive) {
-    label = "Reconnect";
-    action = () => resume.mutate();
-  } else if (errored) {
-    label = "Reconnect";
-    action = connect;
-  }
+  const mode = connectMode(connectionState);
+  const label = connectLabel[mode];
+  const variant: "default" | "secondary" = mode === "disconnect" ? "secondary" : "default";
+  const action =
+    mode === "disconnect"
+      ? () => stop.mutate()
+      : mode === "resume" || mode === "reconnect"
+        ? () => resume.mutate()
+        : connect;
 
   return (
     <>

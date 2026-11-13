@@ -78,11 +78,35 @@ type Table struct {
 	mu        sync.RWMutex
 	peers     map[uint64]*Peer
 	byOverlay map[netip.Addr]uint64
+	// rtts holds each peer's recent control measurements. RTT is their
+	// median: on a power-saving radio one probe can be an order of
+	// magnitude slower than the path, and a single sample would show that
+	// outlier until the next probe.
+	rtts map[uint64][]time.Duration
+}
+
+// rttSamples is how many measurements the displayed RTT is taken from.
+const rttSamples = 5
+
+// median returns the middle value, averaging the two middles for an even
+// count. It never reorders the caller's slice.
+func median(values []time.Duration) time.Duration {
+	sorted := append([]time.Duration(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	n := len(sorted)
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
 // NewTable creates an empty peer table.
 func NewTable() *Table {
-	return &Table{peers: make(map[uint64]*Peer), byOverlay: make(map[netip.Addr]uint64)}
+	return &Table{
+		peers:     make(map[uint64]*Peer),
+		byOverlay: make(map[netip.Addr]uint64),
+		rtts:      make(map[uint64][]time.Duration),
+	}
 }
 
 // Upsert inserts or updates a peer. A peer ID bound to a different public key
@@ -182,6 +206,7 @@ func (t *Table) Remove(id uint64) {
 		}
 	}
 	delete(t.peers, id)
+	delete(t.rtts, id)
 }
 
 // reindexLocked refreshes the overlay index for one peer.
@@ -403,6 +428,9 @@ func (t *Table) SetActive(id uint64, endpoint netip.AddrPort, rtt time.Duration,
 		p.Path = "v6"
 	}
 	p.RTT = rtt
+	// A newly proven path starts a new measurement series: the previous
+	// path's samples say nothing about this one.
+	t.rtts[id] = []time.Duration{rtt}
 	if p.State != StateUp {
 		p.SessionStart = seen
 	}
@@ -469,12 +497,21 @@ func (t *Table) SetDialer(id uint64, dialer bool) {
 }
 
 // SetRTT records the latest round-trip time measured by control traffic.
+// The peer's RTT is the median of the recent series, so one delayed probe
+// on a power-saving radio does not become the displayed latency.
 func (t *Table) SetRTT(id uint64, rtt time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if p, ok := t.peers[id]; ok {
-		p.RTT = rtt
+	p, ok := t.peers[id]
+	if !ok {
+		return
 	}
+	series := append(t.rtts[id], rtt)
+	if len(series) > rttSamples {
+		series = series[len(series)-rttSamples:]
+	}
+	t.rtts[id] = series
+	p.RTT = median(series)
 }
 
 // SetRxTransport records the transport the peer's frames arrive on, which can

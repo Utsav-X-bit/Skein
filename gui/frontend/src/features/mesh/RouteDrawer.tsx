@@ -34,7 +34,7 @@ export function RouteDrawer({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-40">
+    <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden />
       <aside
         role="dialog"
@@ -51,7 +51,9 @@ export function RouteDrawer({
             <X size={16} />
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">
+        {/* z-50 puts this modal above the mobile tab bar (z-40), and the
+            bottom inset keeps the last row clear of the gesture bar. */}
+        <div className="min-h-0 flex-1 overflow-auto" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
           {paths.length === 0 ? (
             <div className="px-4 py-8 text-center text-xs text-[var(--text-muted)]">
               No routes yet. Routes appear when peers authenticate and advertise a path.

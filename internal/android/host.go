@@ -39,11 +39,14 @@ import (
 )
 
 var (
-	hostMu   sync.Mutex
-	filesDir string
-	d        *daemon.Daemon
-	cancel   context.CancelFunc
-	runDone  chan error
+	// Serialise daemon generations through resource and config-lock release.
+	lifecycleMu sync.Mutex
+	hostMu      sync.Mutex
+	filesDir    string
+	d           *daemon.Daemon
+	cancel      context.CancelFunc
+	runDone     chan struct{}
+	lastErr     error
 
 	// Bootstrap-mode server state (onboarding only). The bootstrap
 	// daemon holds the config-store lock from NewBootstrap until
@@ -93,6 +96,8 @@ func ConfigExists() bool {
 // Callers must call StopBootstrap when onboarding is abandoned; a
 // successful bootstrap stops itself via the outcome watcher below.
 func EnsureBootstrap(verb string) error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
 	hostMu.Lock()
 	dir := filesDir
 	hostMu.Unlock()
@@ -132,7 +137,11 @@ func EnsureBootstrap(verb string) error {
 	// with the same ConnContext as the normal control server, so the
 	// handler sees the app's UID as the kernel caller.
 	srv := &http.Server{Handler: bsrv.Handler(), ConnContext: api.CallerContext}
-	go func() { _ = srv.Serve(inproc.Default) }()
+	// A normal daemon's shutdown closes its listener too. Onboarding after
+	// reset must get a new generation, not serve the closed daemon listener.
+	inproc.Reset()
+	listener := inproc.Current()
+	go func() { _ = srv.Serve(listener) }()
 	bs, bsSrv, bsToken, bsVerb = bsrv, srv, token, verb
 	go watchBootstrapOutcome(bsrv)
 	return nil
@@ -147,16 +156,17 @@ func EnsureBootstrap(verb string) error {
 func watchBootstrapOutcome(bsrv *daemon.Bootstrap) {
 	for i := 0; i < 3600; i++ {
 		time.Sleep(200 * time.Millisecond)
-		if _, ok := bsrv.Outcome(); ok {
-			_ = StopBootstrap()
-			return
-		}
 		bsMu.Lock()
-		current := bs
-		bsMu.Unlock()
-		if current != bsrv {
+		if bs != bsrv {
+			bsMu.Unlock()
 			return
 		}
+		if _, ok := bsrv.Outcome(); ok {
+			_ = stopBootstrapLocked()
+			bsMu.Unlock()
+			return
+		}
+		bsMu.Unlock()
 	}
 }
 
@@ -203,7 +213,11 @@ func stopBootstrapLocked() error {
 	// handler served, so a later daemon gets a fresh one (host.Start
 	// also Resets, but an abandoned onboarding must not wait for that).
 	if srv != nil {
-		_ = srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			_ = srv.Close()
+		}
 	}
 	inproc.Reset()
 	// Delete the token state too. A failed attempt (bad invite, bad
@@ -239,6 +253,12 @@ func SetFilesDir(dir string) error {
 	}
 	hostMu.Lock()
 	defer hostMu.Unlock()
+	if filesDir == abs {
+		return nil
+	}
+	if d != nil {
+		return errors.New("android: cannot change files dir while the daemon is running")
+	}
 	filesDir = abs
 	app.SetFilesDir(abs)
 	daemon.SetAndroidFilesDir(abs)
@@ -252,18 +272,35 @@ func Started() bool {
 	return d != nil
 }
 
+// Connection reports the live dataplane state, separately from daemon liveness.
+func Connection() api.Connection {
+	hostMu.Lock()
+	dd, err := d, lastErr
+	hostMu.Unlock()
+	if dd != nil {
+		return dd.Connection()
+	}
+	st := api.Connection{State: daemon.ConnPaused}
+	if err != nil {
+		st.State, st.LastError = daemon.ConnError, err.Error()
+	}
+	return st
+}
+
 // Start loads the Android config and identity and runs the daemon in
 // the background. The daemon starts paused; Connect resumes it once
 // the VpnService has established the TUN and SetTunFd has delivered
 // the FD.
 func Start() error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
 	// An abandoned onboarding bootstrap holds the config-store lock;
 	// stop it before the normal daemon tries to acquire it.
 	_ = StopBootstrap()
 	hostMu.Lock()
 	defer hostMu.Unlock()
 	if d != nil {
-		return errors.New("android: daemon already running")
+		return nil
 	}
 	if filesDir == "" {
 		return errors.New("android: files dir not set; call SetFilesDir first")
@@ -280,12 +317,9 @@ func Start() error {
 	if err := conf.CheckPermissions(configPath); err != nil {
 		return fmt.Errorf("android: config permissions: %w", err)
 	}
-	// The control API is in-process only on Android. Never also serve
-	// a dev TCP listener, and never point at a socket path the file
-	// may carry from a desktop install.
-	cfg.API.Listen = ""
-	cfg.API.Socket = ""
-	cfg.API.Pipe = ""
+	// Keep the validated, persistable config intact. Android selects the
+	// in-process listener independently; devTCPEnabled forbids TCP here.
+	// Erasing these fields breaks every later config validation and save.
 
 	keyPath := filepath.Join(filesDir, "identity.key")
 	id, err := identity.Load(keyPath)
@@ -297,9 +331,18 @@ func Start() error {
 		return fmt.Errorf("android: daemon: %w", err)
 	}
 	ctx, cancelFn := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- nd.Run(ctx) }()
-	d, cancel, runDone = nd, cancelFn, done
+	done := make(chan struct{})
+	d, cancel, runDone, lastErr = nd, cancelFn, done, nil
+	go func() {
+		err := nd.Run(ctx)
+		_ = nd.Close()
+		hostMu.Lock()
+		if d == nd {
+			d, cancel, runDone, lastErr = nil, nil, nil, err
+		}
+		hostMu.Unlock()
+		close(done)
+	}()
 	return nil
 }
 
@@ -307,19 +350,31 @@ func Start() error {
 // then releases its resources (TUN, link, config lock). It is safe
 // to call when the daemon is not running.
 func Stop() error {
+	lifecycleMu.Lock()
+	defer lifecycleMu.Unlock()
 	hostMu.Lock()
 	dd, cancelFn, done := d, cancel, runDone
-	d, cancel, runDone = nil, nil, nil
 	hostMu.Unlock()
 	if dd == nil {
+		tun.DiscardAndroidFd()
 		return nil
 	}
 	cancelFn()
 	select {
 	case <-done:
+		tun.DiscardAndroidFd()
+		return nil
 	case <-time.After(5 * time.Second):
+		// Closing the devices also releases any blocked packet read.
+		_ = dd.Close()
 	}
-	return dd.Close()
+	select {
+	case <-done:
+		tun.DiscardAndroidFd()
+		return nil
+	case <-time.After(5 * time.Second):
+		return errors.New("android: daemon did not stop; retry after it releases the VPN")
+	}
 }
 
 // Connect resumes the dataplane after the TUN FD is in hand. The
@@ -377,10 +432,8 @@ func GetVpnConfig() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("android: overlay IPv4 prefix %q: %w", view.OverlayIPv4Prefix, err)
 	}
-	mtu := view.EffectiveMTU
-	if mtu <= 0 {
-		mtu = view.MTU
-	}
+	// VpnService fixes the interface MTU when it establishes this generation.
+	mtu := view.MTU
 	out := VpnConfig{
 		Name:              view.Name,
 		OverlayIPv4:       view.OverlayIPv4,

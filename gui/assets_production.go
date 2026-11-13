@@ -1,11 +1,11 @@
-//go:build production
+//go:build production || android
 
 package main
 
 import "embed"
 
-// The Wails production build embeds the compiled frontend. wails3 build
-// passes -tags production and runs the frontend build first.
+// Installed Android builds always embed the frontend, including debug APKs:
+// there is no external Vite server on the phone.
 //
 //go:embed all:frontend/dist
 var assets embed.FS

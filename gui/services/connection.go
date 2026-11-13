@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"runtime"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
 )
@@ -25,6 +26,17 @@ func (s *ConnectionService) Status(ctx context.Context) (api.Connection, error) 
 
 // Connect resumes the dataplane.
 func (s *ConnectionService) Connect(ctx context.Context) error {
+	if runtime.GOOS == "android" {
+		// Pausing closes the TUN; only VpnService can establish its replacement.
+		st, err := (&ServiceService{}).Status(ctx)
+		if err != nil {
+			return err
+		}
+		if st.State == "running" {
+			return (&ServiceService{}).Restart(ctx)
+		}
+		return (&ServiceService{}).Start(ctx)
+	}
 	c, err := ControlClient()
 	if err != nil {
 		return err
@@ -34,6 +46,9 @@ func (s *ConnectionService) Connect(ctx context.Context) error {
 
 // Disconnect pauses the dataplane.
 func (s *ConnectionService) Disconnect(ctx context.Context) error {
+	if runtime.GOOS == "android" {
+		return (&ServiceService{}).Stop(ctx)
+	}
 	c, err := ControlClient()
 	if err != nil {
 		return err

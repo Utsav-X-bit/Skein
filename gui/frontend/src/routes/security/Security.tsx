@@ -115,7 +115,7 @@ export function Security() {
           </div>
           {fw.data?.rules && fw.data.rules.length > 0 && (
             <div className="overflow-x-auto rounded-md border border-[var(--border)]">
-              <table className="w-full text-left text-xs" aria-label="Managed firewall rules">
+              <table className="w-full min-w-[560px] text-left text-xs" aria-label="Managed firewall rules">
                 <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                   <tr>{["Name", "Direction", "Action", "Protocol", "Port", "Interface"].map((h) => <th key={h} className="mono-label px-3 py-2 font-normal">{h}</th>)}</tr>
                 </thead>

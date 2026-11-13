@@ -13,7 +13,11 @@ import { MobileSheet } from "./MobileSheet";
 export function MobileAppBar({ networkName, connected }: { networkName: string; connected: boolean }) {
   const events = useSessionEvents((s) => s.events);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const unread = events.length;
+  // The badge counts events since the sheet was last opened. It used to
+  // be the session total, which never cleared — a permanent red badge
+  // that told the user nothing.
+  const [seen, setSeen] = useState(0);
+  const unread = Math.max(0, events.length - seen);
 
   return (
     <>
@@ -33,8 +37,11 @@ export function MobileAppBar({ networkName, connected }: { networkName: string; 
           />
           <button
             type="button"
-            aria-label={`Notifications, ${unread} events`}
-            onClick={() => setSheetOpen(true)}
+            aria-label={`Notifications, ${unread} unread`}
+            onClick={() => {
+              setSeen(events.length);
+              setSheetOpen(true);
+            }}
             className="relative flex h-12 w-12 items-center justify-center rounded-full text-[var(--text-muted)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
           >
             <Bell size={20} />

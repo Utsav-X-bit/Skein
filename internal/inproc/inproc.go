@@ -105,15 +105,26 @@ func (l *Listener) Dial(ctx context.Context) (net.Conn, error) {
 	}
 }
 
-// Default is the process-wide in-process control listener: the
-// Android daemon serves it, the Android services client dials it.
-// Reset replaces it (daemon restarts in the same process get a fresh
-// listener, because http.Server.Shutdown closes the old one).
-var Default = NewListener()
+var (
+	defaultMu sync.RWMutex
+	current   = NewListener()
+)
 
-// Reset replaces Default with a fresh listener. Call it before
-// starting a daemon in a process where one already ran.
-func Reset() { Default = NewListener() }
+// Current returns the control listener for the current daemon generation.
+func Current() *Listener {
+	defaultMu.RLock()
+	defer defaultMu.RUnlock()
+	return current
+}
 
-// Dial dials Default.
-func Dial(ctx context.Context) (net.Conn, error) { return Default.Dial(ctx) }
+// Reset closes the previous generation, releasing pending dials, and installs
+// a fresh listener before the next daemon starts.
+func Reset() {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	_ = current.Close()
+	current = NewListener()
+}
+
+// Dial dials the current daemon generation.
+func Dial(ctx context.Context) (net.Conn, error) { return Current().Dial(ctx) }

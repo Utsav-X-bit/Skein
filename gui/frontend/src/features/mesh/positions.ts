@@ -1,12 +1,7 @@
 /**
- * Shared mesh layout: the desktop MeshCanvas ellipse and the mobile
- * compact map place nodes with the same algorithm — this node at the
- * centre, direct peers on the inner ring, relayed peers on the outer
- * ring, sorted so the fastest peer is found first. Only the geometry
- * (centre, radii, ellipse squash) differs per surface.
- *
- * Positions depend only on the sorted node-id list plus direct/hop
- * facts, so a new model object every 2 s never moves a node.
+ * Desktop peers use separate direct/relay rings. Mobile peers share one
+ * ellipse: concentric rings in a narrow viewport would overlap their cards.
+ * Node IDs determine the order, so telemetry updates never move a node.
  */
 export type LayoutEntry = { id: string; direct: boolean; hops: number | null };
 
@@ -30,15 +25,32 @@ export const desktopGeometry: LayoutGeometry = {
   outerRadius: 460,
 };
 
-/** Compact portrait geometry: 360×320 viewBox, ~96×44 node cards. */
-export const mobileGeometry: LayoutGeometry = {
+/** Compact portrait geometry: 360×320 viewBox with room for five devices. */
+export const mobileGeometry = {
   cx: 180,
   cy: 160,
-  ex: 1.0,
-  ey: 0.85,
-  innerRadius: 100,
-  outerRadius: 130,
+  nodeWidth: 108,
+  nodeHeight: 54,
+  selfWidth: 140,
 };
+
+export function mobilePositionsFor(ids: string[], self: string): Map<string, { x: number; y: number }> {
+  const geo = mobileGeometry;
+  const positions = new Map([[self, { x: geo.cx, y: geo.cy }]]);
+  const peers = ids.filter((id) => id !== self).sort();
+  const rx = geo.cx - geo.nodeWidth / 2 - 10;
+  const ry = geo.cy - geo.nodeHeight / 2 - 8;
+  const start = peers.length === 2 || peers.length === 4 ? -3 * Math.PI / 4 : -Math.PI / 2;
+  const step = peers.length === 2 ? Math.PI / 2 : 2 * Math.PI / peers.length;
+  peers.forEach((id, i) => {
+    const angle = start + i * step;
+    positions.set(id, {
+      x: geo.cx + Math.cos(angle) * rx,
+      y: geo.cy + Math.sin(angle) * ry,
+    });
+  });
+  return positions;
+}
 
 export function positionsFor(
   layout: LayoutEntry[],

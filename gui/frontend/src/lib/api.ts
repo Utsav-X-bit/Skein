@@ -13,6 +13,7 @@ import * as SecurityService from "../../bindings/github.com/Utsav-X-bit/skein/gu
 import * as IdentityService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/identityservice";
 import * as SetupService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
 import * as VpnService from "../../bindings/github.com/Utsav-X-bit/skein/gui/services/vpnservice";
+import { stripBindingNoise } from "./utils";
 
 export { AppService, ConnectionService, PeerService, NetworkService, ConfigService, InviteService, DiagnosticsService, FirewallService, ServiceService, HistoryService, UpdateService, SecurityService, IdentityService, SetupService, VpnService };
 
@@ -54,9 +55,9 @@ export type LifecycleEvent = (typeof lifecycleEvents)[number];
 
 export function errText(e: unknown): string {
   if (!e) return "Unknown error";
-  if (typeof e === "string") return e;
-  if (typeof e === "object" && "message" in e) return String((e as { message: unknown }).message);
-  return String(e);
+  if (typeof e === "string") return stripBindingNoise(e);
+  if (typeof e === "object" && "message" in e) return stripBindingNoise(String(e.message));
+  return stripBindingNoise(String(e));
 }
 
 export function isOffline(e: unknown): boolean {

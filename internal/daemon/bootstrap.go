@@ -543,20 +543,10 @@ func (b *Bootstrap) controlConfig(cfg *conf.Config) error {
 	cfg.API.Token = nil
 	cfg.API.Socket = b.opts.Socket
 	cfg.API.Pipe = b.opts.Pipe
-	// When the bootstrap carries no service socket or pipe (Android:
-	// the daemon is in-process and has no control plane of its own),
-	// keep the default dev-only loopback listen address instead of
-	// clearing it. Clearing it leaves the config with no API endpoint
-	// at all, and validation rejects it ("api requires a socket, pipe,
-	// or dev listen address") — so a valid invite could never join on
-	// Android. The Android host clears all API fields again when it
-	// starts the daemon from the written config, so no TCP listener
-	// is ever actually opened there; the stored value only satisfies
-	// validation. On desktop one of Socket/Pipe is always set (see
-	// bootstrapTransport), so this branch never triggers there.
-	// A listen address also requires a 32-byte bearer token for
-	// validation, so mint a random one here; like the listen address
-	// it is never used on Android (the host clears it on start).
+	// Android has no socket/pipe setting. Keep a valid loopback API config
+	// (including its required token) for validation and round trips, but
+	// devTCPEnabled forbids serving it: Android uses in-process control only.
+	// Desktop bootstrap always supplies a socket or pipe instead.
 	if cfg.API.Socket == "" && cfg.API.Pipe == "" {
 		cfg.API.Listen = conf.DefaultAPIBind
 		tok := make([]byte, bootstrap.TokenSize)

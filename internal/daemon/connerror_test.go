@@ -30,8 +30,9 @@ func TestConnErrorKeepsControlPlaneAlive(t *testing.T) {
 	// touch /var/lib/skein on the host. Via the test-only override
 	// seam (env.go): release builds ignore SKEIN_STATE_FILE, so
 	// t.Setenv would no longer redirect it.
+	oldStateFile := stateFileOverride
 	stateFileOverride = filepath.Join(t.TempDir(), "state.json")
-	t.Cleanup(func() { stateFileOverride = "" })
+	t.Cleanup(func() { stateFileOverride = oldStateFile })
 	// Occupy a UDP port on both families, so link.Listen fails
 	// deterministically regardless of wildcard resolution.
 	wild, err := net.ListenPacket("udp", ":0")
@@ -175,8 +176,9 @@ func TestConnErrorKeepsControlPlaneAlive(t *testing.T) {
 func TestDevTCPServesGatedHandler(t *testing.T) {
 	// Test-only override seam (env.go): release builds ignore
 	// SKEIN_STATE_FILE, so t.Setenv would no longer redirect it.
+	oldStateFile := stateFileOverride
 	stateFileOverride = filepath.Join(t.TempDir(), "state.json")
-	t.Cleanup(func() { stateFileOverride = "" })
+	t.Cleanup(func() { stateFileOverride = oldStateFile })
 	wild, err := net.ListenPacket("udp", ":0")
 	if err != nil {
 		t.Fatal(err)

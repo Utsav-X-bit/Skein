@@ -17,9 +17,8 @@ type App struct {
 	window *application.WebviewWindow
 }
 
-// New creates the application with the bound services and registers the
-// typed events the frontend subscribes to.
-func New() *App {
+// Register typed events once per process, not once per Android Activity.
+func init() {
 	application.RegisterEvent[api.Connection](services.EventConnectionChanged)
 	application.RegisterEvent[[]api.Peer](services.EventPeersChanged)
 	application.RegisterEvent[[]api.Route](services.EventRoutesChanged)
@@ -44,7 +43,10 @@ func New() *App {
 	application.RegisterEvent[api.Event](services.EventSystemImported)
 	application.RegisterEvent[api.Event](services.EventLeaveDataplaneStopFailed)
 	application.RegisterEvent[services.VpnPermissionEvent](services.EventVpnPermission)
+}
 
+// New creates the application with the bound services.
+func New() *App {
 	var a *App
 	a = &App{
 		App: application.New(application.Options{

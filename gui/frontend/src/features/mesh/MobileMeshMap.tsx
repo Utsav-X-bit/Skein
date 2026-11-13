@@ -5,16 +5,13 @@ import { Button } from "@/components/ui/button";
 import { displayPeerNameById } from "@/lib/utils";
 import { useUI } from "@/lib/store";
 import { useMotionAllowed } from "@/features/mesh/hooks";
-import { mobileGeometry, positionsFor, type LayoutEntry } from "@/features/mesh/positions";
+import { mobileGeometry, mobilePositionsFor } from "@/features/mesh/positions";
 import type { MeshModel, Rate } from "@/features/mesh/model";
 import { MobileMeshList } from "@/features/mesh/MobileMeshList";
 
 type Link = { from: string; to: string };
 
-const NODE_W = 100;
-const NODE_H = 54;
-const SELF_W = 120;
-const SELF_H = 56;
+const { nodeWidth: NODE_W, nodeHeight: NODE_H, selfWidth: SELF_W } = mobileGeometry;
 
 function edgeColor(evidence: string): string {
   switch (evidence) {
@@ -52,7 +49,7 @@ const legendSamples = {
 
 /**
  * MobileMeshMap is the compact home map (design brief §3): this node
- * centred, peers on the ellipse from the shared positionsFor layout,
+ * centred, peers on one spaced ellipse regardless of their route,
  * straight links with RTT at the midpoint, tap peer → detail sheet,
  * tap link → link detail. Flow is deliberately quieter than desktop:
  * one travelling dot per active link, max 3, marching dashes only on
@@ -92,18 +89,9 @@ export function MobileMeshMap({
   const setAnimateFlow = useUI((s) => s.setAnimateFlow);
   const flowOn = motion && animateFlow;
 
-  const layout = useMemo(() => {
-    const direct = new Set(model.edges.filter((e) => e.from === self && e.evidence === "direct").map((e) => e.to));
-    const hops = new Map(model.paths.map((p) => [p.destination, p.hops]));
-    return model.nodes
-      .map((n) => ({ id: n.id, direct: direct.has(n.id), hops: hops.get(n.id) ?? null }) as LayoutEntry)
-      .sort((a, b) => a.id.localeCompare(b.id));
-  }, [model.nodes, model.edges, model.paths, self]);
-
-  const layoutKey = JSON.stringify(layout);
   const positions = useMemo(
-    () => positionsFor(JSON.parse(layoutKey) as LayoutEntry[], self, mobileGeometry),
-    [layoutKey, self],
+    () => mobilePositionsFor(model.nodes.map((node) => node.id), self),
+    [model.nodes, self],
   );
 
   const nameOf = (id: string) => (id === self ? "This device" : displayPeerNameById(id, peers));
@@ -182,15 +170,20 @@ export function MobileMeshMap({
           </div>
         ) : (
           <div role="img" aria-label={summary} className="relative">
-            <button
-              type="button"
-              aria-label={flowOn ? "Pause mesh animation" : "Play mesh animation"}
-              aria-pressed={flowOn}
-              onClick={() => setAnimateFlow(!flowOn)}
-              className="absolute bottom-2 right-2 z-10 flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--text-muted)]"
-            >
-              {flowOn ? <Pause size={18} /> : <Play size={18} />}
-            </button>
+            {/* Only when the map has links: with no edges there is no
+                flow to pause, and the button sat on top of the
+                "No peers yet" line on a 393 dp screen. */}
+            {model.edges.length > 0 && (
+              <button
+                type="button"
+                aria-label={flowOn ? "Pause mesh animation" : "Play mesh animation"}
+                aria-pressed={flowOn}
+                onClick={() => setAnimateFlow(!flowOn)}
+                className="absolute bottom-2 right-2 z-10 flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--text-muted)]"
+              >
+                {flowOn ? <Pause size={18} /> : <Play size={18} />}
+              </button>
+            )}
             {stale && (
               <div className="absolute inset-x-3 top-2 z-10 flex flex-wrap items-center gap-3 rounded-md border border-[var(--warning)]/40 bg-[var(--surface)] px-3 py-2 text-xs text-[var(--warning)]">
                 <span className="min-w-0 flex-1">{staleText ?? "Showing the last known state."}</span>
@@ -277,7 +270,7 @@ export function MobileMeshMap({
                 const pos = positions.get(node.id) ?? { x: mobileGeometry.cx, y: mobileGeometry.cy };
                 const isSelf = node.kind === "self";
                 const w = isSelf ? SELF_W : NODE_W;
-                const h = isSelf ? SELF_H : NODE_H;
+                const h = NODE_H;
                 const selected = selectedPeer === node.id;
                 const peer = isSelf ? undefined : peerById.get(node.id);
                 const direct = model.paths.find((p) => p.destination === node.id)?.direct;
@@ -287,7 +280,7 @@ export function MobileMeshMap({
                     key={node.id}
                     role="button"
                     tabIndex={0}
-                    aria-label={`${label}${isSelf ? ", this device" : ""}, ${node.state}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
+                    aria-label={`${label}${isSelf ? ", this device" : ""}${node.overlay ? `, ${node.overlay}` : ""}, ${node.state}${node.rttMs !== undefined ? `, ${Math.round(node.rttMs)} milliseconds` : ""}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelectPeer(node.id);
@@ -314,16 +307,16 @@ export function MobileMeshMap({
                       cx={pos.x - w / 2 + 14}
                       cy={pos.y - h / 2 + 14}
                       r={4}
-                      fill={node.state === "up" || isSelf ? "var(--success)" : node.state === "degraded" ? "var(--relay)" : "var(--text-faint)"}
+                      fill={node.state === "up" ? "var(--success)" : node.state === "degraded" ? "var(--relay)" : "var(--text-faint)"}
                     />
                     <text x={pos.x - w / 2 + 24} y={pos.y - h / 2 + 18} fontSize={12} fontWeight={600} fill="var(--text)">
-                      {label.length > 14 ? `${label.slice(0, 13)}…` : label}
+                      {label.length > 12 ? `${label.slice(0, 11)}…` : label}
                     </text>
                     <text x={pos.x - w / 2 + 10} y={pos.y - h / 2 + 34} fontSize={10} fill="var(--text-faint)" fontFamily="monospace">
-                      {node.overlay ? (node.overlay.length > 13 ? `${node.overlay.slice(0, 12)}…` : node.overlay) : "no overlay yet"}
+                      {node.overlay ? (node.overlay.length > 15 ? `${node.overlay.slice(0, 14)}…` : node.overlay) : "no overlay yet"}
                     </text>
                     <text x={pos.x - w / 2 + 10} y={pos.y - h / 2 + 47} fontSize={10} fill="var(--text-muted)">
-                      {isSelf ? "up · this device" : `${node.state} · ${direct === undefined ? peer?.transport ?? "unknown" : direct ? "direct" : "relayed"}`}
+                      {isSelf ? `${node.state} · this device` : node.state !== "up" ? node.state : direct === undefined ? peer?.transport ?? "up" : direct ? "direct" : "relayed"}
                     </text>
                     {!isSelf && node.rttMs !== undefined && (
                       <text x={pos.x + w / 2 - 10} y={pos.y - h / 2 + 47} textAnchor="end" fontSize={10} fill="var(--text-muted)" className="tabular">

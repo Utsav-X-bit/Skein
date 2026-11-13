@@ -6,8 +6,10 @@ import { toast } from "sonner";
 import {
   ConfigService,
   ServiceService,
+  VpnService,
   errDisplay,
   errKind,
+  errText,
   type ConfigPatch,
   type ConfigPatchResult,
   type ConfigView,
@@ -15,6 +17,7 @@ import {
 import { useUI, type Motion, type Theme } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { NetworkRecovery } from "./NetworkRecovery";
+import { draftFrom, toPatch, type NodeDraft } from "./model";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,29 +27,8 @@ import { Input, Label } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
-type NodeDraft = { name: string; port: string; mtu: string; mdns: boolean };
 type ServiceAction = "start" | "stop" | "restart" | "install" | "repair" | "uninstall";
 type ConfirmAction = "install" | "repair" | "uninstall";
-
-const draftFrom = (c: ConfigView): NodeDraft => ({
-  name: c.name ?? "",
-  port: String(c.listen_port),
-  mtu: String(c.mtu),
-  mdns: c.mdns,
-});
-
-// Validate only what the form owns; the daemon is the authority for the rest.
-function toPatch(draft: NodeDraft): { patch: ConfigPatch } | { error: string } {
-  const port = Number(draft.port);
-  const mtu = Number(draft.mtu);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return { error: "Listen port must be a whole number between 1 and 65535." };
-  }
-  if (!Number.isInteger(mtu) || mtu < 576 || mtu > 65535) {
-    return { error: "MTU must be a whole number between 576 and 65535." };
-  }
-  return { patch: { name: draft.name.trim(), listen_port: port, mtu, mdns: draft.mdns } };
-}
 
 const serviceTone = (state?: string) =>
   state === "running" ? "success" : state === "missing" || state === "error" ? "danger" : state ? "warning" : "neutral";
@@ -93,6 +75,21 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
   const setMotion = useUI((s) => s.setMotion);
   const animateFlow = useUI((s) => s.animateFlow);
   const setAnimateFlow = useUI((s) => s.setAnimateFlow);
+
+  // Android only: Android parks the Wi-Fi radio between beacons, which delays
+  // inbound packets by up to ~100 ms even on a LAN. The lock removes that at
+  // the cost of battery, so it stays off unless the user asks for it.
+  const highPerf = useQuery({
+    queryKey: ["high-perf-wifi"],
+    queryFn: () => VpnService.HighPerformanceWifi(),
+    enabled: mobile,
+    retry: 0,
+  });
+  const setHighPerf = useMutation({
+    mutationFn: (enabled: boolean) => VpnService.SetHighPerformanceWifi(enabled),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["high-perf-wifi"] }),
+    onError: (e) => toast.error(errText(e)),
+  });
 
   // Dirty-state protection: while the form has unsaved edits, incoming
   // snapshots are ignored and polling pauses, so a refetch can never clobber
@@ -144,8 +141,8 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
   });
 
   const apply = () => {
-    if (!draft) return;
-    const next = toPatch(draft);
+    if (!draft || !c) return;
+    const next = toPatch(draft, c);
     if ("error" in next) {
       setPatchError(next.error);
       return;
@@ -233,7 +230,7 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
         </p>
       </div>
 
-      <NetworkRecovery departed={c?.departed ?? false} configPath={c?.config_path} />
+      <NetworkRecovery departed={c?.departed ?? false} configPath={c?.config_path} mobile={mobile} />
 
       {cfg.isLoading && !c && <Skeleton className="h-56" />}
       {cfg.isError && (
@@ -290,7 +287,9 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
                   onChange={(e) => edit({ mtu: e.target.value })}
                 />
                 <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                  Floor; the daemon raises the live MTU automatically when every direct path supports it.
+                  {mobile
+                    ? "Takes effect when the VPN reconnects. Reconnect after changing MTU."
+                    : "Floor; applies after a restart. The daemon raises the live MTU automatically when every direct path supports it."}
                 </p>
               </div>
               <div className="flex items-end gap-3 pb-2">
@@ -307,7 +306,10 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
             </div>
 
             <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-              The daemon writes this file; the app never edits it directly. Name, port, MTU and mDNS apply without a restart. Changing the interface, STUN or public address needs a service restart.
+              The daemon writes this file; the app never edits it directly. Name changes apply live.{" "}
+              {mobile
+                ? "Port, MTU and mDNS changes take effect when the VPN reconnects."
+                : "Port, MTU and mDNS changes need a service restart — the notice below says when."}
             </p>
 
             {patchError && (
@@ -325,9 +327,9 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
                 </div>
                 {applied.restart_required ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-[var(--warning)]">
-                    <span>Restart the service for the new settings to take effect.</span>
+                    <span>{mobile ? "Reconnect the VPN" : "Restart the service"} for the new settings to take effect.</span>
                     <Button size="sm" variant="secondary" disabled={busy} onClick={() => service.mutate("restart")}>
-                      Restart service
+                      {mobile ? "Reconnect VPN" : "Restart service"}
                     </Button>
                   </div>
                 ) : (
@@ -551,6 +553,35 @@ export function Settings({ mobile = false }: { mobile?: boolean }) {
           )}
         </CardContent>
       </Card>
+
+      {mobile && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Connection</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-start gap-3">
+              <Switch
+                id="high-perf-wifi"
+                aria-label="Keep Wi-Fi radio at full performance"
+                checked={highPerf.data ?? false}
+                disabled={highPerf.isLoading || setHighPerf.isPending}
+                onCheckedChange={(enabled) => setHighPerf.mutate(enabled)}
+              />
+              <div className="min-w-0">
+                <Label htmlFor="high-perf-wifi" className="mb-0">
+                  Keep Wi-Fi radio at full performance
+                </Label>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  Stops Android's Wi-Fi power save from holding packets back, which removes the 50–100 ms spikes a
+                  local peer can show. The radio stays awake while the VPN is up, so it costs battery. Off by
+                  default.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

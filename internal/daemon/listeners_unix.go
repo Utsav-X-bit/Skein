@@ -10,7 +10,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/api"
 )
 
-const controlAccessFile = "/etc/skein/access"
+var controlAccessFile = "/etc/skein/access"
 
 // controlListener opens the Unix control socket at the configured path.
 // Binding fails if a live daemon already owns the socket or the mode/ACL

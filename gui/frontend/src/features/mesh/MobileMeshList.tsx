@@ -39,7 +39,7 @@ export function MobileMeshList({
     list.sort((a, b) => (a.id === self ? -1 : b.id === self ? 1 : a.id.localeCompare(b.id)));
     return list;
   }, [model.nodes, self]);
-  const peersUp = peers.filter((p) => p.state === "up").length;
+  const peersUp = model.nodes.filter((node) => node.kind === "peer" && node.state === "up").length;
 
   return (
     <div className="space-y-3 p-2">
@@ -52,7 +52,7 @@ export function MobileMeshList({
           const rate = peer ? peerRates[peer.id] : undefined;
           const selected = selectedPeer === node.id;
           const dot =
-            node.state === "up" || isSelf
+            node.state === "up"
               ? "var(--success)"
               : node.state === "degraded"
                 ? "var(--relay)"
@@ -72,7 +72,7 @@ export function MobileMeshList({
                     <span className="min-w-0 truncate font-medium">{nameOf(node.id)}</span>
                   </span>
                   <span className="shrink-0 text-xs text-[var(--text-muted)]">
-                    {isSelf ? "up · this device" : node.state}
+                    {isSelf ? `${node.state} · this device` : node.state}
                   </span>
                 </div>
                 <div className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">

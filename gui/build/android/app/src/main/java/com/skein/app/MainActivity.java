@@ -10,8 +10,10 @@ import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.net.ConnectivityManager;
+import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -35,12 +37,14 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import androidx.webkit.WebViewAssetLoader;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -72,10 +76,19 @@ public class MainActivity extends AppCompatActivity {
     // makes establish() return null and the daemon stops at once.
     private boolean pendingStartVpn = false;
 
-    // The live activity, for the Go side's static VPN entry points
-    // (requestVpnPermission and friends are instance methods called
-    // from Go through the cached JNI activity reference).
-    private static MainActivity instance;
+    // Back probe: close an open Radix overlay (dialog, alertdialog, sheet,
+    // popover) by dispatching the Escape key it already listens for —
+    // Android's Back is not an Escape key. Attribute values are unquoted so
+    // the selector needs no escaping inside this Java string literal.
+    private static final String BACK_PROBE_JS =
+            "(function(){try{"
+            + "var open=document.querySelector("
+            + "'[role=dialog][data-state=open],[role=alertdialog][data-state=open],"
+            + "[data-radix-popper-content-wrapper]');"
+            + "if(!open)return '0';"
+            + "document.dispatchEvent(new KeyboardEvent('keydown',"
+            + "{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));"
+            + "return '1';}catch(e){return '0';}})()";
 
     private WebView webView;
     private Uri devServer;
@@ -91,6 +104,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int PHOTO_CAPTURE_REQUEST = 7002;
     private static final int VIDEO_CAPTURE_REQUEST = 7003;
     private static final int CAMERA_PERMISSION_REQUEST = 7010;
+    // Android 13+ POST_NOTIFICATIONS (the VPN's persistent notification).
+    private static final int NOTIFICATION_PERMISSION_REQUEST = 7011;
 
     // In-flight callback for an HTML <input type="file"> chooser opened by the
     // WebView's WebChromeClient (null when idle).
@@ -115,7 +130,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        instance = this;
         setContentView(R.layout.activity_main);
 
         String devURL = WailsBridge.devServerURL(this);
@@ -136,6 +150,46 @@ public class MainActivity extends AppCompatActivity {
 
         // Set up WebView
         setupWebView();
+
+        // Back navigation. onBackPressed() is not a reliable hook: apps
+        // targeting SDK 35+ get the platform back system by default
+        // (predictive back), which goes through the OnBackPressedDispatcher
+        // and never calls the legacy override — so Back exited the app
+        // instead of walking the page history on Android 15/16.
+        //
+        // Order: close an open overlay, then walk the hash-route history,
+        // then leave the app. Overlays (Radix dialogs, sheets, popovers)
+        // are not history entries, so without the first step Back navigated
+        // the route underneath an open sheet — or finished the activity
+        // with it still on screen.
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                final WebView view = webView;
+                if (view == null) {
+                    finish();
+                    return;
+                }
+                try {
+                    view.evaluateJavascript(BACK_PROBE_JS, value -> {
+                        // "1" means an overlay took the Escape and closed.
+                        if ("\"1\"".equals(value)) {
+                            return;
+                        }
+                        if (webView != null && webView.canGoBack()) {
+                            webView.goBack();
+                            return;
+                        }
+                        // Root of the page history: leave the app. The VPN
+                        // service (and its notification) keep running.
+                        finish();
+                    });
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "back probe failed", e);
+                    finish();
+                }
+            }
+        });
 
         // Load the application
         loadApplication();
@@ -329,6 +383,10 @@ public class MainActivity extends AppCompatActivity {
                 Intent intent = SkeinVpnService.prepareIntent(this);
                 if (intent == null) {
                     nativeVpnPermissionResult(true);
+                    // A start that was waiting on consent (Settings ->
+                    // Start, or a grant that landed between the two
+                    // prepare() calls) has nothing left to wait for.
+                    resumePendingStart();
                     return;
                 }
                 startActivityForResult(intent, VPN_REQUEST_CODE);
@@ -339,9 +397,147 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /** Starts the VPN service if a start was deferred for consent. */
+    private void resumePendingStart() {
+        if (!pendingStartVpn) {
+            return;
+        }
+        pendingStartVpn = false;
+        startVpnService();
+    }
+
     /** True when Skein is already authorised to run a VPN. */
     public boolean vpnPermissionGranted() {
         return SkeinVpnService.prepareIntent(this) == null;
+    }
+
+    /**
+     * The device's underlay inventory as JSON:
+     * {@code {"addresses":["10.0.0.5",...],"interfaces":[{"name","index",
+     * "mtu","hardware_addr","up","multicast","loopback","point_to_point"}]}},
+     * or {@code {"error":"..."}} when it could not be read.
+     *
+     * <p>The Go daemon cannot enumerate any of this itself: Android 11+
+     * denies {@code net.Interfaces()} (and therefore {@code
+     * net.Interfaces()} on the Go side) to apps, so discovery finds no
+     * host address and no multicast-capable interface, and peers never
+     * learn a LAN candidate. Only non-VPN networks are read — with Skein
+     * up, the app's default network is our own TUN, whose addresses are
+     * overlay addresses no peer can dial. Per-interface lookup by name is
+     * still permitted, which is why the inventory is built from
+     * ConnectivityManager and resolved with {@code getByName}.
+     *
+     * <p>Zone ids are stripped; eligibility (private/global, dedupe) is
+     * internal/path's job. Called from a Go worker thread (JNI).
+     */
+    public String localNetworkInfo() {
+        JSONObject out = new JSONObject();
+        JSONArray addresses = new JSONArray();
+        JSONArray interfaces = new JSONArray();
+        try {
+            java.util.Set<String> seenAddresses = new java.util.LinkedHashSet<>();
+            java.util.Set<String> seenInterfaces = new java.util.LinkedHashSet<>();
+            for (LinkProperties props : underlayLinkProperties()) {
+                for (android.net.LinkAddress link : props.getLinkAddresses()) {
+                    java.net.InetAddress addr = link.getAddress();
+                    if (addr == null || addr.isLoopbackAddress() || addr.isAnyLocalAddress()) {
+                        continue;
+                    }
+                    String literal = addr.getHostAddress();
+                    if (literal == null) {
+                        continue;
+                    }
+                    int zone = literal.indexOf('%');
+                    if (zone >= 0) {
+                        literal = literal.substring(0, zone);
+                    }
+                    if (!literal.isEmpty() && seenAddresses.add(literal)) {
+                        addresses.put(literal);
+                    }
+                }
+
+                String name = props.getInterfaceName();
+                if (name == null || name.isEmpty() || !seenInterfaces.add(name)) {
+                    continue;
+                }
+                java.net.NetworkInterface nif = java.net.NetworkInterface.getByName(name);
+                if (nif == null) {
+                    // Report it: an interface the kernel lists but the app
+                    // cannot resolve means the daemon cannot join multicast
+                    // on it, and a silently empty list would look like "no
+                    // LAN" instead of a broken lookup.
+                    out.put("error", "NetworkInterface.getByName(\"" + name + "\") returned null");
+                    return out.toString();
+                }
+                JSONObject entry = new JSONObject();
+                entry.put("name", name);
+                entry.put("index", nif.getIndex());
+                entry.put("mtu", nif.getMTU());
+                entry.put("up", nif.isUp());
+                entry.put("multicast", nif.supportsMulticast());
+                entry.put("loopback", nif.isLoopback());
+                entry.put("point_to_point", nif.isPointToPoint());
+                byte[] hardware = nif.getHardwareAddress();
+                entry.put("hardware_addr", hardware == null ? "" : macLiteral(hardware));
+                interfaces.put(entry);
+            }
+            out.put("addresses", addresses);
+            out.put("interfaces", interfaces);
+        } catch (Exception e) {
+            Log.e(TAG, "localNetworkInfo failed", e);
+            try {
+                out.put("error", String.valueOf(e.getMessage()));
+            } catch (Exception ignored) {
+            }
+        }
+        return out.toString();
+    }
+
+    /** Link properties of the non-VPN networks, the default one first. */
+    private List<LinkProperties> underlayLinkProperties() {
+        List<LinkProperties> out = new ArrayList<>();
+        ConnectivityManager cm =
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) {
+            return out;
+        }
+        List<Network> ordered = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Network active = cm.getActiveNetwork();
+            if (active != null) {
+                ordered.add(active);
+            }
+        }
+        for (Network network : cm.getAllNetworks()) {
+            ordered.add(network);
+        }
+        java.util.Set<Network> seen = new java.util.LinkedHashSet<>();
+        for (Network network : ordered) {
+            if (!seen.add(network)) {
+                continue;
+            }
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            if (caps == null || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                continue;
+            }
+            LinkProperties props = cm.getLinkProperties(network);
+            if (props != null) {
+                out.add(props);
+            }
+        }
+        return out;
+    }
+
+    /** Colon-separated hex, the form net.ParseMAC accepts. */
+    private static String macLiteral(byte[] hardware) {
+        StringBuilder sb = new StringBuilder(hardware.length * 3);
+        for (int i = 0; i < hardware.length; i++) {
+            if (i > 0) {
+                sb.append(':');
+            }
+            sb.append(String.format(java.util.Locale.ROOT, "%02x", hardware[i]));
+        }
+        return sb.toString();
     }
 
     /** Open the system VPN settings so the user can re-enable Skein. */
@@ -372,7 +568,8 @@ public class MainActivity extends AppCompatActivity {
                     requestVpnPermission();
                     return;
                 }
-                ContextCompat.startForegroundService(this, SkeinVpnService.connectIntent(this));
+                requestNotificationPermission();
+                startServiceCompat(SkeinVpnService.connectIntent(this));
             } catch (Exception e) {
                 Log.e(TAG, "startVpnService failed", e);
             }
@@ -383,11 +580,65 @@ public class MainActivity extends AppCompatActivity {
     public void stopVpnService() {
         runOnUiThread(() -> {
             try {
-                startService(SkeinVpnService.disconnectIntent(this));
+                startServiceCompat(SkeinVpnService.disconnectIntent(this));
             } catch (Exception e) {
                 Log.e(TAG, "stopVpnService failed", e);
             }
         });
+    }
+
+    /**
+     * Toggle the high-performance Wi-Fi lock (Settings → Connection). The
+     * preference is persisted by the service and applied to a running tunnel
+     * immediately, so no reconnect is needed.
+     */
+    public void setHighPerformanceWifi(boolean enabled) {
+        try {
+            SkeinVpnService.setHighPerformance(this, enabled);
+        } catch (Exception e) {
+            Log.e(TAG, "setHighPerformanceWifi failed", e);
+        }
+    }
+
+    /** Read the persisted high-performance Wi-Fi preference. */
+    public boolean highPerformanceWifiEnabled() {
+        return SkeinVpnService.highPerformanceEnabled(this);
+    }
+
+    /**
+     * Start a service that immediately calls startForeground. A plain
+     * startService throws IllegalStateException for a backgrounded app
+     * (Android 8+), which silently lost Disconnect taps; a foreground start
+     * is allowed from the UI and from a notification action, and the
+     * service handles both request kinds the same way. Falls back to
+     * startService when the foreground start is refused (Android 12+ blocks
+     * background foreground-service starts).
+     */
+    private void startServiceCompat(Intent intent) {
+        try {
+            ContextCompat.startForegroundService(this, intent);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "startForegroundService refused; falling back to startService", e);
+            startService(intent);
+        }
+    }
+
+    /**
+     * Android 13+ hides the VPN's persistent notification (the only
+     * Disconnect control outside the app) unless POST_NOTIFICATIONS is
+     * granted. Ask on the first Connect; the answer is not needed for the
+     * VPN itself, so the result is ignored.
+     */
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, "android.permission.POST_NOTIFICATIONS")
+                == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},
+                NOTIFICATION_PERMISSION_REQUEST);
     }
 
     /**
@@ -396,9 +647,15 @@ public class MainActivity extends AppCompatActivity {
      * the result is delivered to JS as a "common:capture" event.
      */
     public void launchCameraCapture(boolean video) {
-        if (checkSelfPermission("android.permission.CAMERA") != PackageManager.PERMISSION_GRANTED) {
+        // Context.checkSelfPermission is API 23; minSdk is 21.
+        if (ContextCompat.checkSelfPermission(this, "android.permission.CAMERA")
+                != PackageManager.PERMISSION_GRANTED) {
             pendingCaptureIsVideo = video;
-            requestPermissions(new String[]{"android.permission.CAMERA"}, CAMERA_PERMISSION_REQUEST);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                requestPermissions(new String[]{"android.permission.CAMERA"}, CAMERA_PERMISSION_REQUEST);
+            } else {
+                bridge.emitEvent("common:capture", "{\"error\":\"camera permission denied\"}");
+            }
             return;
         }
         try {
@@ -425,6 +682,11 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST) {
+            // Cosmetic only: the VPN runs (and is controllable in-app) with
+            // the notification suppressed. Never forward to the bridge.
+            return;
+        }
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 launchCameraCapture(pendingCaptureIsVideo);
@@ -646,9 +908,10 @@ public class MainActivity extends AppCompatActivity {
             // A start that waited on this dialog goes ahead now that
             // permission is granted; a denial just clears the flag.
             if (pendingStartVpn) {
-                pendingStartVpn = false;
                 if (resultCode == RESULT_OK) {
-                    startVpnService();
+                    resumePendingStart();
+                } else {
+                    pendingStartVpn = false;
                 }
             }
             return;
@@ -844,7 +1107,18 @@ public class MainActivity extends AppCompatActivity {
                 }
             };
             try {
-                connectivityManager.registerDefaultNetworkCallback(networkCallback);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    connectivityManager.registerDefaultNetworkCallback(networkCallback);
+                } else {
+                    // registerDefaultNetworkCallback is API 24; minSdk is 21.
+                    // The request form reports the same networks (including
+                    // the current one immediately on registration).
+                    connectivityManager.registerNetworkCallback(
+                            new NetworkRequest.Builder()
+                                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                                    .build(),
+                            networkCallback);
+                }
             } catch (Exception e) {
                 Log.e(TAG, "registerDefaultNetworkCallback failed", e);
             }
@@ -885,7 +1159,10 @@ public class MainActivity extends AppCompatActivity {
     /** Push current battery / network / theme so a freshly-loaded UI is populated. */
     private void emitSystemSnapshot() {
         emitBattery(registerSticky(Intent.ACTION_BATTERY_CHANGED));
-        if (connectivityManager != null) {
+        // ConnectivityManager.getActiveNetwork is API 23; below that the
+        // network callback registered in onStart has already reported the
+        // current network, so skipping here loses nothing.
+        if (connectivityManager != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Network active = connectivityManager.getActiveNetwork();
             if (active != null) {
                 emitNetwork(active);
@@ -1059,24 +1336,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (instance == this) {
-            instance = null;
-        }
         unregisterSystemEventReceivers();
         if (bridge != null) {
             bridge.shutdown();
         }
         if (webView != null) {
             webView.destroy();
-        }
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
+            // The back probe and pending JS callbacks must not touch a
+            // destroyed WebView.
+            webView = null;
         }
     }
 }

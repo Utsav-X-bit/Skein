@@ -72,3 +72,24 @@ export function timeAgo(ms?: number) {
   if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`;
   return `${Math.round(diff / 86_400_000)}d ago`;
 }
+
+/**
+ * Wails delivers a Go error wrapped in transport noise:
+ * "Binding call failed: Bound method returned an error: <message>".
+ * The wrapper names the RPC, not the problem, and it is what a service
+ * failure actually read as on the phone. Only the wrappers are
+ * removed — the backend's own words come through verbatim, so a real
+ * failure is never softened or hidden.
+ */
+const bindingNoise = ["Binding call failed: ", "Bound method returned an error: "];
+
+export function stripBindingNoise(message: string): string {
+  let text = message.trim();
+  for (;;) {
+    const before = text;
+    for (const prefix of bindingNoise) {
+      if (text.startsWith(prefix)) text = text.slice(prefix.length).trim();
+    }
+    if (text === before) return text;
+  }
+}

@@ -36,7 +36,7 @@ export function BottomNav() {
     if (location.pathname === "/peers") setPeersSeenAt(Date.now());
   }, [location.pathname]);
 
-  const offlineCount = mesh.peers.filter((p) => p.state !== "up").length;
+  const offlineCount = mesh.model.nodes.filter((node) => node.kind === "peer" && node.state !== "up").length;
   const peersBadge = location.pathname === "/peers" ? 0 : offlineCount;
   // Peers badge also covers "a new peer joined since last view":
   // a join is visible as a peer whose first-seen is after the last

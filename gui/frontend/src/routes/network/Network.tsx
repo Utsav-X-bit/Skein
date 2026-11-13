@@ -78,7 +78,7 @@ export function Network() {
               />
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm" aria-label="Routes">
+                <table className="w-full min-w-[560px] text-left text-sm" aria-label="Routes">
                   <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                     <tr>
                       {([["destination", "Destination"], ["nextHop", "Next hop"], ["cost", "Cost"], ["hops", "Hops"]] as const).map(([key, label]) => (
@@ -162,7 +162,7 @@ export function Network() {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm" aria-label="Peer links">
+              <table className="w-full min-w-[420px] text-left text-sm" aria-label="Peer links">
                 <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                   <tr>
                     {["From", "To", "Via", "Cost"].map((h) => (

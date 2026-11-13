@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Utsav-X-bit/skein/internal/api"
@@ -23,9 +24,12 @@ type Client struct {
 }
 
 var defaultClient *Client
+var clientMu sync.Mutex
 
 // ControlClient returns the shared daemon client, creating it lazily.
 func ControlClient() (*Client, error) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
 	if defaultClient != nil {
 		return defaultClient, nil
 	}

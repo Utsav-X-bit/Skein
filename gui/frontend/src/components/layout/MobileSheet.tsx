@@ -50,7 +50,9 @@ export function MobileSheet({
   }, [open, initialDetent]);
 
   const onHandlePointerDown = (e: React.PointerEvent) => {
-    if (reduced) return;
+    // Dragging is direct manipulation, not animation: it stays available
+    // under reduced motion, where it is otherwise the only way to resize
+    // the sheet without hunting for a 6px dot.
     dragStart.current = e.clientY;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -85,7 +87,7 @@ export function MobileSheet({
             height: detentHeight[detent],
             paddingBottom: "env(safe-area-inset-bottom, 0px)",
             transform: dragY > 0 ? `translateY(${dragY}px)` : undefined,
-            transition: dragY > 0 ? "none" : "height 220ms ease-out, transform 180ms ease-in",
+            transition: reduced ? undefined : dragY > 0 ? "none" : "height 220ms ease-out, transform 180ms ease-in",
           }}
         >
           <div
@@ -113,21 +115,27 @@ export function MobileSheet({
                 <X size={20} />
               </button>
             </div>
-            <div className="mt-1 flex gap-1.5" role="group" aria-label="Sheet size">
-              {detentOrder.map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  aria-label={`Sheet size ${d}`}
-                  aria-pressed={detent === d}
-                  onClick={() => setDetent(d)}
+          </div>
+          {/* Outside the drag container: a pointerdown on a size button
+              must resize the sheet, not start a drag. */}
+          <div className="flex shrink-0 items-center justify-center" role="group" aria-label="Sheet size">
+            {detentOrder.map((d) => (
+              <button
+                key={d}
+                type="button"
+                aria-label={`Sheet size ${d}`}
+                aria-pressed={detent === d}
+                onClick={() => setDetent(d)}
+                className="flex h-12 w-10 items-center justify-center"
+              >
+                <span
                   className={cn(
                     "h-1.5 rounded-full transition-colors",
                     detent === d ? "w-6 bg-[var(--accent)]" : "w-3 bg-[var(--border-strong)]",
                   )}
                 />
-              ))}
-            </div>
+              </button>
+            ))}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">{children}</div>
         </Dialog.Content>

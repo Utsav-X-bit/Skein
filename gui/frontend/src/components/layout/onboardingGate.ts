@@ -22,8 +22,19 @@ export function nextSetupGate(gate: SetupGate, serviceMissing: boolean): SetupGa
   return gate;
 }
 
-/** Settings is never covered: recovery must stay reachable mid-setup. */
-export function setupOwnsWindow(gate: SetupGate, serviceMissing: boolean, pathname: string): boolean {
+/**
+ * Settings is never covered mid-setup: recovery must stay reachable. A device
+ * with no configuration at all is the exception — there is nothing left on
+ * Settings to recover, and a reset that leaves the user there had no way
+ * forward, so setup owns the window even on /settings.
+ */
+export function setupOwnsWindow(
+  gate: SetupGate,
+  serviceMissing: boolean,
+  pathname: string,
+  configMissing = false,
+): boolean {
+  if (configMissing) return true;
   if (pathname.startsWith("/settings")) return false;
   return gate === "open" || (gate === "auto" && serviceMissing);
 }

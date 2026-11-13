@@ -11,6 +11,7 @@ import { CopyField } from "@/components/ui/copy-field";
 import { Input, Label } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LogoMark } from "@/components/brand/LogoMark";
+import { isValidMtu, isValidPort, mtuRangeMessage, portRangeMessage } from "@/lib/limits";
 
 type Mode = "welcome" | "create" | "join" | "import" | "done";
 type Pending = "create" | "join" | "import" | null;
@@ -123,6 +124,14 @@ export function MobileOnboarding({ onBegin, onExit }: { onBegin?: () => void; on
   const failed = create.error ? "create" : join.error ? "join" : importCfg.error ? "import" : null;
   const error = create.error ?? join.error ?? importCfg.error;
 
+  // Validate only what this form owns; the daemon stays the authority
+  // for everything else. The bounds mirror conf.MinMTU/MaxMTU — MTU is
+  // capped by the wire frame (1346), not by the port range, so the old
+  // 65535 ceiling let the form submit values the daemon always rejects.
+  const portOk = isValidPort(port);
+  const mtuOk = isValidMtu(mtu);
+  const createReady = name.trim().length > 0 && portOk && mtuOk;
+
   const step = mode === "welcome" ? 1 : mode === "done" ? 3 : 2;
 
   return (
@@ -182,13 +191,16 @@ export function MobileOnboarding({ onBegin, onExit }: { onBegin?: () => void; on
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label htmlFor="m-port">listen port</Label>
-                <Input id="m-port" value={port} inputMode="numeric" onChange={(e) => setPort(e.target.value)} className="h-12" />
+                <Input id="m-port" value={port} inputMode="numeric" aria-invalid={!portOk} onChange={(e) => setPort(e.target.value)} className="h-12" />
               </div>
               <div>
                 <Label htmlFor="m-mtu">MTU</Label>
-                <Input id="m-mtu" value={mtu} inputMode="numeric" onChange={(e) => setMtu(e.target.value)} className="h-12" />
+                <Input id="m-mtu" value={mtu} inputMode="numeric" aria-invalid={!mtuOk} onChange={(e) => setMtu(e.target.value)} className="h-12" />
               </div>
             </div>
+            {(!portOk || !mtuOk) && (
+              <p className="text-xs text-[var(--warning)]">{portRangeMessage} {mtuRangeMessage}</p>
+            )}
             <div className="flex items-center gap-3">
               <Switch id="m-mdns" aria-label="local discovery (mDNS)" checked={mdns} onCheckedChange={setMdns} />
               <Label htmlFor="m-mdns" className="mb-0">local discovery (mDNS)</Label>
@@ -199,7 +211,7 @@ export function MobileOnboarding({ onBegin, onExit }: { onBegin?: () => void; on
                 {errDisplay(error)}
               </div>
             )}
-            <Button size="lg" className="h-[var(--connect-h)] w-full" disabled={pending !== null || !name.trim()} onClick={() => create.mutate()}>
+            <Button size="lg" className="h-[var(--connect-h)] w-full" disabled={pending !== null || !createReady} onClick={() => create.mutate()}>
               <Server size={16} /> {pending === "create" ? "Creating…" : "Create network"}
             </Button>
           </CardContent>

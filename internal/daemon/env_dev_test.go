@@ -14,6 +14,9 @@ import (
 // file runs ONLY with that tag; a release build must never pass it
 // (its securityEnv returns "" for every name).
 func TestDevBuildHonoursDaemonSecurityEnvVars(t *testing.T) {
+	old := stateFileOverride
+	stateFileOverride = ""
+	t.Cleanup(func() { stateFileOverride = old })
 	planted := filepath.Join(t.TempDir(), "dev-state.json")
 	t.Setenv("SKEIN_STATE_FILE", planted)
 	t.Setenv("SKEIN_NO_FIREWALL", "1")

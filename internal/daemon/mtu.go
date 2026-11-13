@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"log"
+	"runtime"
 
 	"github.com/Utsav-X-bit/skein/internal/conf"
 	"github.com/Utsav-X-bit/skein/internal/peer"
@@ -18,6 +19,11 @@ import (
 // later therefore cannot shrink the MTU mid-connection; its own sends are
 // bounded by its own measurement.
 func (d *Daemon) applyNegotiatedMTU(peerID uint64, frame int) {
+	// VpnService fixes its interface MTU at establish(); changing only the
+	// engine limit would advertise an effective MTU the interface cannot use.
+	if runtime.GOOS == "android" {
+		return
+	}
 	d.mtuMu.Lock()
 	if d.mtuDone {
 		d.mtuMu.Unlock()

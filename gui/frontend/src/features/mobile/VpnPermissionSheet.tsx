@@ -22,7 +22,7 @@ export function VpnPermissionSheet({
   overlayPrefix?: string;
 }) {
   return (
-    <MobileSheet open={open} onClose={onClose} title="Android will ask to set up a VPN" initialDetent="peek">
+    <MobileSheet open={open} onClose={onClose} title="Android will ask to set up a VPN" initialDetent="half">
       <div className="space-y-4">
         <div className="flex items-start gap-3">
           <ShieldCheck size={20} className="mt-0.5 shrink-0 text-[var(--accent)]" />

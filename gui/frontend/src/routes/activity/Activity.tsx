@@ -331,7 +331,7 @@ export function Activity() {
           ) : (
             <>
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
+                <table className="w-full min-w-[860px] text-left text-sm">
                   <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                     <tr>
                       {["Origin → destination", "Transport", "Path", "RX Δ", "TX Δ", "RTT", "Jitter", "Observed", "Samples"].map((heading) => (

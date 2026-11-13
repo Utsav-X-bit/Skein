@@ -151,7 +151,7 @@ export function Logs() {
   const liveProbe = useLive((s) => (peerId ? s.probes[peerId] : undefined));
   const probe = useMutation({ mutationFn: (id: string) => PeerService.Probe(id), onError: (e) => toast.error(errText(e)) });
   const ping = useMutation({ mutationFn: (ip: string) => NetworkService.Ping(ip), onError: (e) => toast.error(errText(e)) });
-  const probeResult = probe.data ?? liveProbe;
+  const probeResult = liveProbe ?? probe.data;
   const peerRoutes = (routes.data ?? []).filter((route) => route.destination === peerId);
 
   return (

@@ -79,8 +79,12 @@ func TestPingBuildsFixedArgvAndReportsReachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
-	if name != "ping" {
-		t.Fatalf("command = %q, want ping", name)
+	wantName := "ping"
+	if runtime.GOOS == "android" {
+		wantName = "/system/bin/ping"
+	}
+	if name != wantName {
+		t.Fatalf("command = %q, want %q", name, wantName)
 	}
 	flag := "-c"
 	if runtime.GOOS == "windows" {

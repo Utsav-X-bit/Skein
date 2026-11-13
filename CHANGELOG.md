@@ -1,5 +1,69 @@
 # Changelog
 
+## Unreleased — Android reliability
+
+- Serialize VPN lifecycle requests; repeated Connect, restart, revocation and
+  service destruction no longer leave a half-running daemon or detached TUN.
+- Use pollable TUN file descriptors so close interrupts packet reads and
+  reconnect cannot leave stale readers behind. Release unused handoff FDs.
+- Preserve terminal dataplane errors through teardown, honor connection
+  cancellation, and safely signal immediate reconnects.
+- Protect TCP fallback, STUN and path-MTU sockets as well as mesh UDP sockets.
+- Read Android underlay addresses/interface indices through ConnectivityManager;
+  mDNS uses explicit native addresses and a Wi-Fi multicast lock instead of
+  restricted netlink enumeration.
+- Keep Android's configured interface MTU fixed for each VPN generation; validate
+  the actual 576–1346 MTU range in onboarding and Settings.
+- Correct permission revocation, asynchronous startup errors, stale connection
+  controls, disconnected-state rendering, bottom sheets and mobile touch targets.
+- Handle Activity recreation and Android predictive Back without re-running the
+  Go application or navigating underneath an open dialog.
+- Disable cloud backup of VPN identity/configuration. Debug APKs embed the
+  frontend; deployment tasks upgrade in place instead of deleting app data.
+- Isolate daemon tests from the host's installed access grants and state.
+- Separate mobile peer cards on a single ellipse, keep full IPv4 addresses
+  visible, and count relayed peers consistently across map, list and badges.
+  Disconnected maps no longer show live links or a green local node.
+- Invoke Android's system ping by absolute path when the app has no PATH.
+- Correct the Wails service-startup interface so daemon events are subscribed;
+  completed probe events now replace the pending request acknowledgement.
+- Return a peer to UDP once a datagram proves that path works. The TCP
+  fallback was opened for blocked-UDP networks and then kept forever: every
+  send preferred the live stream even after `forced` was cleared, so a peer
+  that recovered UDP stayed on TCP (437 ms instead of 25 ms on a real
+  cross-carrier link). Path proofs now also travel over UDP, since a
+  challenge carried by an existing stream proves nothing about the address
+  being tested, and a TCP peer re-proves its candidates periodically.
+- Display the median of the last five control RTT samples instead of the
+  latest one. A single probe delayed by radio power save showed an order of
+  magnitude above the real path and held the screen for 15 s.
+- Settings → Connection (Android only): "Keep Wi-Fi radio at full
+  performance" holds a Wi-Fi lock while the VPN is up, so Android's power save
+  stops holding inbound packets back. Off by default because it costs battery;
+  the choice persists and applies to a running tunnel without reconnecting.
+  The manifest now declares `WAKE_LOCK`, which `WifiLock.acquire` requires.
+- Android ships the Skein mark as its launcher icon. The APK still carried
+  Wails' placeholder "W", so every mipmap density was regenerated from
+  `gui/build/appicon.png` (teal mark on a black plate), plus a circular round
+  variant and an adaptive icon (API 26+) whose foreground is the mark alone.
+- Switching or resetting a network no longer strands the app. Three defects
+  compounded: the Android service status reported "running" whenever the
+  daemon object existed, even after a reset removed the configuration; the
+  setup gate refused to cover `/settings` unconditionally, so the app sat on
+  a dead "Mesh paused" screen; and the reset call could hang forever, which
+  froze every later request. The status now reports `missing` when no
+  configuration exists, setup owns the window when there is nothing left to
+  recover, and the reset is bounded so it always returns.
+- Preserve Android's validated API configuration instead of erasing it at
+  startup, which broke renaming, settings saves and peer persistence.
+  Android still serves only in-process control; TCP is explicitly disabled.
+- Send only changed settings and request a restart only for actual changes.
+  Explain Android reconnection requirements and validate the IPv6 MTU floor.
+- Accept hostname STUN servers, retain custom servers while STUN is disabled,
+  and allow clearing a public endpoint. Report configuration write failures
+  instead of claiming a successful rename, rotation, leave, rejoin or peer add.
+
+
 ## Unreleased — mesh-first desktop redesign
 
 The desktop is now a mesh workspace instead of a card dashboard. The daemon

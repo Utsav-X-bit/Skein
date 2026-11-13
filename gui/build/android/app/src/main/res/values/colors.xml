@@ -5,4 +5,6 @@
     <color name="wails_background">#1B2636</color>
     <color name="white">#FFFFFFFF</color>
     <color name="black">#FF000000</color>
+    <!-- Adaptive launcher icon plate: the Skein mark is drawn on black. -->
+    <color name="ic_launcher_background">#FF000000</color>
 </resources>

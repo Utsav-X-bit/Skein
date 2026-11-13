@@ -23,6 +23,16 @@ describe("setup gate", () => {
     expect(setupOwnsWindow("open", true, "/settings?network=switch")).toBe(false);
   });
 
+  it("covers Settings when no configuration is left to recover", () => {
+    // Regression: a completed network reset removes the config, but Settings
+    // stayed uncovered, so the app sat on a dead mesh screen with no way back
+    // to setup. Nothing on Settings can be repaired without a network.
+    expect(setupOwnsWindow("auto", true, "/settings?network=switch", true)).toBe(true);
+    expect(setupOwnsWindow("open", true, "/settings", true)).toBe(true);
+    // A readable config keeps the exemption: recovery must stay reachable.
+    expect(setupOwnsWindow("open", true, "/settings", false)).toBe(false);
+  });
+
   it("keeps an explicit exit even while the cached service state is stale", () => {
     expect(setupOwnsWindow("closed", true, "/")).toBe(false);
   });

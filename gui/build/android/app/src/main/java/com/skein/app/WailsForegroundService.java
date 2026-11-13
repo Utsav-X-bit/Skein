@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -35,7 +36,7 @@ public class WailsForegroundService extends android.app.Service {
         }
 
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null) {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL_ID, "Background work", NotificationManager.IMPORTANCE_LOW);
             nm.createNotificationChannel(ch);
@@ -57,10 +58,20 @@ public class WailsForegroundService extends android.app.Service {
                 .setContentIntent(contentIntent)
                 .build();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        } else {
-            startForeground(NOTIFICATION_ID, n);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(NOTIFICATION_ID, n);
+            }
+        } catch (RuntimeException e) {
+            // Android 12+ refuses a foreground start from the background (a
+            // START_STICKY restart lands exactly there) and 14+ refuses a
+            // type the app may not use. Continuing would crash the process
+            // with ForegroundServiceDidNotStartInTimeException.
+            Log.w("WailsForegroundService", "startForeground refused; stopping", e);
+            stopSelf();
+            return START_NOT_STICKY;
         }
         // Restart if the OS kills us while still wanted.
         return START_STICKY;

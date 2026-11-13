@@ -1,6 +1,7 @@
 package link
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -37,7 +38,8 @@ type tcpConn struct {
 
 // ListenTCP accepts framed connections on port.
 func ListenTCP(port uint16) (*TCP, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lc := tcpListenConfig()
+	ln, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,9 @@ func (t *TCP) Dial(addr netip.AddrPort) error {
 	if exists {
 		return nil
 	}
-	conn, err := net.DialTimeout("tcp", addr.String(), 3*time.Second)
+	dialer := tcpDialer()
+	dialer.Timeout = tcpDialTimeout
+	conn, err := dialer.Dial("tcp", addr.String())
 	if err != nil {
 		return err
 	}
@@ -302,6 +306,7 @@ const wireHeaderSize = 26
 
 const (
 	maxTCPConns     = 128
+	tcpDialTimeout  = 3 * time.Second
 	tcpIdleTimeout  = 2 * time.Minute
 	tcpWriteTimeout = 10 * time.Second
 )

@@ -450,12 +450,15 @@ func TestPongRecordsTheRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("peer missing")
 	}
-	if p.RTT != 42*time.Millisecond {
-		t.Fatalf("RTT = %v, want 42ms", p.RTT)
+	// The displayed RTT is the median of the series: the path was proven at
+	// 5 ms, so one 42 ms probe reads as 23.5 ms. Routing keeps the raw
+	// measurement, which is what path selection must react to.
+	if p.RTT != 23500*time.Microsecond {
+		t.Fatalf("RTT = %v, want 23.5ms (median of the series)", p.RTT)
 	}
 	r, ok := f.routes.Lookup(f.peerID)
 	if !ok || r.Cost != 42*time.Millisecond {
-		t.Fatalf("route cost = %+v, want 42ms", r)
+		t.Fatalf("route cost = %+v, want the raw 42ms", r)
 	}
 }
 

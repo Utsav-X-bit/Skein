@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as SetupService from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/setupservice";
 import type { NetworkResetResult } from "../../../bindings/github.com/Utsav-X-bit/skein/gui/services/models";
@@ -43,8 +43,18 @@ function recoveryError(error: unknown): string {
 type RejoinPhase = "idle" | "waiting" | "observed" | "expired";
 type Stage = "" | "leave" | "reset";
 
-export function NetworkRecovery({ departed, configPath }: { departed: boolean; configPath?: string }) {
+export function NetworkRecovery({
+  departed,
+  configPath,
+  mobile = false,
+}: {
+  departed: boolean;
+  configPath?: string;
+  /** The mobile shell hides Settings from the setup gate; the desktop one does not. */
+  mobile?: boolean;
+}) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const open = params.get("network");
   const [invite, setInvite] = useState("");
@@ -152,6 +162,22 @@ export function NetworkRecovery({ departed, configPath }: { departed: boolean; c
       refresh();
     },
   });
+
+  // A completed reset leaves no network on this device, and the shell only
+  // hands the window to setup outside Settings ("recovery must stay
+  // reachable" keeps Settings uncovered). Staying here therefore showed a
+  // dead mesh screen with no way forward; the reset's own outcome is
+  // reported by the daemon's system_reset event.
+  const resetDone = mobile && outcome !== null && !outcome.stop_error;
+  useEffect(() => {
+    if (!resetDone) return;
+    setParams((p) => {
+      p.delete("network");
+      return p;
+    });
+    navigate("/", { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetDone]);
 
   const stop = useMutation({
     mutationFn: () => ServiceService.Stop(),

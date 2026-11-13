@@ -158,6 +158,30 @@ func TestSwitchPrefersUDPThenTCP(t *testing.T) {
 	if forced {
 		t.Fatal("a UDP frame from the peer must clear the TCP fallback")
 	}
+	// Clearing the flag is not enough: Send must actually stop preferring
+	// the live stream, or the link stays on TCP forever.
+	if err := a.Send(addr, payload); err != nil {
+		t.Fatalf("send after proof: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		n, _, transport, err := b.RecvTagged(buf)
+		if err != nil {
+			t.Fatalf("recv after proof: %v", err)
+		}
+		if n == len(payload) {
+			if transport != "udp" {
+				t.Fatalf("transport = %q after UDP proof, want udp", transport)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no frame after UDP proof")
+		}
+	}
+	if got := a.TransportFor(addr); got != "udp" {
+		t.Fatalf("TransportFor = %q after UDP proof, want udp", got)
+	}
 }
 
 // TestTCPConcurrentSendsStayFramed guards the per-connection write lock: the

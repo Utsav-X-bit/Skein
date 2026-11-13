@@ -36,5 +36,5 @@ func (d *Daemon) controlListener(_ context.Context) (net.Listener, string, strin
 	// TCP port, so the grant is not reachable from outside the app.
 	uid := os.Getuid()
 	d.api.SetGrant("uid:"+strconv.Itoa(uid), api.RoleSecret)
-	return inproc.Default, "in-process control", "", nil
+	return inproc.Current(), "in-process control", "", nil
 }

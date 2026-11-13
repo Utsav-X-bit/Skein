@@ -4,15 +4,32 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
+// mainOnce keeps the Android entry point idempotent (see main).
+var mainOnce sync.Once
+
 // main serves as the application entry point. It creates the app, the main
 // window, and registers the tray/updater hooks (W10), then blocks until exit.
+//
+// On Android this function is not called by the Go runtime: the Wails
+// runtime calls it from WailsBridge.nativeInit, which runs on every
+// Activity onCreate. Android can recreate the Activity while the process
+// (and this runtime) lives on, so the second call would build a second App
+// — registering every service and event twice — and the event bus panics on
+// the duplicate registration. mainOnce makes the entry point idempotent:
+// a recreation only rebinds the WebView bridge (nativeInit does that before
+// calling us) and leaves the running app alone.
 func main() {
+	mainOnce.Do(run)
+}
+
+func run() {
 	a := New()
 
 	// Use native window decorations everywhere. The Windows custom titlebar

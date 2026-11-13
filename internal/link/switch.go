@@ -20,11 +20,29 @@ type Switch struct {
 	once    sync.Once
 	wg      sync.WaitGroup
 
-	// forced marks addresses the fallback was explicitly dialed for. UDP
-	// frames from an address clear it: a working UDP path always wins.
+	// forced marks addresses the fallback was explicitly dialed for, and
+	// udpSeen records when a datagram last arrived from an address. A
+	// datagram proves the peer's UDP path works, so it clears forced and
+	// keeps UDP preferred over any fallback stream for a while.
 	mu      sync.Mutex
 	forced  map[netip.Addr]bool
 	dialing map[netip.Addr]bool
+	udpSeen map[netip.Addr]time.Time
+}
+
+// udpPreferenceWindow is how long a received datagram keeps UDP preferred
+// over an existing TCP fallback. Every inbound datagram refreshes it, so a
+// live UDP path never loses to a stale stream; a peer that really needs TCP
+// sends nothing over UDP and reverts once the window lapses.
+const udpPreferenceWindow = 30 * time.Second
+
+// udpProven reports whether a datagram arrived from ip recently enough to
+// prefer UDP over an existing fallback stream.
+func (s *Switch) udpProven(ip netip.Addr) bool {
+	s.mu.Lock()
+	at, ok := s.udpSeen[ip]
+	s.mu.Unlock()
+	return ok && time.Since(at) < udpPreferenceWindow
 }
 
 // Listen binds UDP and, when possible, TCP on the same port.
@@ -47,6 +65,7 @@ func Listen(port uint16) (*Switch, error) {
 		closed:  make(chan struct{}),
 		forced:  make(map[netip.Addr]bool),
 		dialing: make(map[netip.Addr]bool),
+		udpSeen: make(map[netip.Addr]time.Time),
 	}
 	s.wg.Add(1)
 	go s.readUDP()
@@ -91,6 +110,7 @@ func (s *Switch) readUDP() {
 		// fallback preference instead of staying on TCP forever.
 		s.mu.Lock()
 		delete(s.forced, from.Addr())
+		s.udpSeen[from.Addr()] = time.Now()
 		s.mu.Unlock()
 		select {
 		case s.packets <- received{data: data, from: from, transport: "udp"}:
@@ -132,17 +152,20 @@ func (s *Switch) readTCP() {
 	}
 }
 
-// Send prefers an existing TCP connection over UDP: any live stream to the
-// exact address (including an accepted connection, whose key is the peer's
-// ephemeral port) wins, and a single stream from the destination IP wins
-// when sending to the peer's listen address. This is the M4 F-01 fix: the
+// Send prefers UDP when a datagram from the address proved that path works.
+// Otherwise an existing TCP connection wins: any live stream to the exact
+// address (including an accepted connection, whose key is the peer's
+// ephemeral port) is used, and a single stream from the destination IP wins
+// when sending to the peer's listen address. That is the M4 F-01 fix: the
 // accept side previously fell through to UDP because `forced` is only set
 // by an explicit DialTCP on the dial side, so handshake replies to a
 // TCP-accepted peer were sent as UDP to a dead ephemeral port and lost
-// silently. A UDP path is used only when no TCP connection exists at all.
+// silently. UDP is used only when no TCP connection exists, or when a
+// datagram has since proved the UDP path.
 func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
-	if s.tcp != nil {
+	proven := s.udpProven(addr.Addr())
+	if s.tcp != nil && !proven {
 		if s.tcp.HasConn(addr) {
 			return s.tcp.Send(addr, payload)
 		}
@@ -153,7 +176,7 @@ func (s *Switch) Send(addr netip.AddrPort, payload []byte) error {
 	s.mu.Lock()
 	forced := s.forced[addr.Addr()]
 	s.mu.Unlock()
-	if forced && s.tcp != nil && s.tcp.HasConn(addr) {
+	if forced && !proven && s.tcp != nil && s.tcp.HasConn(addr) {
 		return s.tcp.Send(addr, payload)
 	}
 	udpErr := s.udp.Send(addr, payload)
@@ -203,10 +226,20 @@ func (s *Switch) DialTCP(addr netip.AddrPort) error {
 // TransportFor reports which transport a connection to addr uses.
 func (s *Switch) TransportFor(addr netip.AddrPort) string {
 	addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
+	if s.udpProven(addr.Addr()) {
+		return "udp"
+	}
 	if s.tcp != nil && (s.tcp.HasConn(addr) || s.tcp.HasConnForIP(addr)) {
 		return "tcp"
 	}
 	return "udp"
+}
+
+// SendDirect sends one frame over UDP to a specific address, ignoring any
+// fallback stream. Path proofs use it: a challenge carried by an existing
+// TCP connection proves nothing about the address being tested.
+func (s *Switch) SendDirect(addr netip.AddrPort, payload []byte) error {
+	return s.udp.Send(netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()), payload)
 }
 
 // HasTCP reports whether the TCP fallback is listening.

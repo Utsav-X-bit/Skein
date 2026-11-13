@@ -20,6 +20,8 @@ package main
 /*
 #include <jni.h>
 #include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 
 static const char *skeinJstringChars(JNIEnv *env, jstring s) {
 	if (s == NULL) return NULL;
@@ -47,6 +49,11 @@ static jstring skeinNewJstring(JNIEnv *env, const char *c) {
 static JavaVM* skeinJvm = NULL;
 static jobject skeinActivity = NULL;
 static jclass skeinActivityClass = NULL;
+// Guards skeinActivity/skeinActivityClass: nativeInitSkeinBridge replaces
+// them on every Activity onCreate (Android can recreate MainActivity while
+// the process and the Go runtime live on), and a caller must never use a
+// reference the rebind just deleted.
+static pthread_mutex_t skeinActivityMu = PTHREAD_MUTEX_INITIALIZER;
 // Cached SkeinVpnService class (global ref). FindClass does NOT
 // work from a Go goroutine attached via AttachCurrentThread — the
 // attached thread has no app class loader — so the class is cached
@@ -72,13 +79,49 @@ static void skeinStoreVpnServiceClass(JNIEnv *env) {
 
 static void skeinStoreActivity(JNIEnv *env, jobject activity) {
 	skeinStoreJvm(env);
-	if (skeinActivity != NULL) return;
-	skeinActivity = (*env)->NewGlobalRef(env, activity);
+	// Always replace: a recreated Activity must not leave the Go side
+	// calling methods on the destroyed instance (the VPN dialog and the
+	// service start would silently never happen).
+	jobject fresh = (*env)->NewGlobalRef(env, activity);
+	jclass freshClass = NULL;
 	jclass cls = (*env)->GetObjectClass(env, activity);
 	if (cls != NULL) {
-		skeinActivityClass = (*env)->NewGlobalRef(env, cls);
+		freshClass = (*env)->NewGlobalRef(env, cls);
 		(*env)->DeleteLocalRef(env, cls);
 	}
+	pthread_mutex_lock(&skeinActivityMu);
+	jobject old = skeinActivity;
+	jclass oldClass = skeinActivityClass;
+	skeinActivity = fresh;
+	skeinActivityClass = freshClass;
+	pthread_mutex_unlock(&skeinActivityMu);
+	// Safe to free now: callers hold local references (skeinAcquireActivity).
+	if (old != NULL) (*env)->DeleteGlobalRef(env, old);
+	if (oldClass != NULL) (*env)->DeleteGlobalRef(env, oldClass);
+}
+
+// Take local references to the cached activity and its class. Returns 0
+// when nothing is cached; the caller must DeleteLocalRef both when done.
+static int skeinAcquireActivity(JNIEnv *env, jobject *act, jclass *cls) {
+	*act = NULL;
+	*cls = NULL;
+	pthread_mutex_lock(&skeinActivityMu);
+	if (skeinActivity != NULL) *act = (*env)->NewLocalRef(env, skeinActivity);
+	if (skeinActivityClass != NULL) *cls = (*env)->NewLocalRef(env, skeinActivityClass);
+	pthread_mutex_unlock(&skeinActivityMu);
+	if (*act == NULL || *cls == NULL) {
+		if (*act != NULL) (*env)->DeleteLocalRef(env, *act);
+		if (*cls != NULL) (*env)->DeleteLocalRef(env, *cls);
+		*act = NULL;
+		*cls = NULL;
+		return 0;
+	}
+	return 1;
+}
+
+static void skeinReleaseActivity(JNIEnv *env, jobject act, jclass cls) {
+	if (act != NULL) (*env)->DeleteLocalRef(env, act);
+	if (cls != NULL) (*env)->DeleteLocalRef(env, cls);
 }
 
 static JNIEnv* skeinGetEnv(int *needsDetach) {
@@ -109,21 +152,26 @@ static void skeinClearException(JNIEnv *env, const char *where) {
 // Returns 0 on success, -1 when no activity is cached, -2 when the
 // method is missing or threw.
 static int skeinCallActivityVoid(const char *method) {
-	if (skeinActivity == NULL || skeinActivityClass == NULL) return -1;
 	int detach = 0;
 	JNIEnv* env = skeinGetEnv(&detach);
 	if (env == NULL) return -1;
-	int rc = -2;
-	jmethodID mid = (*env)->GetMethodID(env, skeinActivityClass, method, "()V");
-	if (mid != NULL) {
-		(*env)->CallVoidMethod(env, skeinActivity, mid);
-		if ((*env)->ExceptionCheck(env)) {
-			skeinClearException(env, method);
+	jobject act;
+	jclass cls;
+	int rc = -1;
+	if (skeinAcquireActivity(env, &act, &cls)) {
+		rc = -2;
+		jmethodID mid = (*env)->GetMethodID(env, cls, method, "()V");
+		if (mid != NULL) {
+			(*env)->CallVoidMethod(env, act, mid);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, method);
+			} else {
+				rc = 0;
+			}
 		} else {
-			rc = 0;
+			skeinClearException(env, method);
 		}
-	} else {
-		skeinClearException(env, method);
+		skeinReleaseActivity(env, act, cls);
 	}
 	skeinReleaseEnv(detach);
 	return rc;
@@ -132,25 +180,91 @@ static int skeinCallActivityVoid(const char *method) {
 // Call a `boolean name()` instance method on the cached MainActivity.
 // Returns 1/0 for the value, -1 when the call could not be made.
 static int skeinCallActivityBool(const char *method) {
-	if (skeinActivity == NULL || skeinActivityClass == NULL) return -1;
 	int detach = 0;
 	JNIEnv* env = skeinGetEnv(&detach);
 	if (env == NULL) return -1;
+	jobject act;
+	jclass cls;
 	int rc = -1;
-	jmethodID mid = (*env)->GetMethodID(env, skeinActivityClass, method, "()Z");
-	if (mid != NULL) {
-		jboolean v = (*env)->CallBooleanMethod(env, skeinActivity, mid);
-		if ((*env)->ExceptionCheck(env)) {
-			skeinClearException(env, method);
+	if (skeinAcquireActivity(env, &act, &cls)) {
+		jmethodID mid = (*env)->GetMethodID(env, cls, method, "()Z");
+		if (mid != NULL) {
+			jboolean v = (*env)->CallBooleanMethod(env, act, mid);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, method);
+			} else {
+				rc = v ? 1 : 0;
+			}
 		} else {
-			rc = v ? 1 : 0;
+			skeinClearException(env, method);
 		}
-	} else {
-		skeinClearException(env, method);
+		skeinReleaseActivity(env, act, cls);
 	}
 	skeinReleaseEnv(detach);
 	return rc;
 }
+// Call a `void name(boolean)` instance method on the cached MainActivity.
+// Returns 0 on success, -1 when no activity is cached, -2 when the method
+// is missing or threw.
+static int skeinCallActivityVoidBool(const char *method, int value) {
+	int detach = 0;
+	JNIEnv* env = skeinGetEnv(&detach);
+	if (env == NULL) return -1;
+	jobject act;
+	jclass cls;
+	int rc = -1;
+	if (skeinAcquireActivity(env, &act, &cls)) {
+		rc = -2;
+		jmethodID mid = (*env)->GetMethodID(env, cls, method, "(Z)V");
+		if (mid != NULL) {
+			(*env)->CallVoidMethod(env, act, mid, value ? JNI_TRUE : JNI_FALSE);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, method);
+			} else {
+				rc = 0;
+			}
+		} else {
+			skeinClearException(env, method);
+		}
+		skeinReleaseActivity(env, act, cls);
+	}
+	skeinReleaseEnv(detach);
+	return rc;
+}
+
+// Call a `String name()` instance method on the cached MainActivity.
+// Returns a malloc'd copy (free() it), or NULL when no activity is cached
+// or the call failed.
+static char *skeinCallActivityString(const char *method) {
+	int detach = 0;
+	JNIEnv* env = skeinGetEnv(&detach);
+	if (env == NULL) return NULL;
+	char *out = NULL;
+	jobject act;
+	jclass cls;
+	if (skeinAcquireActivity(env, &act, &cls)) {
+		jmethodID mid = (*env)->GetMethodID(env, cls, method, "()Ljava/lang/String;");
+		if (mid != NULL) {
+			jstring s = (jstring)(*env)->CallObjectMethod(env, act, mid);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, method);
+			} else if (s != NULL) {
+				const char *chars = (*env)->GetStringUTFChars(env, s, NULL);
+				if (chars != NULL) {
+					out = strdup(chars);
+					(*env)->ReleaseStringUTFChars(env, s, chars);
+				}
+				(*env)->DeleteLocalRef(env, s);
+			}
+		} else {
+			skeinClearException(env, method);
+		}
+		skeinReleaseActivity(env, act, cls);
+	}
+	skeinReleaseEnv(detach);
+	return out;
+}
+
 // Call SkeinVpnService.protectSocket(fd): protect the daemon's
 // underlay socket from the VPN so its packets bypass the TUN.
 // Returns 1 when protected, 0 when no service is running (or the
@@ -159,18 +273,19 @@ static int skeinProtectSocket(int fd) {
 	int detach = 0;
 	JNIEnv* env = skeinGetEnv(&detach);
 	if (env == NULL) return -1;
-	if (skeinVpnServiceClass == NULL) return -1;
 	int rc = -1;
-	jmethodID mid = (*env)->GetStaticMethodID(env, skeinVpnServiceClass, "protectSocket", "(I)Z");
-	if (mid != NULL) {
-		jboolean v = (*env)->CallStaticBooleanMethod(env, skeinVpnServiceClass, mid, (jint)fd);
-		if ((*env)->ExceptionCheck(env)) {
-			skeinClearException(env, "protectSocket");
+	if (skeinVpnServiceClass != NULL) {
+		jmethodID mid = (*env)->GetStaticMethodID(env, skeinVpnServiceClass, "protectSocket", "(I)Z");
+		if (mid != NULL) {
+			jboolean v = (*env)->CallStaticBooleanMethod(env, skeinVpnServiceClass, mid, (jint)fd);
+			if ((*env)->ExceptionCheck(env)) {
+				skeinClearException(env, "protectSocket");
+			} else {
+				rc = v ? 1 : 0;
+			}
 		} else {
-			rc = v ? 1 : 0;
+			skeinClearException(env, "protectSocket");
 		}
-	} else {
-		skeinClearException(env, "protectSocket");
 	}
 	skeinReleaseEnv(detach);
 	return rc;
@@ -193,17 +308,26 @@ static const char *skeinMethodVpnGranted(void) { return "vpnPermissionGranted"; 
 static const char *skeinMethodOpenVpnSettings(void) { return "openVpnSettings"; }
 static const char *skeinMethodStartVpn(void) { return "startVpnService"; }
 static const char *skeinMethodStopVpn(void) { return "stopVpnService"; }
+static const char *skeinMethodLocalNetworkInfo(void) { return "localNetworkInfo"; }
+static const char *skeinMethodSetHighPerfWifi(void) { return "setHighPerformanceWifi"; }
+static const char *skeinMethodHighPerfWifi(void) { return "highPerformanceWifiEnabled"; }
 */
 import "C"
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"net"
+	"net/netip"
 	"time"
 	"unsafe"
 
 	"github.com/Utsav-X-bit/skein/gui/services"
 	"github.com/Utsav-X-bit/skein/internal/android"
+	"github.com/Utsav-X-bit/skein/internal/daemon"
 )
 
 // requestVpnPermission asks the Java side to launch the system VPN
@@ -228,6 +352,127 @@ func vpnPermissionGranted() (bool, bool) {
 func openVpnSettings() int { return int(C.skeinCallActivityVoid(C.skeinMethodOpenVpnSettings())) }
 func startVpnService() int { return int(C.skeinCallActivityVoid(C.skeinMethodStartVpn())) }
 func stopVpnService() int  { return int(C.skeinCallActivityVoid(C.skeinMethodStopVpn())) }
+
+// setHighPerformanceWifi persists the high-performance Wi-Fi preference and
+// applies it to a running tunnel. Returns 0 on success.
+func setHighPerformanceWifi(enabled bool) int {
+	v := C.int(0)
+	if enabled {
+		v = 1
+	}
+	return int(C.skeinCallActivityVoidBool(C.skeinMethodSetHighPerfWifi(), v))
+}
+
+// highPerformanceWifiEnabled reads the persisted preference. ok is false
+// when the bridge is not ready, which is not the same as "off".
+func highPerformanceWifiEnabled() (bool, bool) {
+	switch rc := int(C.skeinCallActivityBool(C.skeinMethodHighPerfWifi())); rc {
+	case 1:
+		return true, true
+	case 0:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// androidNetInfo is the underlay inventory MainActivity.localNetworkInfo
+// reports: the device's own addresses and the interfaces carrying them.
+type androidNetInfo struct {
+	Addresses  []string `json:"addresses"`
+	Interfaces []struct {
+		Name         string `json:"name"`
+		Index        int    `json:"index"`
+		MTU          int    `json:"mtu"`
+		HardwareAddr string `json:"hardware_addr"`
+		Up           bool   `json:"up"`
+		Multicast    bool   `json:"multicast"`
+		Loopback     bool   `json:"loopback"`
+		PointToPoint bool   `json:"point_to_point"`
+	} `json:"interfaces"`
+	Error string `json:"error"`
+}
+
+// androidLocalNetworkInfo asks Java for the underlay inventory. Android
+// 11+ denies net.Interfaces() to apps, so neither the addresses nor the
+// multicast-capable interfaces can be read from Go; discovery would find
+// no LAN candidate and every node would advertise itself unreachable.
+func androidLocalNetworkInfo() (androidNetInfo, error) {
+	var info androidNetInfo
+	cstr := C.skeinCallActivityString(C.skeinMethodLocalNetworkInfo())
+	if cstr == nil {
+		return info, errors.New("android: local network info: the app UI is not ready")
+	}
+	defer C.free(unsafe.Pointer(cstr))
+	if err := json.Unmarshal([]byte(C.GoString(cstr)), &info); err != nil {
+		return info, fmt.Errorf("android: local network info: %w", err)
+	}
+	if info.Error != "" {
+		return info, fmt.Errorf("android: local network info: %s", info.Error)
+	}
+	return info, nil
+}
+
+// androidLocalAddresses reports the device's underlay addresses. Eligibility
+// (private/global, dedupe) is internal/path's job.
+func androidLocalAddresses() ([]netip.Addr, error) {
+	info, err := androidLocalNetworkInfo()
+	if err != nil {
+		return nil, err
+	}
+	addrs := make([]netip.Addr, 0, len(info.Addresses))
+	for _, literal := range info.Addresses {
+		if addr, err := netip.ParseAddr(literal); err == nil {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs, nil
+}
+
+// androidLocalInterfaces reports the interfaces behind those addresses, for
+// multicast joins and the resolver's interface selection.
+func androidLocalInterfaces() ([]net.Interface, error) {
+	info, err := androidLocalNetworkInfo()
+	if err != nil {
+		return nil, err
+	}
+	ifaces := make([]net.Interface, 0, len(info.Interfaces))
+	for _, entry := range info.Interfaces {
+		if entry.Index <= 0 {
+			// A zero index means the join would silently target no
+			// interface; report it instead of returning a list that
+			// looks usable.
+			return nil, fmt.Errorf("android: interface %q has no usable index (%d)", entry.Name, entry.Index)
+		}
+		var flags net.Flags
+		if entry.Up {
+			flags |= net.FlagUp
+		}
+		if entry.Multicast {
+			flags |= net.FlagMulticast
+		}
+		if entry.Loopback {
+			flags |= net.FlagLoopback
+		}
+		if entry.PointToPoint {
+			flags |= net.FlagPointToPoint
+		}
+		var hardware net.HardwareAddr
+		if entry.HardwareAddr != "" {
+			if parsed, err := net.ParseMAC(entry.HardwareAddr); err == nil {
+				hardware = parsed
+			}
+		}
+		ifaces = append(ifaces, net.Interface{
+			Index:        entry.Index,
+			MTU:          entry.MTU,
+			Name:         entry.Name,
+			HardwareAddr: hardware,
+			Flags:        flags,
+		})
+	}
+	return ifaces, nil
+}
 
 // protectSocketFD asks the running SkeinVpnService to protect the
 // given socket FD from the VPN (VpnService.protect). It reports
@@ -286,9 +531,22 @@ func Java_com_skein_app_SkeinVpnService_nativeConnectDaemon(env *C.JNIEnv, thiz 
 	// the Java caller must run this off the main thread.
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	if _, err := android.Connect(ctx); err != nil {
+	conn, err := android.Connect(ctx)
+	if err != nil {
+		// A conflict means another actor already moved the connection:
+		// report the real state instead of failing a connected tunnel.
+		if conn.State == daemon.ConnConnected {
+			return 0
+		}
 		log.Printf("skein: android: connectDaemon: %v", err)
 		return -1
+	}
+	// Connect returns a nil error for any settled state, ConnError
+	// included. The service must not report "Connected" for a dataplane
+	// that failed to come up: it tears down and surfaces this instead.
+	if conn.State != daemon.ConnConnected {
+		log.Printf("skein: android: connectDaemon: settled in state %q: %s", conn.State, conn.LastError)
+		return -2
 	}
 	return 0
 }
@@ -317,12 +575,25 @@ func Java_com_skein_app_SkeinVpnService_nativeGetVpnConfig(env *C.JNIEnv, thiz C
 	return C.skeinNewJstring(env, cstr)
 }
 
+//export Java_com_skein_app_SkeinVpnService_nativeVpnFailure
+func Java_com_skein_app_SkeinVpnService_nativeVpnFailure(env *C.JNIEnv, thiz C.jobject, reason C.jstring) {
+	C.skeinStoreJvm(env)
+	cstr := C.skeinJstringChars(env, reason)
+	if cstr == nil {
+		return
+	}
+	msg := C.GoString(cstr)
+	C.skeinReleaseJstringChars(env, reason, cstr)
+	services.NoteVpnError(msg)
+}
+
 // ---- MainActivity natives (B1) ---------------------------------------
 // MainActivity calls nativeInitSkeinBridge from onCreate so the Go
 // side learns the JVM and the Activity instance (and the app-private
-// files dir) before any VPN flow runs. The activity reference is
-// cached as a JNI global ref in C; it is the same Activity for the
-// life of the app process.
+// files dir) before any VPN flow runs. The activity reference is a JNI
+// global ref replaced on every onCreate: Android may recreate the
+// Activity while this process (and the Go runtime) keeps running, and
+// the Go side must talk to the live instance, not the destroyed one.
 
 //export Java_com_skein_app_MainActivity_nativeInitSkeinBridge
 func Java_com_skein_app_MainActivity_nativeInitSkeinBridge(env *C.JNIEnv, thiz C.jobject, filesDir C.jstring) {

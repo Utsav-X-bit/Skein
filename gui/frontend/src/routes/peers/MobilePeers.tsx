@@ -7,6 +7,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MobileSheet } from "@/components/layout/MobileSheet";
+import { RouteDrawer } from "@/features/mesh/RouteDrawer";
 import { useLiveSampler, useMesh } from "@/features/mesh/useMesh";
 import { PeerHealth } from "@/features/mesh/PeerHealth";
 import { PeerInspectorBody, useLeaveNetworkMutation } from "@/features/mesh/PeerInspector";
@@ -28,6 +29,10 @@ export function MobilePeers() {
   const [q, setQ] = useState("");
   const [peerId, setPeerId] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  // "View routes" in the peer sheet has to open the routes list here
+  // too: it used to only close the sheet, so the control did nothing.
+  const [routesOpen, setRoutesOpen] = useState(false);
+  const [routesPeer, setRoutesPeer] = useState<string | null>(null);
   const leave = useLeaveNetworkMutation();
 
   const rows = useMemo(() => {
@@ -152,11 +157,27 @@ export function MobilePeers() {
             model={mesh.model}
             peerRates={mesh.peerRates}
             lastTrafficAt={mesh.lastTrafficAt}
-            onViewRoutes={() => setPeerId(null)}
+            onViewRoutes={(dest) => {
+              setPeerId(null);
+              setRoutesPeer(dest);
+              setRoutesOpen(true);
+            }}
             onLeaveRequest={() => setConfirmLeave(true)}
           />
         </div>
       </MobileSheet>
+
+      <RouteDrawer
+        open={routesOpen}
+        onClose={() => {
+          setRoutesOpen(false);
+          setRoutesPeer(null);
+        }}
+        paths={mesh.model.paths}
+        selected={routesPeer}
+        onSelect={(dest) => setRoutesPeer(dest)}
+        nameOf={(id) => (id === self ? "This device" : displayPeerNameById(id, mesh.peers))}
+      />
 
       <Dialog open={confirmLeave} onOpenChange={setConfirmLeave}>
         <DialogContent>

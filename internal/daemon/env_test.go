@@ -36,8 +36,9 @@ func TestReleaseBuildIgnoresDaemonSecurityEnvVars(t *testing.T) {
 // in-process way for a daemon test to point the paused-state path at
 // a temp file now that the environment is ignored.
 func TestStateFileOverrideSeamStillWorks(t *testing.T) {
+	old := stateFileOverride
 	stateFileOverride = filepath.Join(t.TempDir(), "fake-state.json")
-	t.Cleanup(func() { stateFileOverride = "" })
+	t.Cleanup(func() { stateFileOverride = old })
 	if got := stateFile(); got != stateFileOverride {
 		t.Fatalf("stateFile override = %q, want %q", got, stateFileOverride)
 	}

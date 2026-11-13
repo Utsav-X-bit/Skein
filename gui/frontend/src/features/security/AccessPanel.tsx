@@ -177,7 +177,7 @@ export function AccessPanel() {
           )}
           {rows.length > 0 && (
             <div className="overflow-x-auto rounded-md border border-[var(--border)]">
-              <table className="w-full text-left text-sm" aria-label="Effective grants">
+              <table className="w-full min-w-[520px] text-left text-sm" aria-label="Effective grants">
                 <thead className="border-b border-[var(--border)] text-[var(--text-faint)]">
                   <tr>
                     {["Identity", "Role", "Actions"].map((h) => (

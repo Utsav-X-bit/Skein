@@ -1059,6 +1059,14 @@ func (e *Engine) SendControlTo(peerID uint64, addr netip.AddrPort, typ wire.Mess
 	if err != nil {
 		return err
 	}
+	// A proof must travel over the address's own transport: a challenge
+	// carried by an existing TCP stream would report the stream's latency
+	// and prove nothing about the candidate being tested.
+	if direct, ok := e.link.(interface {
+		SendDirect(netip.AddrPort, []byte) error
+	}); ok {
+		return direct.SendDirect(addr, frame)
+	}
 	return e.link.Send(addr, frame)
 }
 

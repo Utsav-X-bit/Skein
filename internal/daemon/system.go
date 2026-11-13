@@ -262,11 +262,11 @@ func (d *Daemon) RotateSecret(ctx context.Context, confirm bool) (api.RotateResu
 	// a new network, so a departed flag from the old network must
 	// not carry over and block the new one.
 	cfg.Node.Departed = false
-	d.cfgMu.Lock()
-	d.cfg = cfg
-	d.cfgMu.Unlock()
-	d.persistLocked(cfg)
+	err = d.persistLocked(cfg)
 	d.persistMu.Unlock()
+	if err != nil {
+		return api.RotateResult{}, err
+	}
 	d.closeAllSessions()
 	d.emit(api.Event{Type: "secret_rotated"})
 	if backup != "" {
@@ -396,11 +396,11 @@ func (d *Daemon) LeaveSystem(ctx context.Context, confirm bool) (api.LeaveResult
 	d.persistMu.Lock()
 	cfg := d.config()
 	cfg.Node.Departed = true
-	d.cfgMu.Lock()
-	d.cfg = cfg
-	d.cfgMu.Unlock()
-	d.persistLocked(cfg)
+	err := d.persistLocked(cfg)
 	d.persistMu.Unlock()
+	if err != nil {
+		return api.LeaveResult{}, err
+	}
 	// M4 P8: gossip the departure BEFORE stopping the dataplane, or
 	// there is no transport left to carry it. Propagated is true only
 	// when the broadcast actually reached at least one peer; a test
@@ -503,12 +503,13 @@ func (d *Daemon) SystemJoin(ctx context.Context, invite string, confirm bool) (a
 			}
 		}
 		d.persistMu.Lock()
+		cfg = d.config()
 		cfg.Node.Departed = false
-		d.cfgMu.Lock()
-		d.cfg = cfg
-		d.cfgMu.Unlock()
-		d.persistLocked(cfg)
+		err := d.persistLocked(cfg)
 		d.persistMu.Unlock()
+		if err != nil {
+			return api.JoinResult{}, err
+		}
 		d.emit(api.Event{Type: "peer:rejoined"})
 		return api.JoinResult{Rejoined: true, Message: "departed flag cleared; connect to resume the dataplane"}, nil
 	}
@@ -534,8 +535,10 @@ func (d *Daemon) SystemJoin(ctx context.Context, invite string, confirm bool) (a
 	for _, addr := range inv.Addrs {
 		d.peers.AddCandidate(inv.ID, addr, peer.SourceConfig)
 	}
+	if err := d.persistPeers(); err != nil {
+		return api.JoinResult{}, err
+	}
 	d.emit(api.Event{Type: "peer_added", PeerID: fmt.Sprintf("%016x", inv.ID)})
-	d.persistPeers()
 	d.emitPeerChanged()
 	return api.JoinResult{PeerID: fmt.Sprintf("%016x", inv.ID), Message: "peer added to the current network"}, nil
 }

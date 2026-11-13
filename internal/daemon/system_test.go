@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -780,5 +782,68 @@ func TestReloadGrantsUsesLiveAccessFile(t *testing.T) {
 	// tests in api cover the role behaviour itself.
 	if err := d.ReloadGrants(context.Background()); err != nil {
 		t.Fatalf("ReloadGrants missing file: %v", err)
+	}
+}
+
+func TestConfigMutationsReportWriteFailureWithoutChangingState(t *testing.T) {
+	for _, operation := range []string{"rename", "rotate", "leave", "rejoin", "add peer", "join peer"} {
+		t.Run(operation, func(t *testing.T) {
+			d, _ := newSystemDaemon(t)
+			if operation == "rejoin" {
+				if _, err := d.LeaveSystem(context.Background(), true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := d.config()
+			raw, err := os.ReadFile(before.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remote, err := identity.Generate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			join, err := identity.EncodeNetworkInvite(identity.NetworkInvite{
+				Secret: before.Node.NetworkSecret, ID: remote.ID, PublicKey: remote.PublicKey,
+				PrefixV4: before.Node.OverlayIPv4Prefix, PrefixV6: before.Node.OverlayIPv6Prefix,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			peerInvite, err := identity.EncodeInvite(identity.Invite{ID: remote.ID, PublicKey: remote.PublicKey})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Closing the store forces a deterministic write failure, even as
+			// root, while leaving the existing file readable for verification.
+			if err := d.store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			switch operation {
+			case "rename":
+				err = d.SetName("new-name")
+			case "rotate":
+				_, err = d.RotateSecret(context.Background(), true)
+			case "leave":
+				_, err = d.LeaveSystem(context.Background(), true)
+			case "rejoin", "join peer":
+				_, err = d.SystemJoin(context.Background(), join, true)
+			case "add peer":
+				err = d.AddPeer(peerInvite)
+			}
+			if err == nil {
+				t.Fatal("reported success after the config write failed")
+			}
+			if !reflect.DeepEqual(d.config(), before) {
+				t.Fatal("failed write changed the effective configuration")
+			}
+			after, err := os.ReadFile(before.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, raw) {
+				t.Fatal("failed write changed the saved configuration")
+			}
+		})
 	}
 }

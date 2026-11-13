@@ -5,6 +5,7 @@ import { Route as RouteIcon } from "lucide-react";
 import { useMesh } from "@/features/mesh/useMesh";
 import { MobileMeshMap } from "@/features/mesh/MobileMeshMap";
 import { ConnectButton } from "@/features/mobile/ConnectButton";
+import { useVpnPermission } from "@/features/mobile/useVpnPermission";
 import { MobileSheet } from "@/components/layout/MobileSheet";
 import { PeerInspectorBody, useLeaveNetworkMutation } from "@/features/mesh/PeerInspector";
 import { LinkInspectorBody } from "@/features/mesh/LinkInspector";
@@ -14,7 +15,7 @@ import { RouteDrawer } from "@/features/mesh/RouteDrawer";
 import { StateScreen } from "@/components/layout/StateScreen";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { ConfigService, VpnService } from "@/lib/api";
+import { ConfigService, ServiceService, VpnService } from "@/lib/api";
 import { displayNodeName, displayPeerName, displayPeerNameById } from "@/lib/utils";
 
 /**
@@ -41,9 +42,35 @@ export function MobileOverview() {
   const [vpnDenied, setVpnDenied] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const leave = useLeaveNetworkMutation();
+  const vpn = useVpnPermission();
+
+  // The user fixes a denial in system Settings and comes back. Without
+  // this the denied screen stayed up over a permission that is now
+  // granted, and its only recovery was "Try again".
+  useEffect(() => {
+    if (vpn.state === "granted") setVpnDenied(false);
+  }, [vpn.state]);
 
   const self = mesh.status?.id ?? "";
-  const connectionState = mesh.status?.connection?.state ?? "unknown";
+  // The daemon's last snapshot survives a failed refetch, so a stopped
+  // VPN would keep reporting "connected" from cache — a green dot, a
+  // Disconnect button and a stale peer list for a mesh that is not
+  // running. The service state is the truth: not running means the
+  // mesh is down, whatever the last snapshot said.
+  const service = useQuery({ queryKey: ["service"], queryFn: () => ServiceService.Status() });
+  const serviceState = service.data?.state;
+  const serviceUp = serviceState === undefined || serviceState === "running";
+  const connectionState = serviceUp ? (mesh.status?.connection?.state ?? "unknown") : "disconnected";
+  const displayModel = useMemo(() => connectionState === "connected" ? mesh.model : {
+    ...mesh.model,
+    nodes: mesh.model.nodes.map((node) => ({
+      ...node,
+      state: node.kind === "self" ? connectionState : "unknown",
+      rttMs: undefined,
+    })),
+    edges: [],
+    paths: [],
+  }, [connectionState, mesh.model]);
   const cfg = useQuery({ queryKey: ["config"], queryFn: () => ConfigService.Get(), retry: 0 });
   const overlayCidr = useMemo(() => {
     // The overlay prefix comes from config; fall back to the default
@@ -62,7 +89,7 @@ export function MobileOverview() {
   }, [selectedPeer, self, mesh.status?.name, mesh.peers]);
 
   const statusSentence = useMemo(() => {
-    const up = mesh.peers.filter((p) => p.state === "up").length;
+    const up = mesh.model.nodes.filter((node) => node.kind === "peer" && node.state === "up").length;
     const total = mesh.peers.length;
     if (connectionState === "connected") {
       return total === 0
@@ -71,10 +98,12 @@ export function MobileOverview() {
     }
     if (connectionState === "paused") return "Paused — the dataplane is stopped, the VPN is still up.";
     if (connectionState === "error") return `Error — ${mesh.status?.connection?.last_error ?? "couldn't connect"}.`;
-    return "Disconnected — the mesh is down.";
-  }, [connectionState, mesh.peers, mesh.status?.connection?.last_error]);
+    return total > 0
+      ? `Disconnected — the mesh is down. The ${total === 1 ? "peer" : "peers"} below ${total === 1 ? "is" : "are"} the last known state.`
+      : "Disconnected — the mesh is down.";
+  }, [connectionState, mesh.model.nodes, mesh.peers.length, mesh.status?.connection?.last_error]);
 
-  if (mesh.loading && !mesh.status) {
+  if (mesh.loading && !mesh.status && serviceUp) {
     return (
       <StateScreen
         title="Loading mesh…"
@@ -110,9 +139,9 @@ export function MobileOverview() {
       </p>
 
       <MobileMeshMap
-        model={mesh.model}
+        model={displayModel}
         peers={mesh.peers}
-        peerRates={mesh.peerRates}
+        peerRates={connectionState === "connected" ? mesh.peerRates : {}}
         self={self}
         selectedPeer={selectedPeer}
         selectedLink={selectedLink}
@@ -133,6 +162,19 @@ export function MobileOverview() {
         onRetry={() => void mesh.refetch()}
       />
 
+      {/* The primary action sits directly under the map, in normal
+          flow: a sticky/floating button overlapped the Throughput card
+          while the page scrolled, but below the strips it fell off the
+          first screen entirely on a 393×851 dp phone (map + throughput
+          + events + routes pushed it past the fold). Here it is always
+          visible without covering anything. */}
+      <ConnectButton
+        connectionState={connectionState}
+        overlayPrefix={overlayCidr}
+        onVpnDenied={() => setVpnDenied(true)}
+        autoStart={autoStart}
+      />
+
       <div className="space-y-2">
         <ThroughputStrip />
         <EventStrip />
@@ -142,16 +184,6 @@ export function MobileOverview() {
           </Button>
         </div>
       </div>
-
-      {/* The Connect button sits in normal flow below the strips, in
-          its own space — a sticky/floating button here overlapped the
-          Throughput card while the page scrolled. */}
-      <ConnectButton
-        connectionState={connectionState}
-        overlayPrefix={overlayCidr}
-        onVpnDenied={() => setVpnDenied(true)}
-        autoStart={autoStart}
-      />
 
       <MobileSheet open={selectedPeer !== null} onClose={() => setSelectedPeer(null)} title={selectedPeerName} initialDetent="half">
         <div className="space-y-4">

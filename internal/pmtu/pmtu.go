@@ -4,9 +4,13 @@
 package pmtu
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+
+	"github.com/Utsav-X-bit/skein/internal/link"
 )
 
 // ErrUnsupported reports that this platform cannot mark datagrams
@@ -19,13 +23,22 @@ func Open(addr netip.AddrPort) (*net.UDPConn, error) {
 	if !addr.IsValid() || addr.Port() == 0 {
 		return nil, errors.New("pmtu: need a concrete destination address and port")
 	}
-	network := "udp4"
+	network, wildcard := "udp4", "0.0.0.0:0"
 	if addr.Addr().Is6() {
-		network = "udp6"
+		network, wildcard = "udp6", "[::]:0"
 	}
-	conn, err := net.ListenUDP(network, nil)
+	// The probe goes to a peer's underlay address, which is exactly the traffic
+	// Android's VPN captures, so the socket is created through the shared
+	// underlay hook (nil off Android, where it changes nothing).
+	cfg := net.ListenConfig{Control: link.UnderlayControl()}
+	pc, err := cfg.ListenPacket(context.Background(), network, wildcard)
 	if err != nil {
 		return nil, err
+	}
+	conn, ok := pc.(*net.UDPConn)
+	if !ok {
+		pc.Close()
+		return nil, fmt.Errorf("pmtu: %s listener returned %T, want *net.UDPConn", network, pc)
 	}
 	if err := setDontFragment(conn, addr.Addr().Is6()); err != nil {
 		conn.Close()

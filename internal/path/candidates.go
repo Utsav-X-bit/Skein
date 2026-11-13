@@ -8,10 +8,33 @@ import (
 	"sort"
 )
 
+// LocalAddresses supplies the native address inventory on platforms (Android)
+// where applications cannot enumerate interfaces through netlink. Set at startup.
+var LocalAddresses func() ([]netip.Addr, error)
+
+// LocalInterfaces supplies native interface indices for multicast discovery.
+// It is registered alongside LocalAddresses before the Android daemon starts.
+var LocalInterfaces func() ([]net.Interface, error)
+
 // LocalCandidates returns the local interface endpoints a peer could dial on
 // port. Loopback, unspecified, multicast, and unscoped link-local addresses are
 // excluded.
 func LocalCandidates(port uint16) ([]netip.AddrPort, error) {
+	if LocalAddresses != nil {
+		addrs, err := LocalAddresses()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]netip.AddrPort, 0, len(addrs))
+		for _, addr := range addrs {
+			if addr = addr.Unmap(); Eligible(addr) {
+				out = append(out, netip.AddrPortFrom(addr, port))
+			}
+		}
+		out = Filter(out)
+		sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+		return out, nil
+	}
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err

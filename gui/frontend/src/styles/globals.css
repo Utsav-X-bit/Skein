@@ -247,3 +247,12 @@
   max-width: 12px;
   max-height: 12px;
 }
+
+/* Shared desktop controls keep their compact styling off the Android surface.
+   Portals inherit this document attribute too (dialogs, sheets and menus). */
+html[data-mobile] button:not([role="switch"]):not([role="checkbox"]),
+html[data-mobile] [role="tab"],
+html[data-mobile] [role="menuitem"] {
+  min-height: var(--tap-min, 48px);
+  min-width: var(--tap-min, 48px);
+}

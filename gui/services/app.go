@@ -8,6 +8,7 @@ import (
 	"github.com/Utsav-X-bit/skein/internal/api"
 	"github.com/Utsav-X-bit/skein/internal/service"
 	"github.com/Utsav-X-bit/skein/internal/version"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // AppService reports GUI and daemon identity and owns the event stream.
@@ -15,8 +16,10 @@ type AppService struct {
 	cancel context.CancelFunc
 }
 
+var _ application.ServiceStartup = (*AppService)(nil)
+
 // ServiceStartup starts the daemon event subscription.
-func (s *AppService) ServiceStartup(ctx context.Context, _ any) error {
+func (s *AppService) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	go s.watchEvents(streamCtx)
@@ -29,6 +32,10 @@ func (s *AppService) ServiceStartup(ctx context.Context, _ any) error {
 // desktop brings the mesh up without a boot-time unit. It never installs, and
 // it leaves a running or mid-transition service alone.
 func startInstalledService(ctx context.Context) {
+	// Android VPN consent and connection must be user-initiated.
+	if runtime.GOOS == "android" {
+		return
+	}
 	st, err := readServiceStatus()
 	if err != nil || st.State == service.StateMissing || st.State == service.StateRunning ||
 		st.State == service.StateStarting || st.State == service.StateStopping {
